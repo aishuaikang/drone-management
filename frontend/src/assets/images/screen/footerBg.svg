@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 65" fill="none" preserveAspectRatio="none" aria-hidden="true">
+  <defs>
+    <linearGradient id="footerPanel" x1="960" y1="18" x2="960" y2="65" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.5" />
+      <stop offset="0.42" stop-color="currentColor" stop-opacity="0.2" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="footerLine" x1="638" y1="18" x2="1282" y2="18" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.25" />
+      <stop offset="0.5" stop-color="currentColor" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0.25" />
+    </linearGradient>
+    <filter id="footerGlow" x="620" y="0" width="680" height="90" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <path class="footer-panel" d="M638 64L660 43L834 34L860 45H1060L1086 34L1260 43L1282 64H638Z" fill="url(#footerPanel)" />
+  <path class="footer-frame-line" d="M638 64L660 43L834 34L860 45H1060L1086 34L1260 43L1282 64" stroke="url(#footerLine)" stroke-width="2" filter="url(#footerGlow)" />
+  <path class="footer-main-line" d="M860 45H1060" stroke="currentColor" stroke-width="3" stroke-opacity="0.85" filter="url(#footerGlow)" />
+  <path class="footer-side-blocks" d="M790 46L805 46L818 54H803L790 46ZM812 46L827 46L840 54H825L812 46ZM834 46L849 46L862 54H847L834 46Z" fill="currentColor" fill-opacity="0.65" />
+  <path class="footer-side-blocks" d="M1058 54L1071 46H1086L1073 54H1058ZM1080 54L1093 46H1108L1095 54H1080ZM1102 54L1115 46H1130L1117 54H1102Z" fill="currentColor" fill-opacity="0.65" />
+</svg>

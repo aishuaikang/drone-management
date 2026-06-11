@@ -1,0 +1,11 @@
+.DS_Store
+.playwright-cli/
+data/
+output/
+tmp/
+dist/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
