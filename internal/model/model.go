@@ -13,25 +13,6 @@ type LocaleMeta struct {
 	Namespaces []string `json:"namespaces"`
 }
 
-// LicenseInfo describes local license status and decoded license content.
-type LicenseInfo struct {
-	DeviceSN      string     `json:"deviceSn,omitempty"`
-	Customer      string     `json:"customer,omitempty"`
-	IssuedAt      *time.Time `json:"issuedAt,omitempty"`
-	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
-	IsPermanent   bool       `json:"isPermanent"`
-	RemainingDays int        `json:"remainingDays,omitempty"`
-	Valid         bool       `json:"valid"`
-	Code          string     `json:"code,omitempty"`
-	Message       string     `json:"message,omitempty"`
-}
-
-// LicenseUploadResponse returns license status after an upload.
-type LicenseUploadResponse struct {
-	License LicenseInfo `json:"license"`
-	Message string      `json:"message"`
-}
-
 // OfflineMapStatus describes the currently installed offline map package.
 type OfflineMapStatus struct {
 	Available  bool       `json:"available"`
@@ -180,10 +161,21 @@ type TCPListenerStatus struct {
 	UpdatedAt       *time.Time `json:"updatedAt,omitempty"`
 }
 
+// TCPClientStatus describes one outbound TCP client target.
+type TCPClientStatus struct {
+	Address      string     `json:"address"`
+	Host         string     `json:"host"`
+	Port         int        `json:"port"`
+	Connected    bool       `json:"connected"`
+	ConnectError string     `json:"connectError,omitempty"`
+	UpdatedAt    *time.Time `json:"updatedAt,omitempty"`
+}
+
 // ScreenRuntimeStatus returns the network edition runtime state.
 type ScreenRuntimeStatus struct {
 	Position            TCPListenerStatus `json:"position"`
 	FPV                 TCPListenerStatus `json:"fpv"`
+	Interference        TCPClientStatus   `json:"interference"`
 	DeviceTargetAddress string            `json:"deviceTargetAddress"`
 	FPVVideo            FPVVideoStatus    `json:"fpvVideo"`
 }
@@ -341,11 +333,11 @@ type FPVVideoRecordDeleteResponse struct {
 	Deleted int64 `json:"deleted"`
 }
 
-// GpioChannel describes one GPIO interference control channel.
-type GpioChannel struct {
+// InterferenceChannel describes one relay-backed interference control channel.
+type InterferenceChannel struct {
 	ID           string   `json:"id"`
 	Label        string   `json:"label"`
-	Pin          int      `json:"pin"`
+	Output       int      `json:"output"`
 	Bands        []string `json:"bands"`
 	Reserved     bool     `json:"reserved"`
 	Enabled      bool     `json:"enabled"`
@@ -355,15 +347,15 @@ type GpioChannel struct {
 	LastError    string   `json:"lastError,omitempty"`
 }
 
-// GpioChannelStateRequest updates whether a GPIO channel is enabled.
-type GpioChannelStateRequest struct {
+// InterferenceChannelStateRequest updates whether an interference channel is enabled.
+type InterferenceChannelStateRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
-// GpioChannelStateResponse returns an updated GPIO channel.
-type GpioChannelStateResponse struct {
-	Channel GpioChannel `json:"channel"`
-	Message string      `json:"message"`
+// InterferenceChannelStateResponse returns an updated interference channel.
+type InterferenceChannelStateResponse struct {
+	Channel InterferenceChannel `json:"channel"`
+	Message string              `json:"message"`
 }
 
 // ScreenStrikeRequest controls the interference channels shown on the screen.
@@ -375,13 +367,12 @@ type ScreenStrikeRequest struct {
 
 // ScreenStrikeState describes current screen interference control state.
 type ScreenStrikeState struct {
-	Active           bool          `json:"active"`
-	ChannelIDs       []string      `json:"channelIds"`
-	DurationSeconds  int           `json:"durationSeconds"`
-	RemainingSeconds int           `json:"remainingSeconds"`
-	StartedAt        *time.Time    `json:"startedAt,omitempty"`
-	EndsAt           *time.Time    `json:"endsAt,omitempty"`
-	Channels         []GpioChannel `json:"channels"`
+	Active           bool                  `json:"active"`
+	ChannelIDs       []string              `json:"channelIds"`
+	DurationSeconds  int                   `json:"durationSeconds"`
+	RemainingSeconds int                   `json:"remainingSeconds"`
+	StartedAt        *time.Time            `json:"startedAt,omitempty"`
+	Channels         []InterferenceChannel `json:"channels"`
 }
 
 // ScreenStrikeResponse returns screen interference state and a user-facing message.
@@ -410,7 +401,7 @@ type InterferenceReportSummary struct {
 	RequestedDurationSeconds int                      `json:"requestedDurationSeconds,omitempty"`
 	ChannelIDs               []string                 `json:"channelIds,omitempty"`
 	ChannelLabels            []string                 `json:"channelLabels,omitempty"`
-	ChannelPins              []int                    `json:"channelPins,omitempty"`
+	ChannelOutputs           []int                    `json:"channelOutputs,omitempty"`
 	Summary                  string                   `json:"summary,omitempty"`
 	LastError                string                   `json:"lastError,omitempty"`
 	AbnormalReason           string                   `json:"abnormalReason,omitempty"`

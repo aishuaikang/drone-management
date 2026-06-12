@@ -9,52 +9,68 @@ import (
 	"dr600ab-net/internal/store"
 )
 
-type fakePin struct {
-	value     int
-	direction string
-	setupErr  error
-	highErr   error
-	lowErr    error
-	cleaned   bool
+type fakeOutput struct {
+	value          int
+	remaining      time.Duration
+	setupErr       error
+	highErr        error
+	lowErr         error
+	stateErr       error
+	cleaned        bool
+	timedDurations []time.Duration
 }
 
-func (p *fakePin) Setup() error {
-	if p.setupErr != nil {
-		return p.setupErr
+func (o *fakeOutput) Setup() error {
+	if o.setupErr != nil {
+		return o.setupErr
 	}
-	p.direction = "out"
 	return nil
 }
 
-func (p *fakePin) SetHigh() error {
-	if p.highErr != nil {
-		return p.highErr
+func (o *fakeOutput) SetHigh() error {
+	if o.highErr != nil {
+		return o.highErr
 	}
-	p.value = 1
+	o.value = 1
+	o.remaining = 0
 	return nil
 }
 
-func (p *fakePin) SetLow() error {
-	if p.lowErr != nil {
-		return p.lowErr
+func (o *fakeOutput) SetHighFor(duration time.Duration) error {
+	if o.highErr != nil {
+		return o.highErr
 	}
-	p.value = 0
+	o.value = 1
+	o.remaining = duration
+	o.timedDurations = append(o.timedDurations, duration)
 	return nil
 }
 
-func (p *fakePin) GetValue() (int, error) {
-	return p.value, nil
-}
-
-func (p *fakePin) GetDirection() (string, error) {
-	if p.direction == "" {
-		return "in", nil
+func (o *fakeOutput) SetLow() error {
+	if o.lowErr != nil {
+		return o.lowErr
 	}
-	return p.direction, nil
+	o.value = 0
+	o.remaining = 0
+	return nil
 }
 
-func (p *fakePin) Cleanup() {
-	p.cleaned = true
+func (o *fakeOutput) GetValue() (int, error) {
+	return o.value, nil
+}
+
+func (o *fakeOutput) GetState() (OutputState, error) {
+	if o.stateErr != nil {
+		return OutputState{}, o.stateErr
+	}
+	return OutputState{
+		Value:     o.value,
+		Remaining: o.remaining,
+	}, nil
+}
+
+func (o *fakeOutput) Cleanup() {
+	o.cleaned = true
 }
 
 type memoryReportStore struct {
@@ -94,18 +110,14 @@ func (s memorySettingsStore) LoadUser() (model.UserSettings, bool, error) {
 }
 
 func TestScreenStrikeStartStopAndReport(t *testing.T) {
-	pins := map[int][]*fakePin{}
-	service := NewService(store.New(10, 10), ChannelsFromNumbers([]int{2, 3, 1}), func(number int) GPIOPin {
-		pin := &fakePin{}
-		pins[number] = append(pins[number], pin)
-		return pin
-	})
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
 	reports := &memoryReportStore{}
 	service.SetReportStore(reports)
 	service.SetUserSettingsStore(memorySettingsStore{
 		ok: true,
 		settings: model.UserSettings{
-			ScreenStrikeChannelLabels: []string{"A", "B", "C"},
+			ScreenStrikeChannelLabels: []string{"A", "B", "C", "D", "E", "F", "G", "H"},
 		},
 	})
 
@@ -120,8 +132,14 @@ func TestScreenStrikeStartStopAndReport(t *testing.T) {
 	if !state.Active || len(state.ChannelIDs) != 2 || state.RemainingSeconds <= 0 {
 		t.Fatalf("active state = %#v", state)
 	}
-	if lastFakePin(pins[2]).value != 1 || lastFakePin(pins[1]).value != 1 {
-		t.Fatalf("pins after start = %#v", pins)
+	if outputs[1].value != 1 || outputs[3].value != 1 {
+		t.Fatalf("outputs after start = %#v", outputs)
+	}
+	if len(outputs[1].timedDurations) != 1 || outputs[1].timedDurations[0] != 10*time.Second {
+		t.Fatalf("timed durations for output 1 = %#v", outputs[1].timedDurations)
+	}
+	if len(outputs[3].timedDurations) != 1 || outputs[3].timedDurations[0] != 10*time.Second {
+		t.Fatalf("timed durations for output 3 = %#v", outputs[3].timedDurations)
 	}
 	if len(reports.created) != 1 || reports.created[0].Status != model.InterferenceReportStatusRunning {
 		t.Fatalf("created report = %#v", reports.created)
@@ -137,8 +155,8 @@ func TestScreenStrikeStartStopAndReport(t *testing.T) {
 	if state.Active {
 		t.Fatalf("state should be inactive after stop: %#v", state)
 	}
-	if !hasCleanedLowPin(pins[2]) || !hasCleanedLowPin(pins[1]) {
-		t.Fatalf("pins after stop = %#v", pins)
+	if !outputs[1].cleaned || outputs[1].value != 0 || !outputs[3].cleaned || outputs[3].value != 0 {
+		t.Fatalf("outputs after stop = %#v", outputs)
 	}
 	if len(reports.updated) != 1 || reports.updated[0].Status != model.InterferenceReportStatusCompleted {
 		t.Fatalf("updated reports = %#v", reports.updated)
@@ -146,9 +164,8 @@ func TestScreenStrikeStartStopAndReport(t *testing.T) {
 }
 
 func TestScreenStrikeValidation(t *testing.T) {
-	service := NewService(store.New(10, 10), ChannelsFromNumbers([]int{2, 3, 1}), func(number int) GPIOPin {
-		return &fakePin{}
-	})
+	_, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
 
 	_, err := service.SetScreenStrike(model.ScreenStrikeRequest{
 		Enabled:         true,
@@ -186,7 +203,7 @@ func TestScreenStrikeValidation(t *testing.T) {
 
 	_, err = service.SetScreenStrike(model.ScreenStrikeRequest{
 		Enabled:         true,
-		ChannelIDs:      []string{"io4"},
+		ChannelIDs:      []string{"io9"},
 		DurationSeconds: 10,
 	})
 	if ErrorCode(err) != "strike_invalid_channels" {
@@ -194,26 +211,25 @@ func TestScreenStrikeValidation(t *testing.T) {
 	}
 }
 
-func TestSetStateRejectsTimedAndReservedChannels(t *testing.T) {
-	service := NewService(store.New(10, 10), ChannelsFromNumbers([]int{2, 3, 1, 4}), func(number int) GPIOPin {
-		return &fakePin{}
-	})
+func TestSetStateRejectsTimedChannels(t *testing.T) {
+	_, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
 
 	_, err := service.SetState("io1", true)
 	if ErrorCode(err) != "strike_channel_requires_timed_operation" {
 		t.Fatalf("timed channel error = %v, code = %q", err, ErrorCode(err))
 	}
 
-	_, err = service.SetState("io4", true)
-	if ErrorCode(err) != "channel_reserved" {
-		t.Fatalf("reserved channel error = %v, code = %q", err, ErrorCode(err))
+	_, err = service.SetState("io8", true)
+	if ErrorCode(err) != "strike_channel_requires_timed_operation" {
+		t.Fatalf("eighth timed channel error = %v, code = %q", err, ErrorCode(err))
 	}
 }
 
 func TestScreenStrikeCreatesFailedReportOnPinError(t *testing.T) {
-	cause := errors.New("gpio failed")
-	service := NewService(store.New(10, 10), ChannelsFromNumbers([]int{2, 3, 1}), func(number int) GPIOPin {
-		return &fakePin{highErr: cause}
+	cause := errors.New("relay failed")
+	service := NewService(store.New(10, 10), DefaultChannels(), func(_ int) Output {
+		return &fakeOutput{highErr: cause}
 	})
 	reports := &memoryReportStore{}
 	service.SetReportStore(reports)
@@ -234,53 +250,91 @@ func TestScreenStrikeCreatesFailedReportOnPinError(t *testing.T) {
 	}
 }
 
-func TestScreenStrikeTimeoutStopsChannels(t *testing.T) {
-	pins := map[int][]*fakePin{}
-	service := NewService(store.New(10, 10), ChannelsFromNumbers([]int{2, 3, 1}), func(number int) GPIOPin {
-		pin := &fakePin{}
-		pins[number] = append(pins[number], pin)
-		return pin
-	})
+func TestScreenStrikeUsesRelayStateInsteadOfLocalTimeout(t *testing.T) {
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
 	reports := &memoryReportStore{}
 	service.SetReportStore(reports)
+
 	state, err := service.applyScreenStrike(true, []string{"io1"}, 20*time.Millisecond, 10)
 	if err != nil {
 		t.Fatalf("applyScreenStrike() error = %v", err)
 	}
-	if !state.Active || lastFakePin(pins[2]).value != 1 {
-		t.Fatalf("started state = %#v pin = %#v", state, pins[2])
+	if !state.Active || outputs[1].value != 1 {
+		t.Fatalf("started state = %#v output = %#v", state, outputs[1])
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if !service.ScreenStrikeState().Active {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	state = service.ScreenStrikeState()
+	if !state.Active || outputs[1].value != 1 {
+		t.Fatalf("service should keep reporting relay state until relay opens: state=%#v output=%#v", state, outputs[1])
 	}
-	if service.ScreenStrikeState().Active {
-		t.Fatal("strike should stop after timeout")
+	if len(reports.updated) != 0 {
+		t.Fatalf("reports should not be completed by a local timer: %#v", reports.updated)
 	}
-	if !hasCleanedLowPin(pins[2]) {
-		t.Fatalf("pin after timeout = %#v", pins[2])
+
+	outputs[1].value = 0
+	outputs[1].remaining = 0
+	state = service.ScreenStrikeState()
+	if state.Active {
+		t.Fatalf("state should follow relay auto-off: %#v", state)
 	}
 	if len(reports.updated) != 1 || reports.updated[0].Status != model.InterferenceReportStatusCompleted {
 		t.Fatalf("updated reports = %#v", reports.updated)
 	}
 }
 
-func lastFakePin(pins []*fakePin) *fakePin {
-	if len(pins) == 0 {
-		return &fakePin{}
+func TestScreenStrikeReadFailureDoesNotUseStaleActiveState(t *testing.T) {
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
+	reports := &memoryReportStore{}
+	service.SetReportStore(reports)
+
+	state, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("SetScreenStrike(start) error = %v", err)
 	}
-	return pins[len(pins)-1]
+	if !state.Active {
+		t.Fatalf("started state should be active: %#v", state)
+	}
+
+	cause := errors.New("relay read failed")
+	outputs[1].stateErr = cause
+	state = service.ScreenStrikeState()
+	if state.Active || len(state.ChannelIDs) != 0 {
+		t.Fatalf("read failure should not reuse stale active state: %#v", state)
+	}
+	if len(state.Channels) == 0 || state.Channels[0].Status != "error" || state.Channels[0].LastError != cause.Error() {
+		t.Fatalf("channel should expose relay read error: %#v", state.Channels)
+	}
+	if len(reports.updated) != 0 {
+		t.Fatalf("report should not complete while relay state is unknown: %#v", reports.updated)
+	}
+
+	outputs[1].stateErr = nil
+	outputs[1].value = 0
+	outputs[1].remaining = 0
+	state = service.ScreenStrikeState()
+	if state.Active {
+		t.Fatalf("state should become inactive after confirmed relay read: %#v", state)
+	}
+	if len(reports.updated) != 1 || reports.updated[0].Status != model.InterferenceReportStatusCompleted {
+		t.Fatalf("report should complete after confirmed inactive state: %#v", reports.updated)
+	}
 }
 
-func hasCleanedLowPin(pins []*fakePin) bool {
-	for _, pin := range pins {
-		if pin.cleaned && pin.value == 0 {
-			return true
+func newFakeOutputFactory() (map[int]*fakeOutput, OutputFactory) {
+	outputs := map[int]*fakeOutput{}
+	return outputs, func(number int) Output {
+		output := outputs[number]
+		if output == nil {
+			output = &fakeOutput{}
+			outputs[number] = output
 		}
+		return output
 	}
-	return false
 }

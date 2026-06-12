@@ -28,7 +28,6 @@ import (
 	"dr600ab-net/internal/interference"
 	"dr600ab-net/internal/interferencereport"
 	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/license"
 	"dr600ab-net/internal/model"
 	"dr600ab-net/internal/offlinemap"
 	"dr600ab-net/internal/position"
@@ -91,68 +90,12 @@ func TestScreenRoutes(t *testing.T) {
 	}
 }
 
-func TestLicenseProtectedRouteRejectsMissingLicense(t *testing.T) {
-	deviceSN := "SL67CB3FC848FA0E795P"
-	s := newTestServerWithLicense(store.New(10, 10), filepath.Join(t.TempDir(), "license.lic"), deviceSN)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/status", nil)
-	rec := httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var body map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body["code"] != "license_not_found" {
-		t.Fatalf("body = %#v, want license_not_found", body)
-	}
-}
-
-func TestUploadLicenseActivatesProtectedRoutes(t *testing.T) {
-	deviceSN := "SL67CB3FC848FA0E795P"
-	licensePath := filepath.Join(t.TempDir(), "license.lic")
-	s := newTestServerWithLicense(store.New(10, 10), licensePath, deviceSN)
-	raw, err := s.license.Generate(deviceSN, time.Hour, "test", time.Now())
-	if err != nil {
-		t.Fatalf("Generate() error = %v", err)
-	}
-
-	req := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", raw, nil)
-	rec := httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/screen/status", nil)
-	rec = httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("protected status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-}
-
 func TestOfflineMapUploadAndTiles(t *testing.T) {
-	deviceSN := "SL67CB3FC848FA0E795P"
 	dir := t.TempDir()
-	s := newTestServerWithLicenseAndMap(
+	s := newTestServerWithOfflineMap(
 		store.New(10, 10),
-		filepath.Join(dir, "license.lic"),
-		deviceSN,
 		filepath.Join(dir, "map"),
 	)
-	raw, err := s.license.Generate(deviceSN, time.Hour, "test", time.Now())
-	if err != nil {
-		t.Fatalf("Generate() error = %v", err)
-	}
-	licenseReq := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", raw, nil)
-	licenseRec := httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(licenseRec, licenseReq)
-	if licenseRec.Code != http.StatusOK {
-		t.Fatalf("license upload status = %d, body = %s", licenseRec.Code, licenseRec.Body.String())
-	}
 
 	var zipBody bytes.Buffer
 	zipWriter := zip.NewWriter(&zipBody)
@@ -602,11 +545,11 @@ func TestInterferenceChannelRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var list model.ListResponse[model.GpioChannel]
+	var list model.ListResponse[model.InterferenceChannel]
 	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(list.Items) != 3 || list.Items[0].ID != "io1" {
+	if len(list.Items) != 8 || list.Items[0].ID != "io1" || list.Items[0].Output != 1 || list.Items[3].Reserved {
 		t.Fatalf("channels = %#v", list.Items)
 	}
 
@@ -631,7 +574,7 @@ func TestScreenStrikeRoutes(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
 		t.Fatalf("decode state: %v", err)
 	}
-	if state.Active || len(state.Channels) != 3 {
+	if state.Active || len(state.Channels) != 8 {
 		t.Fatalf("initial state = %#v", state)
 	}
 
@@ -677,7 +620,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 					RequestedDurationSeconds: 10,
 					ChannelIDs:               []string{"io1"},
 					ChannelLabels:            []string{"433M"},
-					ChannelPins:              []int{2},
+					ChannelOutputs:           []int{2},
 					CreatedAt:                now,
 					UpdatedAt:                now,
 				},
@@ -693,8 +636,8 @@ func TestInterferenceReportRoutes(t *testing.T) {
 					RequestedDurationSeconds: 10,
 					ChannelIDs:               []string{"io2"},
 					ChannelLabels:            []string{"1.2G"},
-					ChannelPins:              []int{3},
-					LastError:                "gpio failed",
+					ChannelOutputs:           []int{3},
+					LastError:                "relay failed",
 					CreatedAt:                now,
 					UpdatedAt:                now,
 				},
@@ -729,7 +672,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil {
 		t.Fatalf("decode report: %v", err)
 	}
-	if report.ID != "failed" || report.LastError != "gpio failed" {
+	if report.ID != "failed" || report.LastError != "relay failed" {
 		t.Fatalf("report = %#v", report)
 	}
 
@@ -1477,17 +1420,19 @@ func newTestServer(state *store.Store) *Server {
 	}
 	positionSvc := position.NewService(state, position.Options{Host: "127.0.0.1", Port: 10007})
 	fpvSvc := fpv.NewService(state, fpv.Options{Host: "127.0.0.1", Port: 10005, CommandTimeout: time.Second})
-	interferenceSvc := interference.NewService(state, interference.ChannelsFromNumbers([]int{2, 3, 1}), func(number int) interference.GPIOPin {
-		return &httpTestPin{}
+	outputs := map[int]*httpTestOutput{}
+	interferenceSvc := interference.NewService(state, interference.DefaultChannels(), func(number int) interference.Output {
+		output := outputs[number]
+		if output == nil {
+			output = &httpTestOutput{}
+			outputs[number] = output
+		}
+		return output
 	})
 	return New(cfg, state, positionSvc, fpvSvc, WithInterferenceService(interferenceSvc))
 }
 
-func newTestServerWithLicense(state *store.Store, licensePath string, deviceSN string) *Server {
-	return newTestServerWithLicenseAndMap(state, licensePath, deviceSN, "")
-}
-
-func newTestServerWithLicenseAndMap(state *store.Store, licensePath string, deviceSN string, mapPath string) *Server {
+func newTestServerWithOfflineMap(state *store.Store, mapPath string) *Server {
 	cfg := config.Config{
 		Addr:                     ":0",
 		TCPBindHost:              "127.0.0.1",
@@ -1500,19 +1445,13 @@ func newTestServerWithLicenseAndMap(state *store.Store, licensePath string, devi
 		EventBufferSize:          16,
 		DefaultLocale:            "zh-CN",
 		DeviceTargetAddress:      "192.168.100.101",
-		DeviceSN:                 deviceSN,
-		LicensePath:              licensePath,
 		OfflineMapPath:           mapPath,
 		OfflineMapUploadMaxBytes: 64 << 20,
 	}
 	positionSvc := position.NewService(state, position.Options{Host: "127.0.0.1", Port: 10007})
 	fpvSvc := fpv.NewService(state, fpv.Options{Host: "127.0.0.1", Port: 10005, CommandTimeout: time.Second})
-	licenseSvc := license.NewService(licensePath, func() (string, error) { return deviceSN, nil })
 	options := []Option{
-		WithLicenseService(licenseSvc),
-	}
-	if mapPath != "" {
-		options = append(options, WithOfflineMapService(offlinemap.NewService(mapPath)))
+		WithOfflineMapService(offlinemap.NewService(mapPath)),
 	}
 	return New(cfg, state, positionSvc, fpvSvc, options...)
 }
@@ -1548,39 +1487,45 @@ func newMultipartRequest(
 	return req
 }
 
-type httpTestPin struct {
+type httpTestOutput struct {
 	value     int
-	direction string
+	remaining time.Duration
 }
 
-func (p *httpTestPin) Setup() error {
-	p.direction = "out"
+func (o *httpTestOutput) Setup() error {
 	return nil
 }
 
-func (p *httpTestPin) SetHigh() error {
-	p.value = 1
+func (o *httpTestOutput) SetHigh() error {
+	o.value = 1
+	o.remaining = 0
 	return nil
 }
 
-func (p *httpTestPin) SetLow() error {
-	p.value = 0
+func (o *httpTestOutput) SetHighFor(duration time.Duration) error {
+	o.value = 1
+	o.remaining = duration
 	return nil
 }
 
-func (p *httpTestPin) GetValue() (int, error) {
-	return p.value, nil
+func (o *httpTestOutput) SetLow() error {
+	o.value = 0
+	o.remaining = 0
+	return nil
 }
 
-func (p *httpTestPin) GetDirection() (string, error) {
-	if p.direction == "" {
-		return "in", nil
-	}
-	return p.direction, nil
+func (o *httpTestOutput) GetValue() (int, error) {
+	return o.value, nil
 }
 
-func (p *httpTestPin) Cleanup() {
-	p.value = 0
+func (o *httpTestOutput) GetState() (interference.OutputState, error) {
+	return interference.OutputState{
+		Value:     o.value,
+		Remaining: o.remaining,
+	}, nil
+}
+
+func (o *httpTestOutput) Cleanup() {
 }
 
 type memoryUserSettingsStore struct {

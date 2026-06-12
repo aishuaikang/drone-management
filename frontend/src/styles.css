@@ -1957,7 +1957,8 @@ button {
   --screen-left-edge: 1%;
   --screen-right-edge: 1%;
   --screen-strike-panel-bottom: 3.55em;
-  --screen-strike-panel-reserve: 16.5em;
+  --screen-strike-panel-max-height: min(23.5em, calc(100dvh - var(--screen-content-top) - var(--screen-strike-panel-bottom) - 1.25em));
+  --screen-strike-panel-reserve: var(--screen-strike-panel-max-height);
   --screen-header-title-top: 9px;
   --screen-header-title-size: 38px;
 }
@@ -2560,8 +2561,8 @@ button {
 .screen-status-dock {
   left: var(--screen-left-edge);
   bottom: 3.55em;
-  width: min(28em, 25vw);
-  min-width: 22em;
+  width: min(24em, 22vw);
+  min-width: 19em;
   grid-template-columns: 1fr;
 }
 
@@ -2714,7 +2715,8 @@ button {
     --screen-left-edge: 10px;
     --screen-right-edge: 0.55em;
     --screen-strike-panel-bottom: calc(var(--screen-bottom-panel-height) + 0.75em);
-    --screen-strike-panel-reserve: min(18.5em, calc(100dvh - var(--screen-content-top) - var(--screen-bottom-panel-height) - 1.25em));
+    --screen-strike-panel-max-height: min(15em, calc(100dvh - var(--screen-content-top) - var(--screen-bottom-panel-height) - 1.25em));
+    --screen-strike-panel-reserve: var(--screen-strike-panel-max-height);
     --screen-header-title-top: 10px;
     --screen-header-title-size: 22px;
   }
@@ -3186,6 +3188,7 @@ button {
   display: flex;
   width: min(28em, 25vw);
   min-width: 22em;
+  max-height: var(--screen-strike-panel-max-height);
   overflow: visible;
   transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -3199,6 +3202,7 @@ button {
   display: flex;
   width: 100%;
   min-height: 0;
+  max-height: inherit;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--screen-line-strong);
@@ -3228,9 +3232,9 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.56em;
-  min-height: 3.1em;
-  padding: 0.48em 0.58em 0.46em;
+  gap: 0.46em;
+  min-height: 2.72em;
+  padding: 0.4em 0.52em 0.38em;
   border-bottom: 1px solid var(--screen-line);
   background:
     radial-gradient(circle at 1.4em 50%, rgba(38, 201, 255, 0.18), transparent 2.8em),
@@ -3297,16 +3301,22 @@ button {
     inset 0 0 0 1px rgba(255, 255, 255, 0.055);
 }
 
+.screen-strike-panel__indicators {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
 .screen-strike-panel__body {
   display: grid;
-  gap: 0.46em;
-  padding: 0.5em;
+  gap: 0.38em;
+  padding: 0.42em;
 }
 
 .screen-strike-panel__channels {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.42em;
+  gap: 0.34em;
 }
 
 .screen-strike-panel__channels > .screen-empty {
@@ -3316,13 +3326,14 @@ button {
 
 .screen-strike-channel {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
-  min-height: 4.8em;
-  align-content: center;
-  gap: 0.34em;
+  min-height: 2.45em;
+  align-items: center;
+  gap: 0.36em;
   border: 1px solid rgba(168, 191, 203, 0.18);
   border-radius: var(--screen-panel-radius-xs);
-  padding: 0.56em 0.5em;
+  padding: 0.36em 0.42em;
   color: rgba(226, 241, 246, 0.78);
   background: rgba(2, 8, 14, 0.42);
   cursor: pointer;
@@ -3343,15 +3354,14 @@ button {
 
 .screen-strike-channel > span {
   display: block;
-  width: 1.02em;
-  height: 1.02em;
+  width: 0.84em;
+  height: 0.84em;
   border: 1px solid rgba(168, 191, 203, 0.34);
   border-radius: 999px;
   background: rgba(2, 8, 14, 0.62);
 }
 
-.screen-strike-channel strong,
-.screen-strike-channel em {
+.screen-strike-channel strong {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -3361,16 +3371,8 @@ button {
 
 .screen-strike-channel strong {
   color: #f8fdff;
-  font-size: 0.72em;
+  font-size: 0.7em;
   font-weight: 900;
-}
-
-.screen-strike-channel em {
-  color: rgba(202, 225, 230, 0.58);
-  font-family: var(--font-mono);
-  font-size: 0.58em;
-  font-style: normal;
-  font-weight: 850;
 }
 
 .screen-strike-channel--checked {
@@ -3396,7 +3398,7 @@ button {
   gap: 0.5em;
   border: 1px solid rgba(168, 191, 203, 0.14);
   border-radius: var(--screen-panel-radius-xs);
-  padding: 0.48em 0.58em;
+  padding: 0.38em 0.5em;
   background: rgba(2, 8, 14, 0.34);
 }
 
@@ -3423,13 +3425,13 @@ button {
 .screen-strike-duration-presets {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.34em;
+  gap: 0.28em;
 }
 
 .screen-strike-duration-preset {
   display: grid;
   min-width: 0;
-  min-height: 2.72em;
+  min-height: 2.18em;
   place-items: center;
   border: 1px solid rgba(168, 191, 203, 0.16);
   border-radius: var(--screen-panel-radius-xs);
@@ -3472,19 +3474,19 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.48em;
+  gap: 0.38em;
 }
 
 .screen-strike-action {
   display: inline-flex;
   min-width: 0;
-  min-height: 2.55em;
+  min-height: 2.26em;
   align-items: center;
   justify-content: center;
   gap: 0.38em;
   border: 1px solid rgba(244, 201, 93, 0.38);
   border-radius: var(--screen-panel-radius-xs);
-  padding: 0 0.78em;
+  padding: 0 0.66em;
   color: #06131f;
   background: linear-gradient(180deg, #ffe58d, #f4c95d);
   font-size: 0.76em;
@@ -3561,7 +3563,7 @@ button {
   }
 
   .screen-strike-panel {
-    width: min(30em, 28vw);
+    width: min(25em, 25vw);
   }
 }
 
@@ -3572,7 +3574,7 @@ button {
   }
 
   .screen-strike-panel {
-    width: min(29em, 38vw);
+    width: min(25em, 34vw);
   }
 }
 
@@ -3583,7 +3585,7 @@ button {
   }
 
   .screen-strike-panel {
-    width: min(27em, 34vw);
+    width: min(24em, 32vw);
   }
 }
 
@@ -3647,9 +3649,8 @@ button {
 
   .screen-strike-panel {
     bottom: var(--screen-strike-panel-bottom);
-    width: min(23em, calc(100% - 1.1em));
+    width: min(21.5em, calc(100% - 1.1em));
     min-width: 0;
-    max-height: calc(100vh - var(--screen-content-top) - var(--screen-bottom-panel-height) - 1.25em);
   }
 
   .screen-strike-panel__inner {
@@ -4684,7 +4685,7 @@ button.screen-position-card__point {
   padding: 0.42em 0.52em;
 }
 
-.screen-license-grid {
+.screen-info-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.46em;
@@ -4715,14 +4716,6 @@ button.screen-position-card__point {
   line-height: 1.32;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.screen-license-status {
-  color: #ffb4a8;
-}
-
-.screen-license-status--valid {
-  color: #9df7c2;
 }
 
 .screen-settings-channel-labels {

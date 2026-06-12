@@ -3,23 +3,6 @@ export interface GeoPoint {
   longitude: number;
 }
 
-export interface LicenseInfo {
-  deviceSn?: string;
-  customer?: string;
-  issuedAt?: string;
-  expiresAt?: string;
-  isPermanent: boolean;
-  remainingDays?: number;
-  valid: boolean;
-  code?: string;
-  message?: string;
-}
-
-export interface LicenseUploadResponse {
-  license: LicenseInfo;
-  message: string;
-}
-
 export interface OfflineMapStatus {
   available: boolean;
   tileCount: number;
@@ -45,9 +28,19 @@ export interface TCPListenerStatus {
   updatedAt?: string;
 }
 
+export interface TCPClientStatus {
+  address: string;
+  host: string;
+  port: number;
+  connected: boolean;
+  connectError?: string;
+  updatedAt?: string;
+}
+
 export interface ScreenRuntimeStatus {
   position: TCPListenerStatus;
   fpv: TCPListenerStatus;
+  interference: TCPClientStatus;
   deviceTargetAddress: string;
   fpvVideo: FPVVideoStatus;
 }
@@ -263,10 +256,10 @@ export interface FPVVideoRecordDeleteResponse {
   deleted: number;
 }
 
-export interface GpioChannel {
+export interface InterferenceChannel {
   id: string;
   label: string;
-  pin: number;
+  output: number;
   bands: string[];
   reserved: boolean;
   enabled: boolean;
@@ -288,8 +281,7 @@ export interface ScreenStrikeState {
   durationSeconds: number;
   remainingSeconds: number;
   startedAt?: string;
-  endsAt?: string;
-  channels: GpioChannel[];
+  channels: InterferenceChannel[];
 }
 
 export interface ScreenStrikeResponse {
@@ -308,7 +300,7 @@ export interface InterferenceReportSummary {
   requestedDurationSeconds?: number;
   channelIds?: string[];
   channelLabels?: string[];
-  channelPins?: number[];
+  channelOutputs?: number[];
   summary?: string;
   lastError?: string;
   abnormalReason?: string;
@@ -325,7 +317,7 @@ export interface InterferenceReport {
   requestedDurationSeconds?: number;
   channelIds?: string[];
   channelLabels?: string[];
-  channelPins?: number[];
+  channelOutputs?: number[];
   summary?: string;
   lastError?: string;
   abnormalReason?: string;

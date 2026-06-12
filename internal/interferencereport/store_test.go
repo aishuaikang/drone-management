@@ -25,7 +25,7 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 			RequestedDurationSeconds: 10,
 			ChannelIDs:               []string{"io1"},
 			ChannelLabels:            []string{"433M"},
-			ChannelPins:              []int{2},
+			ChannelOutputs:           []int{2},
 		},
 		Request: model.ScreenStrikeRequest{
 			Enabled:         true,
@@ -47,8 +47,8 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 			RequestedDurationSeconds: 10,
 			ChannelIDs:               []string{"io2"},
 			ChannelLabels:            []string{"1.2G"},
-			ChannelPins:              []int{3},
-			LastError:                "gpio failed",
+			ChannelOutputs:           []int{3},
+			LastError:                "relay failed",
 		},
 		Request: model.ScreenStrikeRequest{
 			Enabled:         true,

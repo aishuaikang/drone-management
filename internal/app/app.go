@@ -15,7 +15,6 @@ import (
 	"dr600ab-net/internal/interference"
 	"dr600ab-net/internal/interferencereport"
 	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/license"
 	"dr600ab-net/internal/model"
 	"dr600ab-net/internal/offlinemap"
 	"dr600ab-net/internal/position"
@@ -72,13 +71,9 @@ func New(cfg config.Config) (*App, error) {
 	if _, err := interferenceReportStore.CloseRunning("service_restarted", time.Now()); err != nil {
 		slog.Warn("闭合运行中干扰报告失败", "error", err)
 	}
-	interferenceSvc := interference.NewService(state, nil, nil)
+	interferenceSvc := newInterferenceService(cfg, state)
 	interferenceSvc.SetReportStore(interferenceReportStore)
 	interferenceSvc.SetUserSettingsStore(userSettings)
-	licenseSvc := license.NewService(cfg.LicensePath, func() (string, error) {
-		return cfg.DeviceSN, nil
-	})
-	licenseSvc.Refresh()
 	offlineMapSvc := offlinemap.NewService(cfg.OfflineMapPath)
 
 	positionSvc := position.NewService(state, position.Options{
@@ -133,7 +128,6 @@ func New(cfg config.Config) (*App, error) {
 			httpapi.WithFPVVideoRecordStore(fpvRecordStore),
 			httpapi.WithInterferenceService(interferenceSvc),
 			httpapi.WithInterferenceReportStore(interferenceReportStore),
-			httpapi.WithLicenseService(licenseSvc),
 			httpapi.WithOfflineMapService(offlineMapSvc),
 		),
 		intrusions:          intrusionStore,
@@ -143,6 +137,22 @@ func New(cfg config.Config) (*App, error) {
 		cancel:              cancel,
 		done:                done,
 	}, nil
+}
+
+func newInterferenceService(cfg config.Config, state *store.Store) *interference.Service {
+	relay := interference.NewRelayController(interference.RelayOptions{
+		Host:    cfg.InterferenceRelay.Host,
+		Port:    cfg.InterferenceRelay.Port,
+		Address: cfg.InterferenceRelay.Address,
+		Timeout: cfg.InterferenceRelay.Timeout,
+	})
+	service := interference.NewService(
+		state,
+		interference.DefaultChannels(),
+		relay.Output,
+	)
+	service.SetConnectionStatusProvider(relay.Status)
+	return service
 }
 
 func configWithUserTCPPorts(cfg config.Config, userSettings model.UserSettings) config.Config {

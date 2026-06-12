@@ -24,7 +24,7 @@ import (
 const defaultQueryLimit = 200
 
 var (
-	defaultInterferenceBandLabelsByID, defaultInterferenceBandLabelsByGPIO = defaultInterferenceBandMaps()
+	defaultInterferenceBandLabelsByID, defaultInterferenceBandLabelsByOutput = defaultInterferenceBandMaps()
 )
 
 // QueryOptions controls interference report listing.
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS interference_reports (
 	requested_duration_seconds INTEGER NOT NULL DEFAULT 0,
 	channel_ids_json TEXT,
 	channel_labels_json TEXT,
-	channel_pins_json TEXT,
+	channel_outputs_json TEXT,
 	summary TEXT NOT NULL DEFAULT '',
 	last_error TEXT NOT NULL DEFAULT '',
 	abnormal_reason TEXT NOT NULL DEFAULT '',
@@ -103,6 +103,37 @@ CREATE INDEX IF NOT EXISTS idx_interference_reports_started_at ON interference_r
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize interference report database: %w", err)
+	}
+	if err := ensureTextColumn(ctx, s.db, "interference_reports", "channel_outputs_json"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureTextColumn(ctx context.Context, db *sql.DB, table string, column string) error {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read %s schema: %w", table, err)
+	}
+	if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s TEXT", table, column)); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }
@@ -159,7 +190,7 @@ func (s *Store) Update(report model.InterferenceReport) error {
 	result, err := s.db.Exec(
 		`UPDATE interference_reports SET
 			status = ?, started_at = ?, ended_at = ?, duration_seconds = ?, requested_duration_seconds = ?,
-			channel_ids_json = ?, channel_labels_json = ?, channel_pins_json = ?, summary = ?, last_error = ?,
+			channel_ids_json = ?, channel_labels_json = ?, channel_outputs_json = ?, summary = ?, last_error = ?,
 			abnormal_reason = ?, request_json = ?, start_state_json = ?, end_state_json = ?, updated_at = ?
 		WHERE id = ?`,
 		string(report.Status),
@@ -169,7 +200,7 @@ func (s *Store) Update(report model.InterferenceReport) error {
 		report.RequestedDurationSeconds,
 		jsonString(report.ChannelIDs),
 		jsonString(report.ChannelLabels),
-		jsonString(report.ChannelPins),
+		jsonString(report.ChannelOutputs),
 		report.Summary,
 		report.LastError,
 		report.AbnormalReason,
@@ -196,7 +227,7 @@ func (s *Store) insert(report model.InterferenceReport) error {
 	_, err := s.db.Exec(
 		`INSERT INTO interference_reports (
 			id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
-			channel_ids_json, channel_labels_json, channel_pins_json, summary, last_error,
+			channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 			abnormal_reason, request_json, start_state_json, end_state_json, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		report.ID,
@@ -207,7 +238,7 @@ func (s *Store) insert(report model.InterferenceReport) error {
 		report.RequestedDurationSeconds,
 		jsonString(report.ChannelIDs),
 		jsonString(report.ChannelLabels),
-		jsonString(report.ChannelPins),
+		jsonString(report.ChannelOutputs),
 		report.Summary,
 		report.LastError,
 		report.AbnormalReason,
@@ -239,7 +270,7 @@ func (s *Store) List(ctx context.Context, options QueryOptions) ([]model.Interfe
 	args := []any{}
 	query := `SELECT
 		id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
-		channel_ids_json, channel_labels_json, channel_pins_json, summary, last_error,
+		channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 		abnormal_reason, created_at, updated_at
 		FROM interference_reports`
 	if options.Status != "" {
@@ -280,7 +311,7 @@ func (s *Store) Get(ctx context.Context, id string) (model.InterferenceReport, b
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT
 		id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
-		channel_ids_json, channel_labels_json, channel_pins_json, summary, last_error,
+		channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 		abnormal_reason, request_json, start_state_json, end_state_json, created_at, updated_at
 		FROM interference_reports WHERE id = ?`, id)
 	report, err := scanReport(row)
@@ -381,7 +412,7 @@ func scanSummary(rows *sql.Rows) (model.InterferenceReportSummary, error) {
 	var summary model.InterferenceReportSummary
 	var status, startedAt, createdAt, updatedAt string
 	var endedAt sql.NullString
-	var channelIDsJSON, channelLabelsJSON, channelPinsJSON sql.NullString
+	var channelIDsJSON, channelLabelsJSON, channelOutputsJSON sql.NullString
 	err := rows.Scan(
 		&summary.ID,
 		&status,
@@ -391,7 +422,7 @@ func scanSummary(rows *sql.Rows) (model.InterferenceReportSummary, error) {
 		&summary.RequestedDurationSeconds,
 		&channelIDsJSON,
 		&channelLabelsJSON,
-		&channelPinsJSON,
+		&channelOutputsJSON,
 		&summary.Summary,
 		&summary.LastError,
 		&summary.AbnormalReason,
@@ -401,7 +432,7 @@ func scanSummary(rows *sql.Rows) (model.InterferenceReportSummary, error) {
 	if err != nil {
 		return model.InterferenceReportSummary{}, fmt.Errorf("scan interference report summary: %w", err)
 	}
-	fillSummary(&summary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelPinsJSON)
+	fillSummary(&summary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
 	return summary, nil
 }
 
@@ -413,7 +444,7 @@ func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 	var report model.InterferenceReport
 	var status, startedAt, createdAt, updatedAt string
 	var endedAt sql.NullString
-	var channelIDsJSON, channelLabelsJSON, channelPinsJSON sql.NullString
+	var channelIDsJSON, channelLabelsJSON, channelOutputsJSON sql.NullString
 	var requestJSON, startStateJSON, endStateJSON sql.NullString
 	err := scanner.Scan(
 		&report.ID,
@@ -424,7 +455,7 @@ func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 		&report.RequestedDurationSeconds,
 		&channelIDsJSON,
 		&channelLabelsJSON,
-		&channelPinsJSON,
+		&channelOutputsJSON,
 		&report.Summary,
 		&report.LastError,
 		&report.AbnormalReason,
@@ -440,7 +471,7 @@ func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 		}
 		return model.InterferenceReport{}, fmt.Errorf("scan interference report: %w", err)
 	}
-	fillSummary(&report.InterferenceReportSummary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelPinsJSON)
+	fillSummary(&report.InterferenceReportSummary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
 	report.Request = decodeJSONValue[model.ScreenStrikeRequest](requestJSON)
 	report.StartState = decodeJSONPtr[model.ScreenStrikeState](startStateJSON)
 	report.EndState = decodeJSONPtr[model.ScreenStrikeState](endStateJSON)
@@ -457,7 +488,7 @@ func fillSummary(
 	updatedAt string,
 	channelIDsJSON sql.NullString,
 	channelLabelsJSON sql.NullString,
-	channelPinsJSON sql.NullString,
+	channelOutputsJSON sql.NullString,
 ) {
 	summary.Status = model.InterferenceReportStatus(status)
 	summary.StartedAt = parseStoredTime(startedAt)
@@ -466,7 +497,7 @@ func fillSummary(
 	summary.UpdatedAt = parseStoredTime(updatedAt)
 	summary.ChannelIDs = decodeJSONSlice[string](channelIDsJSON)
 	summary.ChannelLabels = decodeJSONSlice[string](channelLabelsJSON)
-	summary.ChannelPins = decodeJSONSlice[int](channelPinsJSON)
+	summary.ChannelOutputs = decodeJSONSlice[int](channelOutputsJSON)
 	summary.ChannelLabels = normalizeInterferenceBandLabels(summary.ChannelIDs, summary.ChannelLabels)
 }
 
@@ -484,13 +515,13 @@ func normalizeReportSummary(report model.InterferenceReport) model.InterferenceR
 		if len(report.ChannelIDs) == 0 {
 			report.ChannelIDs = append([]string{}, report.StartState.ChannelIDs...)
 		}
-		if len(report.ChannelLabels) == 0 || len(report.ChannelPins) == 0 {
-			labels, pins := strikeChannelMetadata(report.StartState.Channels, report.ChannelIDs)
+		if len(report.ChannelLabels) == 0 || len(report.ChannelOutputs) == 0 {
+			labels, outputs := strikeChannelMetadata(report.StartState.Channels, report.ChannelIDs)
 			if len(report.ChannelLabels) == 0 {
 				report.ChannelLabels = labels
 			}
-			if len(report.ChannelPins) == 0 {
-				report.ChannelPins = pins
+			if len(report.ChannelOutputs) == 0 {
+				report.ChannelOutputs = outputs
 			}
 		}
 	}
@@ -498,16 +529,16 @@ func normalizeReportSummary(report model.InterferenceReport) model.InterferenceR
 	return report
 }
 
-func strikeChannelMetadata(channels []model.GpioChannel, ids []string) ([]string, []int) {
+func strikeChannelMetadata(channels []model.InterferenceChannel, ids []string) ([]string, []int) {
 	if len(ids) == 0 {
 		return []string{}, []int{}
 	}
-	byID := make(map[string]model.GpioChannel, len(channels))
+	byID := make(map[string]model.InterferenceChannel, len(channels))
 	for _, channel := range channels {
 		byID[channel.ID] = channel
 	}
 	labels := make([]string, 0, len(ids))
-	pins := make([]int, 0, len(ids))
+	outputs := make([]int, 0, len(ids))
 	for _, id := range ids {
 		channel, ok := byID[id]
 		if !ok {
@@ -518,9 +549,9 @@ func strikeChannelMetadata(channels []model.GpioChannel, ids []string) ([]string
 			label = defaultInterferenceBandLabel(id, channel.Label)
 		}
 		labels = append(labels, label)
-		pins = append(pins, channel.Pin)
+		outputs = append(outputs, channel.Output)
 	}
-	return labels, pins
+	return labels, outputs
 }
 
 func normalizeInterferenceBandLabels(ids []string, labels []string) []string {
@@ -563,29 +594,27 @@ func normalizeInterferenceBandLabels(ids []string, labels []string) []string {
 func defaultInterferenceBandLabel(id string, label string) string {
 	label = strings.TrimSpace(label)
 	if label != "" {
-		return defaultInterferenceBandLabelsByGPIO[label]
+		return defaultInterferenceBandLabelsByOutput[label]
 	}
 	return defaultInterferenceBandLabelsByID[strings.TrimSpace(id)]
 }
 
 func defaultInterferenceBandMaps() (map[string]string, map[string]string) {
 	byID := map[string]string{
-		"io1": "433M/800M/900M/1.4G",
-		"io2": "1.2G/1.5G",
-		"io3": "2.4G/5.2G/5.8G",
+		"io1": "433M",
+		"io2": "915M",
+		"io3": "1.2G",
+		"io4": "1.4G",
+		"io5": "1.5G",
+		"io6": "2.4G",
+		"io7": "5.2G",
+		"io8": "5.8G",
 	}
-	byGPIO := map[string]string{
-		"IO2":    byID["io1"],
-		"IO3":    byID["io2"],
-		"IO1":    byID["io3"],
-		"IOC4":   byID["io1"],
-		"IOC2":   byID["io2"],
-		"IOC3":   byID["io3"],
-		"GPIO20": byID["io1"],
-		"GPIO18": byID["io2"],
-		"GPIO19": byID["io3"],
+	byOutput := make(map[string]string, len(byID))
+	for index := 1; index <= len(byID); index++ {
+		byOutput[fmt.Sprintf("Y%d", index)] = byID[fmt.Sprintf("io%d", index)]
 	}
-	return byID, byGPIO
+	return byID, byOutput
 }
 
 func formatStrikeBands(bands []string) string {

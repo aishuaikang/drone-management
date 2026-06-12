@@ -29,11 +29,19 @@ type Config struct {
 	InterferenceReportDBPath string
 	FPVVideoRecordDBPath     string
 	UserSettingsPath         string
-	LicensePath              string
 	OfflineMapPath           string
 	OfflineMapUploadMaxBytes int64
+	InterferenceRelay        InterferenceRelayConfig
 	FPVVideo                 FPVVideoConfig
 	O3Decrypt                O3DecryptConfig
+}
+
+// InterferenceRelayConfig configures the network relay used for interference output.
+type InterferenceRelayConfig struct {
+	Host    string
+	Port    int
+	Address int
+	Timeout time.Duration
 }
 
 // FPVVideoConfig configures browser playback for the FPV RTSP stream.
@@ -82,9 +90,14 @@ func Load() Config {
 		InterferenceReportDBPath: envString("API_INTERFERENCE_REPORT_DB_PATH", "./data/interference-reports.db"),
 		FPVVideoRecordDBPath:     envString("API_FPV_VIDEO_RECORD_DB_PATH", "./data/fpv-videos.db"),
 		UserSettingsPath:         envString("API_USER_SETTINGS_PATH", "./data/user-settings.json"),
-		LicensePath:              envString("API_LICENSE_PATH", "./license.lic"),
 		OfflineMapPath:           envString("API_OFFLINE_MAP_PATH", "./static/map"),
 		OfflineMapUploadMaxBytes: int64(envInt("API_OFFLINE_MAP_UPLOAD_MAX_MB", 2048)) * 1024 * 1024,
+		InterferenceRelay: InterferenceRelayConfig{
+			Host:    envString("API_INTERFERENCE_RELAY_HOST", "192.168.100.107"),
+			Port:    envInt("API_INTERFERENCE_RELAY_PORT", 1030),
+			Address: envInt("API_INTERFERENCE_RELAY_ADDRESS", 1),
+			Timeout: time.Duration(envInt("API_INTERFERENCE_RELAY_TIMEOUT_MS", 1000)) * time.Millisecond,
+		},
 		FPVVideo: FPVVideoConfig{
 			RTSPURL:          envString("API_FPV_VIDEO_RTSP_URL", "rtsp://192.168.100.106:554/live/1_1"),
 			MediaMTXPath:     envString("API_FPV_VIDEO_MEDIAMTX_PATH", "./MediaMTX"),

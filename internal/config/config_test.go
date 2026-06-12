@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadFPVVideoConfig(t *testing.T) {
 	t.Setenv("API_FPV_VIDEO_RTSP_URL", "rtsp://192.168.100.200:554/live/1_1")
@@ -59,9 +62,8 @@ func TestLoadFPVVideoConfig(t *testing.T) {
 	}
 }
 
-func TestLoadLicenseAndOfflineMapConfig(t *testing.T) {
+func TestLoadDeviceAndOfflineMapConfig(t *testing.T) {
 	t.Setenv("API_DEVICE_SN", "SL67CB3FC848FA0E795P")
-	t.Setenv("API_LICENSE_PATH", "/var/lib/dr600ab/license.lic")
 	t.Setenv("API_OFFLINE_MAP_PATH", "/var/lib/dr600ab/static/map")
 	t.Setenv("API_OFFLINE_MAP_UPLOAD_MAX_MB", "32")
 
@@ -69,13 +71,31 @@ func TestLoadLicenseAndOfflineMapConfig(t *testing.T) {
 	if cfg.DeviceSN != "SL67CB3FC848FA0E795P" {
 		t.Fatalf("device sn = %q", cfg.DeviceSN)
 	}
-	if cfg.LicensePath != "/var/lib/dr600ab/license.lic" {
-		t.Fatalf("license path = %q", cfg.LicensePath)
-	}
 	if cfg.OfflineMapPath != "/var/lib/dr600ab/static/map" {
 		t.Fatalf("offline map path = %q", cfg.OfflineMapPath)
 	}
 	if cfg.OfflineMapUploadMaxBytes != 32*1024*1024 {
 		t.Fatalf("upload max bytes = %d", cfg.OfflineMapUploadMaxBytes)
+	}
+}
+
+func TestLoadInterferenceRelayConfig(t *testing.T) {
+	t.Setenv("API_INTERFERENCE_RELAY_HOST", "192.168.1.210")
+	t.Setenv("API_INTERFERENCE_RELAY_PORT", "2030")
+	t.Setenv("API_INTERFERENCE_RELAY_ADDRESS", "2")
+	t.Setenv("API_INTERFERENCE_RELAY_TIMEOUT_MS", "1500")
+
+	cfg := Load()
+	if cfg.InterferenceRelay.Host != "192.168.1.210" {
+		t.Fatalf("relay host = %q", cfg.InterferenceRelay.Host)
+	}
+	if cfg.InterferenceRelay.Port != 2030 {
+		t.Fatalf("relay port = %d", cfg.InterferenceRelay.Port)
+	}
+	if cfg.InterferenceRelay.Address != 2 {
+		t.Fatalf("relay address = %d", cfg.InterferenceRelay.Address)
+	}
+	if cfg.InterferenceRelay.Timeout != 1500*time.Millisecond {
+		t.Fatalf("relay timeout = %s", cfg.InterferenceRelay.Timeout)
 	}
 }

@@ -11,8 +11,6 @@ import type {
   IntrusionDeleteRequest,
   IntrusionDeleteResponse,
   IntrusionRecord,
-  LicenseInfo,
-  LicenseUploadResponse,
   ListResponse,
   OfflineMapStatus,
   OfflineMapUploadResponse,
@@ -166,16 +164,6 @@ export function clearManualDeviceLocation() {
   return requestJson<ScreenDeviceLocationResponse>("/screen/device-location/manual", {
     method: "DELETE",
   });
-}
-
-export function getLicenseStatus() {
-  return requestJson<LicenseInfo>("/license/status");
-}
-
-export function uploadLicense(file: File) {
-  const form = new FormData();
-  form.set("file", file);
-  return requestFormJson<LicenseUploadResponse>("/license/upload", form);
 }
 
 export function getOfflineMapStatus() {

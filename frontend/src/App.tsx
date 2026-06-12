@@ -9,7 +9,6 @@ import {
   LocateFixed,
   Download,
   Edit3,
-  FileKey2,
   Globe2,
   HardDriveUpload,
   Info,
@@ -55,7 +54,6 @@ import {
   getInterferenceReports,
   deleteIntrusions,
   getIntrusions,
-  getLicenseStatus,
   getOfflineMapStatus,
   getScreenDeviceLocation,
   getScreenFPV,
@@ -68,7 +66,6 @@ import {
   setManualDeviceLocation,
   updateScreenTCPPorts,
   updateScreenStrike,
-  uploadLicense,
   uploadOfflineMap,
   updateUserSettings,
 } from "./api";
@@ -91,11 +88,10 @@ import uavIconUrl from "./assets/images/uavIcon.svg";
 import type {
   GeoPoint,
   FPVVideoRecord,
-  GpioChannel,
+  InterferenceChannel,
   InterferenceReportStatus,
   InterferenceReportSummary,
   IntrusionRecord,
-  LicenseInfo,
   OfflineMapStatus,
   ScreenDeviceLocationResponse,
   ScreenFPVTarget,
@@ -104,6 +100,7 @@ import type {
   ScreenPositionTrackPoint,
   ScreenRuntimeStatus,
   ScreenStrikeState,
+  TCPClientStatus,
   TCPListenerStatus,
   UserSettings,
   WarningZone,
@@ -114,7 +111,7 @@ import { installLeafletCoordConverter } from "./utils/leafletCoordConverter";
 
 type Locale = "zh-CN" | "en-US";
 type Tab = "positions" | "fpv";
-type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "license" | "offlineMap";
+type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "offlineMap";
 type CSVCell = string | number | null | undefined;
 type NavigationMapProvider = "amap" | "google";
 type NavigationCoordinateSystem = "WGS84" | "GCJ-02";
@@ -331,7 +328,6 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportsView: "干扰报告",
     whitelistView: "白名单",
     settingsView: "设置",
-    licenseView: "授权",
     offlineMapView: "离线地图",
     settingsTitle: "大屏设置",
     displaySettings: "显示设置",
@@ -350,25 +346,6 @@ const labels: Record<Locale, Record<string, string>> = {
     restoreDefault: "恢复默认",
     settingsSaved: "设置已保存",
     positionExpireInvalid: "请输入 1 到 3600 秒之间的数值",
-    licenseTitle: "License 授权",
-    licenseDescription: "上传与当前设备 SN 匹配的 .lic 授权文件后启用业务功能",
-    licenseStatus: "授权状态",
-    licenseValid: "已授权",
-    licenseInvalid: "未授权",
-    licenseDeviceSn: "设备 SN",
-    licenseCustomer: "客户",
-    licenseIssuedAt: "签发时间",
-    licenseExpiresAt: "到期时间",
-    licenseRemaining: "剩余时间",
-    licensePermanent: "永久",
-    licenseRemainingDays: "{count} 天",
-    licenseNoDeviceSn: "未配置设备 SN",
-    licenseUpload: "上传 License",
-    licenseFile: "授权文件",
-    licenseSelectFile: "选择 .lic 文件",
-    licenseUploadSuccess: "授权文件已上传并激活",
-    licenseUploadFailed: "授权上传失败",
-    licenseRequired: "请先完成 License 授权",
     offlineMapTitle: "离线地图上传",
     offlineMapDescription: "上传 ZIP 地图包并切换 /map/dt 瓦片目录",
     offlineMapStatus: "地图状态",
@@ -386,7 +363,7 @@ const labels: Record<Locale, Record<string, string>> = {
     offlineMapUploadFailed: "离线地图上传失败",
     screenStrikeSettings: "干扰设置",
     screenStrikeChannelLabels: "干扰频段标签",
-    screenStrikeChannelLabelsHint: "配置大屏干扰按钮和干扰报告里展示的三路频段名称。",
+    screenStrikeChannelLabelsHint: "配置大屏干扰按钮和干扰报告里展示的八路频段名称。",
     screenStrikeChannelLabel: "频段 {index}",
     strike: "干扰",
     operationPanel: "操作面板",
@@ -626,7 +603,6 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportsView: "Strike Reports",
     whitelistView: "Whitelist",
     settingsView: "Settings",
-    licenseView: "License",
     offlineMapView: "Offline Map",
     settingsTitle: "Screen Settings",
     displaySettings: "Display",
@@ -645,25 +621,6 @@ const labels: Record<Locale, Record<string, string>> = {
     restoreDefault: "Restore default",
     settingsSaved: "Settings saved",
     positionExpireInvalid: "Enter a value from 1 to 3600 seconds",
-    licenseTitle: "License Authorization",
-    licenseDescription: "Upload a .lic file matching the current device SN to enable protected features",
-    licenseStatus: "License status",
-    licenseValid: "Authorized",
-    licenseInvalid: "Unauthorized",
-    licenseDeviceSn: "Device SN",
-    licenseCustomer: "Customer",
-    licenseIssuedAt: "Issued at",
-    licenseExpiresAt: "Expires at",
-    licenseRemaining: "Remaining",
-    licensePermanent: "Permanent",
-    licenseRemainingDays: "{count} days",
-    licenseNoDeviceSn: "Device SN is not configured",
-    licenseUpload: "Upload license",
-    licenseFile: "License file",
-    licenseSelectFile: "Choose .lic file",
-    licenseUploadSuccess: "License uploaded and activated",
-    licenseUploadFailed: "License upload failed",
-    licenseRequired: "License authorization is required",
     offlineMapTitle: "Offline Map Upload",
     offlineMapDescription: "Upload a ZIP map package and switch the /map/dt tile directory",
     offlineMapStatus: "Map status",
@@ -681,7 +638,7 @@ const labels: Record<Locale, Record<string, string>> = {
     offlineMapUploadFailed: "Offline map upload failed",
     screenStrikeSettings: "Interference",
     screenStrikeChannelLabels: "Band labels",
-    screenStrikeChannelLabelsHint: "Configures the three band names shown in screen strike controls and reports.",
+    screenStrikeChannelLabelsHint: "Configures the eight band names shown in screen strike controls and reports.",
     screenStrikeChannelLabel: "Band {index}",
     strike: "Strike",
     operationPanel: "Operation",
@@ -822,9 +779,6 @@ export function App() {
   const [locale, setLocale] = useState<Locale>("zh-CN");
   const t = labels[locale];
   const [view, setView] = useState<View>("screen");
-  const [license, setLicense] = useState<LicenseInfo | null>(null);
-  const [licenseLoading, setLicenseLoading] = useState(true);
-  const [licenseBanner, setLicenseBanner] = useState("");
   const [status, setStatus] = useState<ScreenRuntimeStatus | null>(null);
   const [positions, setPositions] = useState<ScreenPositionTarget[]>([]);
   const [fpv, setFPV] = useState<ScreenFPVTarget[]>([]);
@@ -859,29 +813,12 @@ export function App() {
   const fpvVideoBusy = Boolean(status?.fpvVideo?.active && !ownsFPVVideoSession);
   const positionExpireSeconds = resolvePositionExpireSeconds(userSettings.positionExpireSeconds);
   const screenTitle = userSettings.screenTitle?.trim() || t.title;
-  const screenStrikeAvailable = hasAvailableScreenStrikeChannels(strikeState);
-  const licenseValid = license?.valid === true;
+  const [strikeStateSyncedAt, setStrikeStateSyncedAt] = useState(() => Date.now());
 
-  const refreshLicense = useCallback(async () => {
-    setLicenseLoading(true);
-    try {
-      const status = await getLicenseStatus();
-      setLicense(status);
-      if (status.valid) {
-        setLicenseBanner("");
-      } else if (status.message) {
-        setLicenseBanner(status.message);
-      }
-    } catch (error) {
-      setLicenseBanner(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLicenseLoading(false);
-    }
+  const syncStrikeState = useCallback((nextState: ScreenStrikeState) => {
+    setStrikeState(nextState);
+    setStrikeStateSyncedAt(Date.now());
   }, []);
-
-  useEffect(() => {
-    void refreshLicense();
-  }, [refreshLicense]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -889,15 +826,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!screenStrikeAvailable && view === "interferenceReports") {
-      setView("screen");
-    }
-  }, [screenStrikeAvailable, view]);
-
-  useEffect(() => {
-    if (!licenseValid) {
-      return;
-    }
     let cancelled = false;
     let syncing = false;
 
@@ -921,7 +849,7 @@ export function App() {
           setFPV(sortFPV(fpvRes.items));
           setDeviceLocation(locationRes);
           setUserSettings(resolveUserSettings(settingsRes));
-          setStrikeState(strikeRes);
+          syncStrikeState(strikeRes);
           setStreamError("");
         }
       } catch (error) {
@@ -939,12 +867,9 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [licenseValid]);
+  }, [syncStrikeState]);
 
   useEffect(() => {
-    if (!licenseValid) {
-      return;
-    }
     return openScreenStream({
       onPosition: (event) => {
         if (event.payload) {
@@ -971,12 +896,47 @@ export function App() {
       },
       onStrike: (event) => {
         if (event.payload) {
-          setStrikeState(event.payload);
+          syncStrikeState(event.payload);
         }
       },
       onError: (error) => setStreamError(error.message),
     });
-  }, [licenseValid]);
+  }, [syncStrikeState]);
+
+  useEffect(() => {
+    if (!strikeState?.active || view !== "screen") {
+      return;
+    }
+
+    let cancelled = false;
+    let syncing = false;
+
+    const syncStrike = async () => {
+      if (syncing) {
+        return;
+      }
+      syncing = true;
+      try {
+        const nextState = await getScreenStrike();
+        if (!cancelled) {
+          syncStrikeState(nextState);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setStreamError(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        syncing = false;
+      }
+    };
+
+    void syncStrike();
+    const timer = window.setInterval(() => void syncStrike(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [strikeState?.active, syncStrikeState, view]);
 
   const visiblePositions = useMemo(() => filterVisiblePositions(positions, now, positionExpireSeconds), [now, positionExpireSeconds, positions]);
   const selectedPosition = useMemo(
@@ -1141,11 +1101,6 @@ export function App() {
     return () => closeFPVVideoSessionStream();
   }, [closeFPVVideoSessionStream]);
 
-  const handleLicenseUploaded = useCallback((nextLicense: LicenseInfo) => {
-    setLicense(nextLicense);
-    setLicenseBanner(nextLicense.valid ? "" : nextLicense.message ?? t.licenseRequired);
-  }, [t.licenseRequired]);
-
   const updateNavigationQRCode = useCallback(async (label: string, point: ScreenPositionPoint) => {
     const requestId = navigationQRCodeRequestRef.current + 1;
     navigationQRCodeRequestRef.current = requestId;
@@ -1296,49 +1251,8 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleCloseManualLocation, manualLocationOpen]);
 
-  if (licenseLoading && license === null) {
-    return (
-      <main className="screen-shell">
-        <div className="screen-management-panel screen-management-panel--settings">
-          <div className="screen-management screen-management--settings">
-            <div className="screen-management__header">
-              <div className="screen-panel-title">
-                <span className="screen-panel-title__icon screen-panel-title__icon--target">
-                  <Loader2 className="app-spinner" aria-hidden="true" />
-                </span>
-                <span className="screen-panel-title__text">
-                  <em>{t.licenseView}</em>
-                  <strong>{t.loading}</strong>
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (!licenseValid) {
-    return (
-      <main className="screen-shell">
-        <div className="screen-management-panel screen-management-panel--settings">
-          <LicenseManagement
-            t={t}
-            locale={locale}
-            license={license}
-            loading={licenseLoading}
-            banner={licenseBanner}
-            onRefresh={refreshLicense}
-            onUploaded={handleLicenseUploaded}
-          />
-        </div>
-        <VirtualKeyboard locale={locale} localeOptions={virtualKeyboardLocaleOptions} labels={t} />
-      </main>
-    );
-  }
-
   return (
-    <main className={screenStrikeAvailable ? "screen-shell screen-shell--strike-available" : "screen-shell"}>
+    <main className="screen-shell screen-shell--strike-available">
       <ScreenMap
         positions={visiblePositions}
         selectedPosition={selectedPosition}
@@ -1371,7 +1285,7 @@ export function App() {
           <h1 title={screenTitle}>{screenTitle}</h1>
         </div>
         <div className="screen-header__right">
-          <ViewSwitch view={view} t={t} strikeAvailable={screenStrikeAvailable} onViewChange={setView} />
+          <ViewSwitch view={view} t={t} onViewChange={setView} />
           <div
             className={languageOpen ? "screen-language-switch screen-language-switch--open" : "screen-language-switch"}
             onBlur={(event) => {
@@ -1423,18 +1337,18 @@ export function App() {
 
       {view === "screen" ? (
       <>
-      {screenStrikeAvailable ? (
-        <ScreenStrikePanel
-          state={strikeState}
-          now={now}
-          locale={locale}
-          userSettings={userSettings}
-          collapsed={strikeCollapsed}
-          t={t}
-          onStateChange={setStrikeState}
-          onToggleCollapsed={() => setStrikeCollapsed((value) => !value)}
-        />
-      ) : null}
+      <ScreenStrikePanel
+        state={strikeState}
+        stateSyncedAt={strikeStateSyncedAt}
+        connectionStatus={status?.interference}
+        now={now}
+        locale={locale}
+        userSettings={userSettings}
+        collapsed={strikeCollapsed}
+        t={t}
+        onStateChange={syncStrikeState}
+        onToggleCollapsed={() => setStrikeCollapsed((value) => !value)}
+      />
       <aside
         className={rightCollapsed ? "screen-right-panel screen-right-panel--collapsed screen-right-panel--show-toggle" : "screen-right-panel screen-right-panel--show-toggle"}
       >
@@ -1577,14 +1491,8 @@ export function App() {
             locale={locale}
             userSettings={userSettings}
             status={status}
-            license={license}
-            licenseLoading={licenseLoading}
-            licenseBanner={licenseBanner}
-            screenStrikeAvailable={screenStrikeAvailable}
             defaultScreenTitle={t.title}
             onStatusChange={setStatus}
-            onRefreshLicense={refreshLicense}
-            onLicenseUploaded={handleLicenseUploaded}
             onSaveUserSettings={saveUserSettings}
           />
       )}
@@ -2030,22 +1938,19 @@ function ScreenMapLegend({ t }: { t: Record<string, string> }) {
 function ViewSwitch({
   view,
   t,
-  strikeAvailable,
   onViewChange,
 }: {
   view: View;
   t: Record<string, string>;
-  strikeAvailable: boolean;
   onViewChange: (view: View) => void;
 }) {
   const items: Array<{ id: View; label: string; icon: ReactNode; hidden?: boolean }> = [
     { id: "screen", label: t.screenView, icon: <Satellite size={14} aria-hidden="true" /> },
     { id: "intrusions", label: t.intrusionsView, icon: <ListFilter size={14} aria-hidden="true" /> },
     { id: "fpvRecords", label: t.fpvRecordsView, icon: <FileVideo size={14} aria-hidden="true" /> },
-    { id: "interferenceReports", label: t.interferenceReportsView, icon: <Zap size={14} aria-hidden="true" />, hidden: !strikeAvailable },
+    { id: "interferenceReports", label: t.interferenceReportsView, icon: <Zap size={14} aria-hidden="true" /> },
     { id: "whitelist", label: t.whitelistView, icon: <ShieldCheck size={14} aria-hidden="true" /> },
     { id: "offlineMap", label: t.offlineMapView, icon: <HardDriveUpload size={14} aria-hidden="true" /> },
-    { id: "license", label: t.licenseView, icon: <FileKey2 size={14} aria-hidden="true" /> },
     { id: "settings", label: t.settingsView, icon: <Settings size={14} aria-hidden="true" /> },
   ];
   return (
@@ -2106,6 +2011,8 @@ function ScreenAlarmBanner({
 
 function ScreenStrikePanel({
   state,
+  stateSyncedAt,
+  connectionStatus,
   now,
   locale,
   userSettings,
@@ -2115,6 +2022,8 @@ function ScreenStrikePanel({
   onToggleCollapsed,
 }: {
   state: ScreenStrikeState | null;
+  stateSyncedAt: number;
+  connectionStatus?: TCPClientStatus;
   now: Date;
   locale: Locale;
   userSettings: UserSettings;
@@ -2136,7 +2045,7 @@ function ScreenStrikePanel({
   const durationValid = Number.isFinite(durationNumber) &&
     durationNumber >= screenStrikeMinDurationSeconds &&
     durationNumber <= screenStrikeMaxDurationSeconds;
-  const remainingSeconds = getStrikeRemainingSeconds(state, now);
+  const remainingSeconds = getStrikeRemainingSeconds(state, now, stateSyncedAt);
   const selectedCount = active ? state?.channelIds.length ?? 0 : selectedChannelIds.length;
   const startDisabled = busy || active || selectedChannelIds.length === 0 || !durationValid;
   const stopDisabled = busy || !active;
@@ -2215,9 +2124,12 @@ function ScreenStrikePanel({
               <strong>{t.strike}</strong>
             </span>
           </div>
-          <strong className={active ? "screen-strike-panel__status screen-strike-panel__status--active" : "screen-strike-panel__status"}>
-            {active ? formatCountdown(remainingSeconds) : selectedCount.toLocaleString(locale)}
-          </strong>
+          <div className="screen-strike-panel__indicators">
+            <TCPClientStatusDot status={connectionStatus} />
+            <strong className={active ? "screen-strike-panel__status screen-strike-panel__status--active" : "screen-strike-panel__status"}>
+              {active ? formatCountdown(remainingSeconds) : selectedCount.toLocaleString(locale)}
+            </strong>
+          </div>
         </div>
 
         <div className="screen-strike-panel__body">
@@ -2238,7 +2150,6 @@ function ScreenStrikePanel({
                   />
                   <span aria-hidden="true" />
                   <strong>{formatStrikeChannelLabel(channel, index, strikeChannelLabels)}</strong>
-                  <em>{channel.label}</em>
                 </label>
               );
             }) : <EmptyState icon={<Zap aria-hidden="true" />} text={t.waiting} />}
@@ -2309,14 +2220,8 @@ function ManagementView({
   locale,
   userSettings,
   status,
-  license,
-  licenseLoading,
-  licenseBanner,
-  screenStrikeAvailable,
   defaultScreenTitle,
   onStatusChange,
-  onRefreshLicense,
-  onLicenseUploaded,
   onSaveUserSettings,
 }: {
   view: Exclude<View, "screen">;
@@ -2324,14 +2229,8 @@ function ManagementView({
   locale: Locale;
   userSettings: UserSettings;
   status: ScreenRuntimeStatus | null;
-  license: LicenseInfo | null;
-  licenseLoading: boolean;
-  licenseBanner: string;
-  screenStrikeAvailable: boolean;
   defaultScreenTitle: string;
   onStatusChange: (status: ScreenRuntimeStatus) => void;
-  onRefreshLicense: () => Promise<void>;
-  onLicenseUploaded: (license: LicenseInfo) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
 }) {
   return (
@@ -2347,20 +2246,9 @@ function ManagementView({
           t={t}
           userSettings={userSettings}
           status={status}
-          screenStrikeAvailable={screenStrikeAvailable}
           defaultScreenTitle={defaultScreenTitle}
           onStatusChange={onStatusChange}
           onSaveUserSettings={onSaveUserSettings}
-        />
-      ) : view === "license" ? (
-        <LicenseManagement
-          t={t}
-          locale={locale}
-          license={license}
-          loading={licenseLoading}
-          banner={licenseBanner}
-          onRefresh={onRefreshLicense}
-          onUploaded={onLicenseUploaded}
         />
       ) : view === "offlineMap" ? (
         <OfflineMapManagement t={t} locale={locale} />
@@ -2368,128 +2256,6 @@ function ManagementView({
         <WhitelistManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
       )}
     </section>
-  );
-}
-
-function LicenseManagement({
-  t,
-  locale,
-  license,
-  loading,
-  banner,
-  onRefresh,
-  onUploaded,
-}: {
-  t: Record<string, string>;
-  locale: Locale;
-  license: LicenseInfo | null;
-  loading: boolean;
-  banner: string;
-  onRefresh: () => Promise<void>;
-  onUploaded: (license: LicenseInfo) => void;
-}) {
-  const [file, setFile] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const currentMessage = message || banner || (!license?.valid ? license?.message ?? "" : "");
-  const statusClass = license?.valid ? "screen-license-status screen-license-status--valid" : "screen-license-status";
-
-  const submit = async () => {
-    if (!file || busy) {
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    try {
-      const response = await uploadLicense(file);
-      onUploaded(response.license);
-      setMessage(response.message || t.licenseUploadSuccess);
-      setFile(null);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : t.licenseUploadFailed);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="screen-management screen-management--settings">
-      <div className="screen-management__header">
-        <div className="screen-panel-title">
-          <span className="screen-panel-title__icon screen-panel-title__icon--target">
-            <FileKey2 aria-hidden="true" />
-          </span>
-          <span className="screen-panel-title__text">
-            <em>{t.licenseView}</em>
-            <strong>{t.licenseTitle}</strong>
-          </span>
-        </div>
-        <button type="button" onClick={() => void onRefresh()} disabled={loading || busy}>
-          {loading ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
-          <span>{t.refresh}</span>
-        </button>
-      </div>
-
-      <div className="screen-settings-grid">
-        <section className="screen-settings-section screen-settings-section--display">
-          <header>
-            <span className="screen-settings-section__icon">
-              <ShieldCheck size={15} aria-hidden="true" />
-            </span>
-            <span className="screen-settings-section__heading">
-              <strong>{t.licenseStatus}</strong>
-              <span>{t.licenseDescription}</span>
-            </span>
-          </header>
-          <div className="screen-license-grid">
-            <InfoBlock label={t.licenseStatus}>
-              <span className={statusClass}>{license?.valid ? t.licenseValid : t.licenseInvalid}</span>
-            </InfoBlock>
-            <InfoBlock label={t.licenseDeviceSn} value={license?.deviceSn || t.licenseNoDeviceSn} />
-            <InfoBlock label={t.licenseCustomer} value={license?.customer || "-"} />
-            <InfoBlock label={t.licenseIssuedAt} value={formatFullTime(license?.issuedAt, locale)} />
-            <InfoBlock label={t.licenseExpiresAt} value={formatFullTime(license?.expiresAt, locale)} />
-            <InfoBlock label={t.licenseRemaining} value={formatLicenseRemaining(license, t)} />
-          </div>
-        </section>
-
-        <section className="screen-settings-section screen-settings-section--tcp">
-          <header>
-            <span className="screen-settings-section__icon">
-              <HardDriveUpload size={15} aria-hidden="true" />
-            </span>
-            <span className="screen-settings-section__heading">
-              <strong>{t.licenseUpload}</strong>
-              <span>{file ? `${file.name} · ${formatFileSize(file.size, locale)}` : t.licenseSelectFile}</span>
-            </span>
-          </header>
-          <div className="screen-settings-form-grid">
-            <label>
-              <span>{t.licenseFile}</span>
-              <input
-                type="file"
-                accept=".lic"
-                disabled={busy}
-                onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)}
-              />
-            </label>
-            <div className="screen-settings-preview">
-              <span>{t.fileSize}</span>
-              <strong>{file ? formatFileSize(file.size, locale) : "-"}</strong>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      {currentMessage ? <div className="screen-management__banner">{currentMessage}</div> : null}
-
-      <div className="screen-management__footer screen-settings-actions">
-        <button type="button" disabled={busy || !file} onClick={() => void submit()}>
-          {busy ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-          <span>{t.licenseUpload}</span>
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -2564,7 +2330,7 @@ function OfflineMapManagement({ t, locale }: { t: Record<string, string>; locale
               <span>{t.offlineMapDescription}</span>
             </span>
           </header>
-          <div className="screen-license-grid">
+          <div className="screen-info-grid">
             <InfoBlock label={t.status} value={status?.available ? t.offlineMapAvailable : t.offlineMapUnavailable} />
             <InfoBlock label={t.offlineMapTiles} value={String(status?.tileCount ?? 0)} />
             <InfoBlock label={t.offlineMapUploadedAt} value={formatFullTime(status?.uploadedAt, locale)} />
@@ -2630,7 +2396,6 @@ function ScreenSettingsManagement({
   t,
   userSettings,
   status,
-  screenStrikeAvailable,
   defaultScreenTitle,
   onStatusChange,
   onSaveUserSettings,
@@ -2638,7 +2403,6 @@ function ScreenSettingsManagement({
   t: Record<string, string>;
   userSettings: UserSettings;
   status: ScreenRuntimeStatus | null;
-  screenStrikeAvailable: boolean;
   defaultScreenTitle: string;
   onStatusChange: (status: ScreenRuntimeStatus) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
@@ -2701,8 +2465,7 @@ function ScreenSettingsManagement({
   const warningZoneRadiusValid = Number.isInteger(warningZoneRadius) &&
     warningZoneRadius >= minWarningZoneRadiusMeters &&
     warningZoneRadius <= maxWarningZoneRadiusMeters;
-  const strikeLabelsChanged = screenStrikeAvailable &&
-    normalizedStrikeLabels.join("|") !== savedStrikeLabels.join("|");
+  const strikeLabelsChanged = normalizedStrikeLabels.join("|") !== savedStrikeLabels.join("|");
   const changed = normalizedTitle !== savedTitle ||
     (expireValid && expireSeconds !== savedExpireSeconds) ||
     (tcpPortsValid && (positionTCPPort !== savedPositionTCPPort || fpvTCPPort !== savedFPVTCPPort)) ||
@@ -2731,10 +2494,8 @@ function ScreenSettingsManagement({
         positionExpireSeconds: expireSeconds,
         warningZoneEnabled: warningZoneEnabledDraft,
         warningZoneRadiusMeters: warningZoneRadius,
+        screenStrikeChannelLabels: normalizedStrikeLabels,
       };
-      if (screenStrikeAvailable) {
-        nextSettings.screenStrikeChannelLabels = normalizedStrikeLabels;
-      }
       await onSaveUserSettings(nextSettings);
       if (positionTCPPort !== savedPositionTCPPort || fpvTCPPort !== savedFPVTCPPort) {
         const nextStatus = await updateScreenTCPPorts({
@@ -2899,36 +2660,34 @@ function ScreenSettingsManagement({
           </div>
         </section>
 
-        {screenStrikeAvailable ? (
-          <section className="screen-settings-section screen-settings-section--strike">
-            <header>
-              <span className="screen-settings-section__icon">
-                <Zap size={15} aria-hidden="true" />
-              </span>
-              <span className="screen-settings-section__heading">
-                <strong>{t.screenStrikeSettings}</strong>
-                <span>{t.screenStrikeChannelLabelsHint}</span>
-              </span>
-            </header>
-            <div className="screen-settings-channel-labels">
-              {strikeLabelDrafts.map((value, index) => (
-                <label key={index}>
-                  <span>{t.screenStrikeChannelLabel.replace("{index}", String(index + 1))}</span>
-                  <input
-                    value={value}
-                    maxLength={32}
-                    placeholder={defaultStrikeChannelLabel(index)}
-                    onChange={(event) => {
-                      const next = [...strikeLabelDrafts];
-                      next[index] = event.target.value;
-                      setStrikeLabelDrafts(normalizeScreenStrikeChannelLabels(next));
-                    }}
-                  />
-                </label>
-              ))}
-            </div>
-          </section>
-        ) : null}
+        <section className="screen-settings-section screen-settings-section--strike">
+          <header>
+            <span className="screen-settings-section__icon">
+              <Zap size={15} aria-hidden="true" />
+            </span>
+            <span className="screen-settings-section__heading">
+              <strong>{t.screenStrikeSettings}</strong>
+              <span>{t.screenStrikeChannelLabelsHint}</span>
+            </span>
+          </header>
+          <div className="screen-settings-channel-labels">
+            {strikeLabelDrafts.map((value, index) => (
+              <label key={index}>
+                <span>{t.screenStrikeChannelLabel.replace("{index}", String(index + 1))}</span>
+                <input
+                  value={value}
+                  maxLength={32}
+                  placeholder={defaultStrikeChannelLabel(index)}
+                  onChange={(event) => {
+                    const next = [...strikeLabelDrafts];
+                    next[index] = event.target.value;
+                    setStrikeLabelDrafts(normalizeScreenStrikeChannelLabels(next));
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        </section>
       </div>
 
       {banner ? <div className="screen-management__banner">{banner}</div> : null}
@@ -2942,9 +2701,7 @@ function ScreenSettingsManagement({
             setExpireDraft(String(defaultPositionExpireSeconds));
             setWarningZoneEnabledDraft(false);
             setWarningZoneRadiusDraft(String(defaultWarningZoneRadiusMeters));
-            if (screenStrikeAvailable) {
-              setStrikeLabelDrafts(defaultStrikeChannelLabels());
-            }
+            setStrikeLabelDrafts(defaultStrikeChannelLabels());
           }}
         >
           <RefreshCw size={14} aria-hidden="true" />
@@ -3873,7 +3630,7 @@ function InterferenceReportsManagement({
                   <strong title={formatInterferenceReportChannels(report, channelLabels)}>
                     {formatInterferenceReportChannels(report, channelLabels)}
                   </strong>
-                  <small>{report.channelPins?.length ? report.channelPins.map((pin) => `IO${pin}`).join(", ") : report.summary || report.id}</small>
+                  <small>{report.channelOutputs?.length ? report.channelOutputs.map((output) => `Y${output}`).join(", ") : report.summary || report.id}</small>
                 </td>
                 <td>{formatDuration(report.requestedDurationSeconds)}</td>
                 <td className={report.lastError || report.abnormalReason ? "screen-table-error-cell" : undefined}>
@@ -4371,14 +4128,28 @@ function DeviceSummary({
 }
 
 function TabStatusDot({ status }: { status?: TCPListenerStatus }) {
-  return <span className={`screen-tab__status screen-tab__status--${getTCPStatusTone(status)}`} aria-hidden="true" />;
+  return <span className={`screen-tab__status screen-tab__status--${getTCPListenerStatusTone(status)}`} aria-hidden="true" />;
 }
 
-function getTCPStatusTone(status?: TCPListenerStatus) {
+function TCPClientStatusDot({ status }: { status?: TCPClientStatus }) {
+  return <span className={`screen-tab__status screen-tab__status--${getTCPClientStatusTone(status)}`} aria-hidden="true" />;
+}
+
+function getTCPListenerStatusTone(status?: TCPListenerStatus) {
   if (status?.sourceConnected) {
     return "success";
   }
   if (status?.listening) {
+    return "warning";
+  }
+  return "danger";
+}
+
+function getTCPClientStatusTone(status?: TCPClientStatus) {
+  if (status?.connected) {
+    return "success";
+  }
+  if (!status?.updatedAt && !status?.connectError) {
     return "warning";
   }
   return "danger";
@@ -5931,8 +5702,11 @@ function archiveFileName(kind: string, stamp = reportTimestamp()) {
   return `${kind}_${stamp}.zip`;
 }
 
+const defaultStrikeChannelIDs = ["io1", "io2", "io3", "io4", "io5", "io6", "io7", "io8"];
+const defaultStrikeLabels = ["433M", "915M", "1.2G", "1.4G", "1.5G", "2.4G", "5.2G", "5.8G"];
+
 function defaultStrikeChannelLabels() {
-  return ["433M/800M/900M/1.4G", "1.2G/1.5G", "2.4G/5.2G/5.8G"];
+  return [...defaultStrikeLabels];
 }
 
 function defaultStrikeChannelLabel(index: number) {
@@ -5942,10 +5716,6 @@ function defaultStrikeChannelLabel(index: number) {
 function normalizeScreenStrikeChannelLabels(labels?: string[] | null) {
   const normalized = defaultStrikeChannelLabels().map((_, index) => (labels?.[index] ?? "").trim().slice(0, 32));
   return normalized;
-}
-
-function hasAvailableScreenStrikeChannels(state: ScreenStrikeState | null) {
-  return Boolean(state?.channels?.some((channel) => !channel.reserved));
 }
 
 function formatStrikeBand(value: string) {
@@ -5960,18 +5730,18 @@ function formatStrikeBand(value: string) {
   return trimmed;
 }
 
-function formatStrikeChannelBands(channel: GpioChannel) {
+function formatStrikeChannelBands(channel: InterferenceChannel) {
   const bands = channel.bands ?? [];
   return bands.map(formatStrikeBand).filter(Boolean).join("/");
 }
 
-function formatStrikeChannelLabel(channel: GpioChannel, index: number, customLabels: string[]) {
+function formatStrikeChannelLabel(channel: InterferenceChannel, index: number, customLabels: string[]) {
   return customLabels[index]?.trim() || formatStrikeChannelBands(channel) || channel.label || channel.id;
 }
 
-function formatStrikeChannelTitle(channel: GpioChannel, index: number, customLabels: string[]) {
+function formatStrikeChannelTitle(channel: InterferenceChannel, index: number, customLabels: string[]) {
   const label = formatStrikeChannelLabel(channel, index, customLabels);
-  const parts = [label, channel.label, `IO${channel.pin}`].filter(Boolean);
+  const parts = [label, channel.label, `Y${channel.output}`].filter(Boolean);
   return Array.from(new Set(parts)).join(" / ");
 }
 
@@ -5982,15 +5752,13 @@ function clampStrikeDuration(value: number) {
   return Math.max(screenStrikeMinDurationSeconds, Math.min(screenStrikeMaxDurationSeconds, Math.round(value)));
 }
 
-function getStrikeRemainingSeconds(state: ScreenStrikeState | null, now: Date) {
+function getStrikeRemainingSeconds(state: ScreenStrikeState | null, now: Date, syncedAt: number) {
   if (!state?.active) {
     return 0;
   }
-  const endsAt = state.endsAt ? Date.parse(state.endsAt) : Number.NaN;
-  if (Number.isFinite(endsAt)) {
-    return Math.max(0, Math.ceil((endsAt - now.getTime()) / 1000));
-  }
-  return Math.max(0, state.remainingSeconds ?? 0);
+  const remainingSeconds = Math.max(0, state.remainingSeconds ?? 0);
+  const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - syncedAt) / 1000));
+  return Math.max(0, remainingSeconds - elapsedSeconds);
 }
 
 function formatDateKey(value: string | undefined) {
@@ -6026,7 +5794,7 @@ function formatInterferenceReportChannels(report: InterferenceReportSummary, cus
   const labels = report.channelLabels ?? [];
   const values = (labels.length ? labels : ids).map((value, index) => {
     const channelID = ids[index] ?? value;
-    const customIndex = ["io1", "io2", "io3"].indexOf(channelID);
+    const customIndex = defaultStrikeChannelIDs.indexOf(channelID);
     return customIndex >= 0 ? customLabels[customIndex] || value : value;
   }).map((value) => value.trim()).filter(Boolean);
   return values.length ? values.join(", ") : "-";
@@ -6385,19 +6153,6 @@ function formatFileSize(bytes: number | undefined, locale: Locale) {
   return `${value.toLocaleString(locale, {
     maximumFractionDigits: unitIndex === 0 ? 0 : 1,
   })} ${units[unitIndex]}`;
-}
-
-function formatLicenseRemaining(license: LicenseInfo | null | undefined, t: Record<string, string>) {
-  if (!license) {
-    return "-";
-  }
-  if (license.isPermanent) {
-    return t.licensePermanent;
-  }
-  if (typeof license.remainingDays !== "number" || !Number.isFinite(license.remainingDays)) {
-    return "-";
-  }
-  return t.licenseRemainingDays.replace("{count}", String(license.remainingDays));
 }
 
 function formatCountdown(seconds: number) {

@@ -33,7 +33,6 @@ import (
 	"dr600ab-net/internal/interference"
 	"dr600ab-net/internal/interferencereport"
 	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/license"
 	"dr600ab-net/internal/model"
 	"dr600ab-net/internal/offlinemap"
 	"dr600ab-net/internal/position"
@@ -104,7 +103,6 @@ type Server struct {
 	intrusions          IntrusionStore
 	fpvRecords          FPVVideoRecordStore
 	interferenceReports InterferenceReportStore
-	license             *license.Service
 	offlineMap          *offlinemap.Service
 
 	fpvVideoStopMu               sync.Mutex
@@ -173,17 +171,10 @@ func WithInterferenceReportStore(store InterferenceReportStore) Option {
 	}
 }
 
-// WithInterferenceService injects the GPIO interference service.
+// WithInterferenceService injects the interference service.
 func WithInterferenceService(service *interference.Service) Option {
 	return func(s *Server) {
 		s.interference = service
-	}
-}
-
-// WithLicenseService injects the license service.
-func WithLicenseService(service *license.Service) Option {
-	return func(s *Server) {
-		s.license = service
 	}
 }
 
@@ -226,7 +217,7 @@ func New(
 	s.routes(mux)
 	s.server = &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           s.requireLicenseForHTTP(mux),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s
@@ -265,8 +256,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/meta/locales", s.handleLocales)
-	mux.HandleFunc("GET /api/v1/license/status", s.handleLicenseStatus)
-	mux.HandleFunc("POST /api/v1/license/upload", s.handleUploadLicense)
 	mux.HandleFunc("GET /api/v1/offline-map/status", s.handleOfflineMapStatus)
 	mux.HandleFunc("POST /api/v1/offline-map/upload", s.handleUploadOfflineMap)
 	mux.HandleFunc("GET /api/v1/screen/status", s.handleScreenStatus)
@@ -312,42 +301,6 @@ func (s *Server) handleLocales(w http.ResponseWriter, _ *http.Request) {
 		Default:    s.cfg.DefaultLocale,
 		Supported:  []string{"zh-CN", "en-US"},
 		Namespaces: []string{"common", "screen"},
-	})
-}
-
-func (s *Server) handleLicenseStatus(w http.ResponseWriter, _ *http.Request) {
-	if s.license == nil {
-		respondErrorCode(w, http.StatusServiceUnavailable, "license_unavailable", "license service is unavailable", nil)
-		return
-	}
-	status, err := s.license.Status()
-	if err != nil && status.Code == "" {
-		status.Code = license.ErrorCode(err)
-		status.Message = license.ErrorMessage(err)
-	}
-	respondJSON(w, http.StatusOK, status)
-}
-
-func (s *Server) handleUploadLicense(w http.ResponseWriter, r *http.Request) {
-	if s.license == nil {
-		respondErrorCode(w, http.StatusServiceUnavailable, "license_unavailable", "license service is unavailable", nil)
-		return
-	}
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_request", "invalid request", err.Error())
-		return
-	}
-	defer file.Close()
-
-	status, err := s.license.Activate(file)
-	if err != nil {
-		s.respondLicenseUploadError(w, err, status)
-		return
-	}
-	respondJSON(w, http.StatusOK, model.LicenseUploadResponse{
-		License: status,
-		Message: "授权文件已上传并激活",
 	})
 }
 
@@ -464,7 +417,7 @@ func (s *Server) handleScreenFPV(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleScreenStrike(w http.ResponseWriter, _ *http.Request) {
 	if s.interference == nil {
-		respondJSON(w, http.StatusOK, model.ScreenStrikeState{Channels: []model.GpioChannel{}})
+		respondJSON(w, http.StatusOK, model.ScreenStrikeState{Channels: []model.InterferenceChannel{}})
 		return
 	}
 	respondJSON(w, http.StatusOK, s.interference.ScreenStrikeState())
@@ -501,14 +454,14 @@ func (s *Server) handleSetScreenStrike(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleInterferenceChannels(w http.ResponseWriter, _ *http.Request) {
 	if s.interference == nil {
-		respondJSON(w, http.StatusOK, model.ListResponse[model.GpioChannel]{
-			Items: []model.GpioChannel{},
+		respondJSON(w, http.StatusOK, model.ListResponse[model.InterferenceChannel]{
+			Items: []model.InterferenceChannel{},
 			Count: 0,
 		})
 		return
 	}
 	channels := s.interference.ListChannels()
-	respondJSON(w, http.StatusOK, model.ListResponse[model.GpioChannel]{
+	respondJSON(w, http.StatusOK, model.ListResponse[model.InterferenceChannel]{
 		Items: channels,
 		Count: len(channels),
 	})
@@ -519,7 +472,7 @@ func (s *Server) handleSetInterferenceChannelState(w http.ResponseWriter, r *htt
 		respondError(w, http.StatusServiceUnavailable, "interference service is unavailable")
 		return
 	}
-	var req model.GpioChannelStateRequest
+	var req model.InterferenceChannelStateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid request")
 		return
@@ -537,7 +490,7 @@ func (s *Server) handleSetInterferenceChannelState(w http.ResponseWriter, r *htt
 	if req.Enabled {
 		message = "通道已开启"
 	}
-	respondJSON(w, http.StatusOK, model.GpioChannelStateResponse{
+	respondJSON(w, http.StatusOK, model.InterferenceChannelStateResponse{
 		Channel: channel,
 		Message: message,
 	})
@@ -1680,72 +1633,6 @@ func (s *Server) handleOfflineMapTile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, targetPath)
 }
 
-func (s *Server) requireLicenseForHTTP(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.licenseRequestAllowedWithoutLicense(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if s.license == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		status, err := s.license.Status()
-		if err == nil && status.Valid {
-			next.ServeHTTP(w, r)
-			return
-		}
-		s.license.Refresh()
-		s.respondLicenseError(w, err, status)
-	})
-}
-
-func (s *Server) licenseRequestAllowedWithoutLicense(r *http.Request) bool {
-	path := r.URL.Path
-	if path == "/healthz" || path == "/api/v1/meta/locales" {
-		return true
-	}
-	if path == "/api/v1/license/status" || path == "/api/v1/license/upload" {
-		return true
-	}
-	if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/map/") {
-		return false
-	}
-	return true
-}
-
-func (s *Server) respondLicenseUploadError(w http.ResponseWriter, err error, status model.LicenseInfo) {
-	code := status.Code
-	if code == "" {
-		code = license.ErrorCode(err)
-	}
-	message := license.ErrorMessage(err)
-	if status.Message != "" {
-		message = status.Message
-	}
-	httpStatus := http.StatusBadRequest
-	if errors.Is(err, license.ErrDeviceSNMissing) {
-		httpStatus = http.StatusServiceUnavailable
-	}
-	respondErrorCode(w, httpStatus, code, message, status)
-}
-
-func (s *Server) respondLicenseError(w http.ResponseWriter, err error, status model.LicenseInfo) {
-	code := status.Code
-	if code == "" {
-		code = license.ErrorCode(err)
-	}
-	message := license.ErrorMessage(err)
-	if status.Message != "" {
-		message = status.Message
-	}
-	httpStatus := http.StatusForbidden
-	if errors.Is(err, license.ErrDeviceSNMissing) || errors.Is(err, license.ErrLicenseNotFound) {
-		httpStatus = http.StatusServiceUnavailable
-	}
-	respondErrorCode(w, httpStatus, code, message, status)
-}
-
 func newFPVVideoSessionToken() (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -2021,7 +1908,7 @@ func normalizeUserWhitelist(items []model.WhitelistItem, now time.Time) []model.
 }
 
 func normalizeScreenStrikeChannelLabels(labels []string) []string {
-	const maxLabels = 3
+	const maxLabels = 8
 	normalized := make([]string, maxLabels)
 	for index := 0; index < maxLabels && index < len(labels); index++ {
 		normalized[index] = truncateRunes(strings.TrimSpace(labels[index]), 32)
@@ -2254,6 +2141,9 @@ func (s *Server) screenRuntimeStatus() model.ScreenRuntimeStatus {
 	}
 	if s.fpv != nil {
 		status.FPV = s.fpv.Status()
+	}
+	if s.interference != nil {
+		status.Interference = s.interference.ConnectionStatus()
 	}
 	return status
 }
