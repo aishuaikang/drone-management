@@ -313,8 +313,11 @@ func (s *Server) handleOfflineMapStatus(w http.ResponseWriter, _ *http.Request) 
 }
 
 func (s *Server) handleUploadOfflineMap(w http.ResponseWriter, r *http.Request) {
+	logs := newOfflineMapUploadLogs()
+	logs.add("request", "收到离线地图上传请求", "running", "")
 	if s.offlineMap == nil {
-		respondErrorCode(w, http.StatusServiceUnavailable, "offline_map_unavailable", "offline map service is unavailable", nil)
+		logs.add("request", "离线地图服务不可用", "error", "")
+		respondErrorCode(w, http.StatusServiceUnavailable, "offline_map_unavailable", "offline map service is unavailable", logs.entries())
 		return
 	}
 	maxBytes := s.cfg.OfflineMapUploadMaxBytes
@@ -322,39 +325,51 @@ func (s *Server) handleUploadOfflineMap(w http.ResponseWriter, r *http.Request) 
 		maxBytes = 2048 * 1024 * 1024
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	logs.add("parse", "解析上传表单", "running", fmt.Sprintf("最大 %.0f MB", float64(maxBytes)/(1024*1024)))
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_upload", "invalid offline map upload", err.Error())
+		logs.add("parse", "上传表单解析失败", "error", err.Error())
+		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_upload", "invalid offline map upload", logs.entries())
 		return
 	}
+	logs.add("parse", "上传表单解析完成", "success", "")
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_request", "invalid request", err.Error())
+		logs.add("receive", "读取上传文件失败", "error", err.Error())
+		respondErrorCode(w, http.StatusBadRequest, "invalid_request", "invalid request", logs.entries())
 		return
 	}
 	defer file.Close()
+	logs.add("receive", "已读取上传文件", "success", header.Filename)
 	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_package", "离线地图只支持 .zip 文件", nil)
+		logs.add("validate", "文件类型校验失败", "error", header.Filename)
+		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_package", "离线地图只支持 .zip 文件", logs.entries())
 		return
 	}
 
+	logs.add("store", "保存上传文件到临时目录", "running", header.Filename)
 	tempPath, cleanup, err := saveMultipartUpload(file, header.Filename)
 	if err != nil {
-		respondErrorCode(w, http.StatusInternalServerError, "offline_map_upload_failed", "save offline map upload failed", err.Error())
+		logs.add("store", "保存上传文件失败", "error", err.Error())
+		respondErrorCode(w, http.StatusInternalServerError, "offline_map_upload_failed", "save offline map upload failed", logs.entries())
 		return
 	}
 	defer cleanup()
+	logs.add("store", "上传文件已保存", "success", tempPath)
 
 	status, err := s.offlineMap.Install(tempPath, offlinemap.UploadOptions{
 		SourceFile: header.Filename,
 		KeepBackup: isTruthy(r.FormValue("keepBackup")),
+		Logger:     logs.add,
 	})
 	if err != nil {
-		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_package", err.Error(), nil)
+		respondErrorCode(w, http.StatusBadRequest, "invalid_offline_map_package", err.Error(), logs.entries())
 		return
 	}
+	logs.add("done", "离线地图上传完成", "success", header.Filename)
 	respondJSON(w, http.StatusOK, model.OfflineMapUploadResponse{
 		Map:     status,
 		Message: "离线地图上传完成",
+		Logs:    logs.entries(),
 	})
 }
 
@@ -1695,6 +1710,36 @@ func saveMultipartUpload(file multipart.File, filename string) (string, func(), 
 		return "", func() {}, fmt.Errorf("离线地图只支持 .zip 文件")
 	}
 	return tempPath, cleanup, nil
+}
+
+type offlineMapUploadLogs struct {
+	entriesList []model.OfflineMapUploadLog
+}
+
+func newOfflineMapUploadLogs() *offlineMapUploadLogs {
+	return &offlineMapUploadLogs{
+		entriesList: []model.OfflineMapUploadLog{},
+	}
+}
+
+func (l *offlineMapUploadLogs) add(stage string, message string, status string, detail string) {
+	if l == nil {
+		return
+	}
+	l.entriesList = append(l.entriesList, model.OfflineMapUploadLog{
+		Stage:     stage,
+		Message:   message,
+		Status:    status,
+		Timestamp: time.Now(),
+		Detail:    strings.TrimSpace(detail),
+	})
+}
+
+func (l *offlineMapUploadLogs) entries() []model.OfflineMapUploadLog {
+	if l == nil {
+		return []model.OfflineMapUploadLog{}
+	}
+	return slices.Clone(l.entriesList)
 }
 
 func isTruthy(value string) bool {

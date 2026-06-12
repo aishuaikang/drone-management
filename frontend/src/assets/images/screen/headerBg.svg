@@ -1,69 +1,70 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 113" fill="none" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
   <defs>
-    <linearGradient id="topLine" x1="0" y1="0" x2="1920" y2="0" gradientUnits="userSpaceOnUse">
+    <linearGradient id="screenHeaderRail" x1="170" y1="8" x2="1750" y2="8" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="currentColor" stop-opacity="0" />
-      <stop offset="0.18" stop-color="currentColor" stop-opacity="0.48" />
+      <stop offset="0.12" stop-color="currentColor" stop-opacity="0.34" />
+      <stop offset="0.34" stop-color="currentColor" stop-opacity="0.88" />
       <stop offset="0.5" stop-color="currentColor" />
-      <stop offset="0.82" stop-color="currentColor" stop-opacity="0.48" />
+      <stop offset="0.66" stop-color="currentColor" stop-opacity="0.88" />
+      <stop offset="0.88" stop-color="currentColor" stop-opacity="0.34" />
       <stop offset="1" stop-color="currentColor" stop-opacity="0" />
     </linearGradient>
-    <linearGradient id="centerPanel" x1="960" y1="1" x2="960" y2="88" gradientUnits="userSpaceOnUse">
+    <linearGradient id="screenHeaderPlate" x1="960" y1="7" x2="960" y2="88" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="currentColor" stop-opacity="0.5" />
-      <stop offset="0.45" stop-color="currentColor" stop-opacity="0.24" />
-      <stop offset="1" stop-color="currentColor" stop-opacity="0.04" />
-    </linearGradient>
-    <linearGradient id="wingPanel" x1="960" y1="16" x2="960" y2="91" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.36" />
-      <stop offset="0.55" stop-color="currentColor" stop-opacity="0.17" />
-      <stop offset="1" stop-color="currentColor" stop-opacity="0.02" />
-    </linearGradient>
-    <linearGradient id="bottomLine" x1="430" y1="78" x2="1490" y2="78" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0" />
-      <stop offset="0.18" stop-color="currentColor" stop-opacity="0.72" />
-      <stop offset="0.5" stop-color="currentColor" />
-      <stop offset="0.82" stop-color="currentColor" stop-opacity="0.72" />
+      <stop offset="0.42" stop-color="currentColor" stop-opacity="0.19" />
       <stop offset="1" stop-color="currentColor" stop-opacity="0" />
     </linearGradient>
-    <radialGradient id="titleGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(960 21) rotate(90) scale(72 360)">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.38" />
-      <stop offset="0.5" stop-color="currentColor" stop-opacity="0.14" />
+    <linearGradient id="screenHeaderWing" x1="960" y1="24" x2="960" y2="105" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.28" />
+      <stop offset="0.56" stop-color="currentColor" stop-opacity="0.11" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="screenHeaderScan" x1="527" y1="71" x2="1393" y2="71" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0" />
+      <stop offset="0.2" stop-color="currentColor" stop-opacity="0.55" />
+      <stop offset="0.5" stop-color="currentColor" />
+      <stop offset="0.8" stop-color="currentColor" stop-opacity="0.55" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+    </linearGradient>
+    <radialGradient id="screenHeaderCore" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(960 37) rotate(90) scale(54 290)">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.42" />
+      <stop offset="0.52" stop-color="currentColor" stop-opacity="0.14" />
       <stop offset="1" stop-color="currentColor" stop-opacity="0" />
     </radialGradient>
-    <filter id="glow" x="-40" y="-24" width="2000" height="150" color-interpolation-filters="sRGB">
+    <filter id="screenHeaderSoftGlow" x="120" y="-26" width="1680" height="162" color-interpolation-filters="sRGB">
       <feGaussianBlur stdDeviation="5" result="blur" />
       <feMerge>
         <feMergeNode in="blur" />
         <feMergeNode in="SourceGraphic" />
       </feMerge>
     </filter>
-    <filter id="smallGlow" x="-20" y="-20" width="1960" height="140" color-interpolation-filters="sRGB">
-      <feGaussianBlur stdDeviation="2.2" result="blur" />
+    <filter id="screenHeaderTightGlow" x="300" y="-10" width="1320" height="132" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="2.1" result="blur" />
       <feMerge>
         <feMergeNode in="blur" />
         <feMergeNode in="SourceGraphic" />
       </feMerge>
     </filter>
-    <linearGradient id="particleTail" x1="-34" y1="0" x2="6" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0" />
-      <stop offset="0.55" stop-color="currentColor" stop-opacity="0.38" />
-      <stop offset="1" stop-color="currentColor" stop-opacity="0.95" />
-    </linearGradient>
   </defs>
 
-  <path class="header-top-line" d="M0 3H715C735 3 735 18 755 18M1165 18C1185 18 1185 3 1205 3H1920" stroke="url(#topLine)" stroke-width="2" filter="url(#glow)" />
-  <path class="header-center-panel" d="M755 18L805 33H1115L1165 18C1185 18 1185 3 1205 3H1920V0H0V3H715C735 3 735 18 755 18Z" fill="url(#centerPanel)" />
-  <path class="header-title-glow" d="M690 16L805 44H1115L1230 16H1165L1115 31H805L755 16H690Z" fill="url(#titleGlow)" />
+  <path d="M0 0H1920V2H0V0Z" fill="currentColor" fill-opacity="0.13" />
+  <path d="M170 8H665L714 24H831L868 12H1052L1089 24H1206L1255 8H1750" stroke="url(#screenHeaderRail)" stroke-width="3" stroke-linecap="round" filter="url(#screenHeaderSoftGlow)" />
+  <path d="M682 8L724 30H821L858 18H1062L1099 30H1196L1238 8H1750V0H170V8H682Z" fill="url(#screenHeaderPlate)" />
+  <path d="M632 27L753 54H1167L1288 27H1216L1169 41H751L704 27H632Z" fill="url(#screenHeaderCore)" />
 
-  <path class="header-wing-panel" d="M420 18L560 53L960 84L1360 53L1500 18H1230L1160 44H760L690 18H420Z" fill="url(#wingPanel)" />
-  <path class="header-main-line" d="M560 53L960 84L1360 53" stroke="url(#bottomLine)" stroke-width="4" stroke-linecap="round" filter="url(#glow)" />
-  <path class="header-title-lines" d="M760 44H880M1040 44H1160" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.86" stroke-linecap="round" filter="url(#smallGlow)" />
-  <path class="header-frame-lines" d="M706 23L760 44M1214 23L1160 44" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.62" stroke-linecap="round" />
-  <path class="header-frame-lines" d="M560 53L690 18M1360 53L1230 18" stroke="currentColor" stroke-width="2" stroke-opacity="0.5" stroke-linecap="round" />
+  <path d="M458 31L587 57L830 78H1090L1333 57L1462 31H1290L1194 62H1087L1050 75H870L833 62H726L630 31H458Z" fill="url(#screenHeaderWing)" />
+  <path d="M527 68L724 92H1196L1393 68" stroke="url(#screenHeaderScan)" stroke-width="4" stroke-linecap="round" filter="url(#screenHeaderSoftGlow)" />
+  <path d="M747 55H855M1065 55H1173" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-opacity="0.9" filter="url(#screenHeaderTightGlow)" />
+  <path d="M869 74H930M990 74H1051" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity="0.55" />
+  <path d="M704 27L747 55M1216 27L1173 55" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-opacity="0.72" />
+  <path d="M630 31L724 62M1290 31L1196 62" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity="0.45" />
 
-  <path class="header-side-blocks" d="M382 20H398L415 31H399L382 20ZM416 20H432L449 31H433L416 20ZM450 20H466L483 31H467L450 20ZM484 20H500L517 31H501L484 20ZM518 20H534L551 31H535L518 20ZM552 20H568L585 31H569L552 20Z" fill="currentColor" fill-opacity="0.78" filter="url(#smallGlow)" />
-  <path class="header-side-blocks" d="M1335 31L1352 20H1368L1351 31H1335ZM1369 31L1386 20H1402L1385 31H1369ZM1403 31L1420 20H1436L1419 31H1403ZM1437 31L1454 20H1470L1453 31H1437ZM1471 31L1488 20H1504L1487 31H1471ZM1505 31L1522 20H1538L1521 31H1505Z" fill="currentColor" fill-opacity="0.78" filter="url(#smallGlow)" />
+  <path d="M348 20H374L389 27H363L348 20ZM398 20H424L439 27H413L398 20ZM448 20H474L489 27H463L448 20ZM498 20H524L539 27H513L498 20Z" fill="currentColor" fill-opacity="0.62" filter="url(#screenHeaderTightGlow)" />
+  <path d="M1381 27L1396 20H1422L1407 27H1381ZM1431 27L1446 20H1472L1457 27H1431ZM1481 27L1496 20H1522L1507 27H1481ZM1531 27L1546 20H1572L1557 27H1531Z" fill="currentColor" fill-opacity="0.62" filter="url(#screenHeaderTightGlow)" />
 
-  <path class="header-arrows" d="M722 32L716 38L722 44M735 32L729 38L735 44M1198 32L1204 38L1198 44M1185 32L1191 38L1185 44" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.82" />
-  <path class="header-dash-lines" d="M625 58H690M1230 58H1295" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="14 12" stroke-opacity="0.52" />
-  <path class="header-sub-lines" d="M835 73H915M1005 73H1085" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-opacity="0.42" />
+  <path d="M575 70H636M1284 70H1345" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="10 15" stroke-opacity="0.48" />
+  <path d="M670 45L657 52L670 59M697 45L684 52L697 59M1250 45L1263 52L1250 59M1223 45L1236 52L1223 59" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.75" />
+  <path d="M921 29H999" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-opacity="0.9" filter="url(#screenHeaderTightGlow)" />
+  <path d="M899 37H1021" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-opacity="0.4" />
+  <path d="M954 21H966V33H954V21Z" fill="currentColor" fill-opacity="0.84" filter="url(#screenHeaderTightGlow)" />
 </svg>

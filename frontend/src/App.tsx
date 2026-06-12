@@ -40,7 +40,7 @@ import {
 } from "lucide-react";
 import L from "leaflet";
 import * as QRCode from "qrcode";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -69,7 +69,7 @@ import {
   uploadOfflineMap,
   updateUserSettings,
 } from "./api";
-import type { InterferenceReportQuery, IntrusionQuery } from "./api";
+import type { InterferenceReportQuery, IntrusionQuery, OfflineMapUploadError } from "./api";
 import { VirtualKeyboard } from "./components/VirtualKeyboard";
 import centerPointIcon from "./assets/images/centerPoint.svg";
 import detectionDeviceIconOnlineUrl from "./assets/images/detectionDeviceIconOnline.svg";
@@ -93,6 +93,7 @@ import type {
   InterferenceReportSummary,
   IntrusionRecord,
   OfflineMapStatus,
+  OfflineMapUploadLog,
   ScreenDeviceLocationResponse,
   ScreenFPVTarget,
   ScreenPositionPoint,
@@ -140,6 +141,23 @@ type ManualLocationDraft = {
   latitude: string;
   longitude: string;
 };
+type OfflineMapUploadLogView = OfflineMapUploadLog & {
+  id: string;
+};
+type OfflineMapUploadProgress = {
+  loaded: number;
+  total: number;
+  percent: number;
+};
+type OfflineMapViewState = {
+  status: OfflineMapStatus | null;
+  file: File | null;
+  keepBackup: boolean;
+  loading: boolean;
+  busy: boolean;
+  message: string;
+  uploadLogs: OfflineMapUploadLogView[];
+};
 
 type ScreenMapData = {
   deviceLocation: ScreenDeviceLocationResponse | null;
@@ -171,6 +189,7 @@ const referenceMapLayerStorageKey = "dr600ab.mapLayer";
 const referenceLegacyMapLayerStorageKey = "mapLayer";
 const screenAlarmSoundStorageKey = "dr600ab.soundAlarmEnabled";
 const referenceDefaultMapLayer: ReferenceMapLayer = "leaflet.map.gaodeSatellite";
+let offlineMapUploadLogSequence = 0;
 const referenceMapLayers: ReferenceMapLayer[] = [
   "leaflet.map.googleMap",
   "leaflet.map.googleSatellite",
@@ -232,6 +251,8 @@ const labels: Record<Locale, Record<string, string>> = {
     firstSeen: "首次出现",
     deviceLocation: "设备位置",
     manualLocation: "手动定位",
+    expandDeviceInfo: "展开设备信息",
+    collapseDeviceInfo: "收起设备信息",
     setManualLocation: "设置手动定位",
     editManualLocation: "修改手动定位",
     clearManualLocation: "清除手动定位",
@@ -361,6 +382,12 @@ const labels: Record<Locale, Record<string, string>> = {
     offlineMapUpload: "上传地图",
     offlineMapUploadSuccess: "离线地图上传完成",
     offlineMapUploadFailed: "离线地图上传失败",
+    offlineMapUploadLogs: "上传日志",
+    offlineMapUploadLogEmpty: "选择地图包后显示每个上传阶段",
+    offlineMapUploadSelected: "已选择文件 {file}",
+    offlineMapUploadQueued: "准备上传离线地图包",
+    offlineMapUploadProgress: "正在上传文件 {percent}%",
+    offlineMapUploadWaitingBackend: "文件已发送，等待后端处理",
     screenStrikeSettings: "干扰设置",
     screenStrikeChannelLabels: "干扰频段标签",
     screenStrikeChannelLabelsHint: "配置大屏干扰按钮和干扰报告里展示的八路频段名称。",
@@ -507,6 +534,8 @@ const labels: Record<Locale, Record<string, string>> = {
     firstSeen: "First seen",
     deviceLocation: "Device",
     manualLocation: "Manual",
+    expandDeviceInfo: "Expand device info",
+    collapseDeviceInfo: "Collapse device info",
     setManualLocation: "Set manual location",
     editManualLocation: "Edit manual location",
     clearManualLocation: "Clear manual location",
@@ -636,6 +665,12 @@ const labels: Record<Locale, Record<string, string>> = {
     offlineMapUpload: "Upload map",
     offlineMapUploadSuccess: "Offline map uploaded",
     offlineMapUploadFailed: "Offline map upload failed",
+    offlineMapUploadLogs: "Upload log",
+    offlineMapUploadLogEmpty: "Select a map package to show every upload stage",
+    offlineMapUploadSelected: "Selected {file}",
+    offlineMapUploadQueued: "Preparing offline map upload",
+    offlineMapUploadProgress: "Uploading file {percent}%",
+    offlineMapUploadWaitingBackend: "File sent, waiting for server processing",
     screenStrikeSettings: "Interference",
     screenStrikeChannelLabels: "Band labels",
     screenStrikeChannelLabelsHint: "Configures the eight band names shown in screen strike controls and reports.",
@@ -775,10 +810,23 @@ const positionModelImageNames: Record<string, string> = {
   "mini 4 pro": "mini4_pro",
 };
 
+function createInitialOfflineMapViewState(): OfflineMapViewState {
+  return {
+    status: null,
+    file: null,
+    keepBackup: true,
+    loading: true,
+    busy: false,
+    message: "",
+    uploadLogs: [],
+  };
+}
+
 export function App() {
   const [locale, setLocale] = useState<Locale>("zh-CN");
   const t = labels[locale];
   const [view, setView] = useState<View>("screen");
+  const [offlineMapState, setOfflineMapState] = useState<OfflineMapViewState>(() => createInitialOfflineMapViewState());
   const [status, setStatus] = useState<ScreenRuntimeStatus | null>(null);
   const [positions, setPositions] = useState<ScreenPositionTarget[]>([]);
   const [fpv, setFPV] = useState<ScreenFPVTarget[]>([]);
@@ -1485,13 +1533,15 @@ export function App() {
       </aside>
       </>
       ) : (
-        <ManagementView
+          <ManagementView
             view={view}
             t={t}
             locale={locale}
+            offlineMapState={offlineMapState}
             userSettings={userSettings}
             status={status}
             defaultScreenTitle={t.title}
+            onOfflineMapStateChange={setOfflineMapState}
             onStatusChange={setStatus}
             onSaveUserSettings={saveUserSettings}
           />
@@ -2218,23 +2268,33 @@ function ManagementView({
   view,
   t,
   locale,
+  offlineMapState,
   userSettings,
   status,
   defaultScreenTitle,
+  onOfflineMapStateChange,
   onStatusChange,
   onSaveUserSettings,
 }: {
   view: Exclude<View, "screen">;
   t: Record<string, string>;
   locale: Locale;
+  offlineMapState: OfflineMapViewState;
   userSettings: UserSettings;
   status: ScreenRuntimeStatus | null;
   defaultScreenTitle: string;
+  onOfflineMapStateChange: Dispatch<SetStateAction<OfflineMapViewState>>;
   onStatusChange: (status: ScreenRuntimeStatus) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
 }) {
+  const panelClassName = [
+    "screen-management-panel",
+    view === "settings" || view === "offlineMap" ? "screen-management-panel--settings" : "",
+    view === "offlineMap" ? "screen-management-panel--offline-map" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <section className={view === "settings" ? "screen-management-panel screen-management-panel--settings" : "screen-management-panel"}>
+    <section className={panelClassName}>
       {view === "intrusions" ? (
         <IntrusionsManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
       ) : view === "fpvRecords" ? (
@@ -2251,7 +2311,12 @@ function ManagementView({
           onSaveUserSettings={onSaveUserSettings}
         />
       ) : view === "offlineMap" ? (
-        <OfflineMapManagement t={t} locale={locale} />
+        <OfflineMapManagement
+          t={t}
+          locale={locale}
+          state={offlineMapState}
+          onStateChange={onOfflineMapStateChange}
+        />
       ) : (
         <WhitelistManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
       )}
@@ -2259,50 +2324,152 @@ function ManagementView({
   );
 }
 
-function OfflineMapManagement({ t, locale }: { t: Record<string, string>; locale: Locale }) {
-  const [status, setStatus] = useState<OfflineMapStatus | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [keepBackup, setKeepBackup] = useState(true);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+function OfflineMapManagement({
+  t,
+  locale,
+  state,
+  onStateChange,
+}: {
+  t: Record<string, string>;
+  locale: Locale;
+  state: OfflineMapViewState;
+  onStateChange: Dispatch<SetStateAction<OfflineMapViewState>>;
+}) {
+  const { status, file, keepBackup, loading, busy, message, uploadLogs } = state;
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (options: { clearMessage?: boolean } = {}) => {
+    onStateChange((current) => ({
+      ...current,
+      loading: true,
+    }));
     try {
-      setStatus(await getOfflineMapStatus());
-      setMessage("");
+      const nextStatus = await getOfflineMapStatus();
+      onStateChange((current) => (
+        current.busy
+          ? { ...current, loading: false }
+          : {
+            ...current,
+            status: nextStatus,
+            message: options.clearMessage ? "" : current.message,
+          }
+      ));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      onStateChange((current) => (
+        current.busy
+          ? { ...current, loading: false }
+          : {
+            ...current,
+            message: error instanceof Error ? error.message : String(error),
+          }
+      ));
     } finally {
-      setLoading(false);
+      onStateChange((current) => ({
+        ...current,
+        loading: false,
+      }));
     }
-  }, []);
+  }, [onStateChange]);
 
   useEffect(() => {
+    if (busy) {
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [busy, refresh]);
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.currentTarget.files?.[0] ?? null;
+    onStateChange((current) => ({
+      ...current,
+      file: selectedFile,
+      uploadLogs: selectedFile
+        ? [
+          createOfflineMapUploadLog(
+            "frontend-select",
+            t.offlineMapUploadSelected.replace("{file}", selectedFile.name),
+            "success",
+            formatFileSize(selectedFile.size, locale),
+          ),
+        ]
+        : current.uploadLogs,
+    }));
+  };
 
   const submit = async () => {
     if (!file || busy) {
       return;
     }
-    setBusy(true);
-    setMessage("");
+    const uploadFile = file;
+    onStateChange((current) => ({
+      ...current,
+      busy: true,
+      message: "",
+      uploadLogs: [
+        createOfflineMapUploadLog(
+          "frontend-select",
+          t.offlineMapUploadSelected.replace("{file}", uploadFile.name),
+          "success",
+          formatFileSize(uploadFile.size, locale),
+        ),
+        createOfflineMapUploadLog("frontend-start", t.offlineMapUploadQueued, "running", uploadFile.name),
+      ],
+    }));
     try {
-      const response = await uploadOfflineMap(file, keepBackup);
-      setStatus(response.map);
-      setMessage(response.message || t.offlineMapUploadSuccess);
-      setFile(null);
+      const response = await uploadOfflineMap(uploadFile, keepBackup, (progress) => {
+        onStateChange((current) => ({
+          ...current,
+          uploadLogs: updateOfflineMapUploadProgress(current.uploadLogs, progress, t, locale),
+        }));
+      });
+      onStateChange((current) => {
+        const mergedLogs = mergeOfflineMapUploadLogs(current.uploadLogs, response.logs ?? []);
+        return {
+          ...current,
+          status: response.map,
+          message: response.message || t.offlineMapUploadSuccess,
+          file: null,
+          uploadLogs: appendOfflineMapUploadLog(
+            mergedLogs,
+            createOfflineMapUploadLog("frontend-done", response.message || t.offlineMapUploadSuccess, "success", uploadFile.name),
+          ),
+        };
+      });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : t.offlineMapUploadFailed);
+      const errorMessage = error instanceof Error ? error.message : t.offlineMapUploadFailed;
+      const backendLogs = isOfflineMapUploadError(error) ? error.logs ?? [] : [];
+      onStateChange((current) => ({
+        ...current,
+        message: errorMessage,
+        uploadLogs: appendOfflineMapUploadLog(
+          mergeOfflineMapUploadLogs(current.uploadLogs, backendLogs),
+          createOfflineMapUploadLog("frontend-error", errorMessage, "error", uploadFile.name),
+        ),
+      }));
     } finally {
-      setBusy(false);
+      onStateChange((current) => ({
+        ...current,
+        busy: false,
+      }));
     }
   };
 
+  const statusText = loading && !status
+    ? t.waiting
+    : status?.available
+      ? t.offlineMapAvailable
+      : t.offlineMapUnavailable;
+  const uploadedAt = formatFullTime(status?.uploadedAt, locale);
+  const tileCount = (status?.tileCount ?? 0).toLocaleString(locale);
+  const sourceFile = status?.sourceFile || "-";
+  const mapPath = status?.path || "-";
+  const fileSizeText = file ? formatFileSize(file.size, locale) : "-";
+  const messageText = message || status?.message || "";
+  const managementClassName = messageText
+    ? "screen-management screen-management--offline-map screen-management--with-banner"
+    : "screen-management screen-management--offline-map";
+
   return (
-    <div className="screen-management screen-management--settings">
+    <div className={managementClassName}>
       <div className="screen-management__header">
         <div className="screen-panel-title">
           <span className="screen-panel-title__icon screen-panel-title__icon--target">
@@ -2313,81 +2480,146 @@ function OfflineMapManagement({ t, locale }: { t: Record<string, string>; locale
             <strong>{t.offlineMapTitle}</strong>
           </span>
         </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading || busy}>
+        <button type="button" onClick={() => void refresh({ clearMessage: true })} disabled={loading || busy}>
           {loading ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
           <span>{t.refresh}</span>
         </button>
       </div>
 
-      <div className="screen-settings-grid">
-        <section className="screen-settings-section screen-settings-section--display">
-          <header>
-            <span className="screen-settings-section__icon">
-              <MapPinned size={15} aria-hidden="true" />
+      <div className="screen-offline-map-dashboard">
+        <section className={status?.available ? "screen-offline-map-status screen-offline-map-status--ready" : "screen-offline-map-status"}>
+          <div className="screen-offline-map-status__main">
+            <span className="screen-offline-map-status__icon">
+              <MapPinned size={20} aria-hidden="true" />
             </span>
-            <span className="screen-settings-section__heading">
-              <strong>{t.offlineMapStatus}</strong>
-              <span>{t.offlineMapDescription}</span>
+            <span className="screen-offline-map-status__text">
+              <em>{t.offlineMapStatus}</em>
+              <strong>{statusText}</strong>
+              <small>{t.offlineMapDescription}</small>
             </span>
-          </header>
-          <div className="screen-info-grid">
-            <InfoBlock label={t.status} value={status?.available ? t.offlineMapAvailable : t.offlineMapUnavailable} />
-            <InfoBlock label={t.offlineMapTiles} value={String(status?.tileCount ?? 0)} />
-            <InfoBlock label={t.offlineMapUploadedAt} value={formatFullTime(status?.uploadedAt, locale)} />
-            <InfoBlock label={t.offlineMapSourceFile} value={status?.sourceFile || "-"} />
-            <InfoBlock label={t.offlineMapPath} value={status?.path || "-"} />
           </div>
-        </section>
-
-        <section className="screen-settings-section screen-settings-section--tcp">
-          <header>
-            <span className="screen-settings-section__icon">
-              <HardDriveUpload size={15} aria-hidden="true" />
-            </span>
-            <span className="screen-settings-section__heading">
-              <strong>{t.offlineMapUpload}</strong>
-              <span>{file ? `${file.name} · ${formatFileSize(file.size, locale)}` : t.offlineMapSelectFile}</span>
-            </span>
-          </header>
-          <div className="screen-settings-form-grid">
-            <label>
-              <span>{t.offlineMapFile}</span>
-              <input
-                type="file"
-                accept=".zip"
-                disabled={busy}
-                onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)}
-              />
-            </label>
-            <label className="screen-settings-toggle-row">
-              <span>{t.offlineMapKeepBackup}</span>
-              <input type="checkbox" checked={keepBackup} disabled={busy} onChange={(event) => setKeepBackup(event.target.checked)} />
-            </label>
-            <div className="screen-settings-preview">
-              <span>{t.fileSize}</span>
-              <strong>{file ? formatFileSize(file.size, locale) : "-"}</strong>
+          <div className="screen-offline-map-metrics">
+            <div>
+              <span>{t.offlineMapTiles}</span>
+              <strong>{tileCount}</strong>
+            </div>
+            <div>
+              <span>{t.offlineMapUploadedAt}</span>
+              <strong title={uploadedAt}>{uploadedAt}</strong>
+            </div>
+            <div>
+              <span>{t.offlineMapSourceFile}</span>
+              <strong title={sourceFile}>{sourceFile}</strong>
             </div>
           </div>
         </section>
+
+        <section className="screen-offline-map-upload">
+          <header>
+            <span className="screen-offline-map-section-icon">
+              <HardDriveUpload size={17} aria-hidden="true" />
+            </span>
+            <span>
+              <strong>{t.offlineMapUpload}</strong>
+              <small>{file ? file.name : t.offlineMapSelectFile}</small>
+            </span>
+          </header>
+
+          <label className={file ? "screen-offline-map-dropzone screen-offline-map-dropzone--ready" : "screen-offline-map-dropzone"}>
+            <input
+              type="file"
+              accept=".zip"
+              disabled={busy}
+              onChange={handleFileChange}
+            />
+            <span className="screen-offline-map-dropzone__icon">
+              <HardDriveUpload size={24} aria-hidden="true" />
+            </span>
+            <span className="screen-offline-map-dropzone__text">
+              <strong title={file?.name}>{file ? file.name : t.offlineMapSelectFile}</strong>
+              <small>{file ? fileSizeText : t.offlineMapFile}</small>
+            </span>
+          </label>
+
+          <div className="screen-offline-map-upload__actions">
+            <label className="screen-offline-map-backup-toggle">
+              <span>
+                <ShieldCheck size={15} aria-hidden="true" />
+                {t.offlineMapKeepBackup}
+              </span>
+              <input
+                type="checkbox"
+                checked={keepBackup}
+                disabled={busy}
+                onChange={(event) => onStateChange((current) => ({
+                  ...current,
+                  keepBackup: event.target.checked,
+                }))}
+              />
+            </label>
+            <button className="screen-offline-map-submit" type="button" disabled={busy || !file} onClick={() => void submit()}>
+              {busy ? <Loader2 className="app-spinner" size={15} aria-hidden="true" /> : <Check size={15} aria-hidden="true" />}
+              <span>{t.offlineMapUpload}</span>
+            </button>
+          </div>
+        </section>
+
+        <section className="screen-offline-map-details">
+          <header>
+            <span className="screen-offline-map-section-icon">
+              <Info size={17} aria-hidden="true" />
+            </span>
+            <span>
+              <strong>{t.offlineMapStatus}</strong>
+              <small>{mapPath}</small>
+            </span>
+          </header>
+          <dl className="screen-offline-map-detail-list">
+            <div>
+              <dt>{t.status}</dt>
+              <dd>{statusText}</dd>
+            </div>
+            <div>
+              <dt>{t.offlineMapSourceFile}</dt>
+              <dd title={sourceFile}>{sourceFile}</dd>
+            </div>
+            <div>
+              <dt>{t.offlineMapPath}</dt>
+              <dd title={mapPath}>{mapPath}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section className="screen-offline-map-logs">
+          <header>
+            <span className="screen-offline-map-section-icon">
+              <ListFilter size={17} aria-hidden="true" />
+            </span>
+            <span>
+              <strong>{t.offlineMapUploadLogs}</strong>
+              <small>{busy ? t.offlineMapUploadWaitingBackend : t.offlineMapUploadLogEmpty}</small>
+            </span>
+          </header>
+          <ol className="screen-offline-map-log-list" aria-live="polite">
+            {uploadLogs.length > 0 ? uploadLogs.map((log) => (
+              <li key={log.id} className={`screen-offline-map-log-item ${offlineMapUploadLogStatusClass(log.status)}`}>
+                <span className="screen-offline-map-log-item__dot" aria-hidden="true" />
+                <span className="screen-offline-map-log-item__body">
+                  <span className="screen-offline-map-log-item__main">
+                    <strong>{log.message}</strong>
+                    <time dateTime={log.timestamp}>{formatTargetTime(log.timestamp, locale)}</time>
+                  </span>
+                  {log.detail ? <small title={log.detail}>{log.detail}</small> : null}
+                </span>
+              </li>
+            )) : (
+              <li className="screen-offline-map-log-empty">{t.offlineMapUploadLogEmpty}</li>
+            )}
+          </ol>
+        </section>
       </div>
 
-      {message || status?.message ? <div className="screen-management__banner">{message || status?.message}</div> : null}
-
-      <div className="screen-management__footer screen-settings-actions">
-        <button type="button" disabled={busy || !file} onClick={() => void submit()}>
-          {busy ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
-          <span>{t.offlineMapUpload}</span>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function InfoBlock({ label, value, children }: { label: string; value?: string; children?: ReactNode }) {
-  return (
-    <div className="screen-info-block">
-      <span>{label}</span>
-      <strong title={value}>{children ?? value ?? "-"}</strong>
+      {messageText ? <div className="screen-management__banner">{messageText}</div> : null}
     </div>
   );
 }
@@ -4077,6 +4309,7 @@ function DeviceSummary({
   manualLocationPickMode: boolean;
   onManualLocationPickToggle: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const valid = Boolean(location?.valid && location.point);
   const pointText = valid && location?.point ? formatPoint(location.point) : t.noLocation;
   const locationState = valid
@@ -4092,36 +4325,55 @@ function DeviceSummary({
     formatTemperature(location?.rfTempC, t.rfTemp, locale),
     location?.mainTempC === undefined ? "" : formatTemperature(location.mainTempC, t.mainTemp, locale),
   ].filter(Boolean).join(" / ");
+  const toggleLabel = expanded ? t.collapseDeviceInfo : t.expandDeviceInfo;
 
   return (
-    <article className={`screen-device-summary screen-device-summary--${valid ? "located" : "empty"}`}>
+    <article className={`screen-device-summary screen-device-summary--${valid ? "located" : "empty"} screen-device-summary--${expanded ? "expanded" : "collapsed"}`}>
       <span className="screen-device-summary__icon">
         <Crosshair aria-hidden="true" />
       </span>
       <span className="screen-device-summary__body">
-        <span className="screen-device-summary__title">
-          <strong>{t.deviceInfo}</strong>
-          <em>{locationState}</em>
-        </span>
-        <span className="screen-device-summary__point" title={pointText}>{pointText}</span>
-        {temperatureText ? <small title={temperatureText}>{temperatureText}</small> : null}
-      </span>
-      <span className="screen-device-summary__actions">
-        {showManualAction ? (
-          <button className="screen-device-summary__manual" type="button" onClick={onOpenManualLocation}>
-            <MapPin aria-hidden="true" />
-            <span>{manualActionLabel}</span>
-          </button>
-        ) : null}
         <button
-          className={manualLocationPickMode ? "screen-device-summary__manual screen-device-summary__manual--active" : "screen-device-summary__manual"}
+          className="screen-device-summary__header"
           type="button"
-          aria-pressed={manualLocationPickMode}
-          onClick={onManualLocationPickToggle}
+          aria-expanded={expanded}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          onClick={() => setExpanded((value) => !value)}
         >
-          <LocateFixed aria-hidden="true" />
-          <span>{manualLocationPickMode ? t.cancelPickManualLocation : t.pickManualLocation}</span>
+          <span className="screen-device-summary__title">
+            <strong>{t.deviceInfo}</strong>
+            <em>{locationState}</em>
+          </span>
+          <span className="screen-device-summary__toggle" aria-hidden="true">
+            <ChevronDown />
+          </span>
         </button>
+        {expanded ? (
+          <span className="screen-device-summary__details">
+            <span className="screen-device-summary__readouts">
+              <span className="screen-device-summary__point" title={pointText}>{pointText}</span>
+              {temperatureText ? <small title={temperatureText}>{temperatureText}</small> : null}
+            </span>
+            <span className="screen-device-summary__actions">
+              {showManualAction ? (
+                <button className="screen-device-summary__manual" type="button" onClick={onOpenManualLocation}>
+                  <MapPin aria-hidden="true" />
+                  <span>{manualActionLabel}</span>
+                </button>
+              ) : null}
+              <button
+                className={manualLocationPickMode ? "screen-device-summary__manual screen-device-summary__manual--active" : "screen-device-summary__manual"}
+                type="button"
+                aria-pressed={manualLocationPickMode}
+                onClick={onManualLocationPickToggle}
+              >
+                <LocateFixed aria-hidden="true" />
+                <span>{manualLocationPickMode ? t.cancelPickManualLocation : t.pickManualLocation}</span>
+              </button>
+            </span>
+          </span>
+        ) : null}
       </span>
     </article>
   );
@@ -6153,6 +6405,109 @@ function formatFileSize(bytes: number | undefined, locale: Locale) {
   return `${value.toLocaleString(locale, {
     maximumFractionDigits: unitIndex === 0 ? 0 : 1,
   })} ${units[unitIndex]}`;
+}
+
+function createOfflineMapUploadLog(stage: string, message: string, status: string, detail = ""): OfflineMapUploadLogView {
+  offlineMapUploadLogSequence += 1;
+  return {
+    id: `frontend-${offlineMapUploadLogSequence}`,
+    stage,
+    message,
+    status,
+    timestamp: new Date().toISOString(),
+    detail,
+  };
+}
+
+function appendOfflineMapUploadLog(logs: OfflineMapUploadLogView[], log: OfflineMapUploadLogView) {
+  return [...logs, log];
+}
+
+function upsertOfflineMapUploadLog(logs: OfflineMapUploadLogView[], nextLog: OfflineMapUploadLogView) {
+  const index = logs.findIndex((log) => log.stage === nextLog.stage);
+  if (index < 0) {
+    return appendOfflineMapUploadLog(logs, nextLog);
+  }
+  const next = logs.slice();
+  next[index] = {
+    ...nextLog,
+    id: logs[index].id,
+  };
+  return next;
+}
+
+function updateOfflineMapUploadProgress(
+  logs: OfflineMapUploadLogView[],
+  progress: OfflineMapUploadProgress,
+  t: Record<string, string>,
+  locale: Locale,
+) {
+  const percent = Math.max(0, Math.min(100, progress.percent));
+  const detail = progress.total > 0
+    ? `${formatFileSize(progress.loaded, locale)} / ${formatFileSize(progress.total, locale)}`
+    : formatFileSize(progress.loaded, locale);
+  let nextLogs = upsertOfflineMapUploadLog(
+    logs,
+    createOfflineMapUploadLog(
+      "frontend-progress",
+      t.offlineMapUploadProgress.replace("{percent}", String(percent)),
+      percent >= 100 ? "success" : "running",
+      detail,
+    ),
+  );
+  if (percent >= 100) {
+    nextLogs = upsertOfflineMapUploadLog(
+      nextLogs,
+      createOfflineMapUploadLog("frontend-wait", t.offlineMapUploadWaitingBackend, "running"),
+    );
+  }
+  return nextLogs;
+}
+
+function mergeOfflineMapUploadLogs(logs: OfflineMapUploadLogView[], backendLogs: OfflineMapUploadLog[]) {
+  if (backendLogs.length === 0) {
+    return logs;
+  }
+  const next = logs.slice();
+  const seen = new Set(next.map(offlineMapUploadLogKey));
+  backendLogs.forEach((log, index) => {
+    const normalized = normalizeOfflineMapUploadLog(log, index);
+    const key = offlineMapUploadLogKey(normalized);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    next.push(normalized);
+  });
+  return next;
+}
+
+function normalizeOfflineMapUploadLog(log: OfflineMapUploadLog, index: number): OfflineMapUploadLogView {
+  return {
+    ...log,
+    id: `backend-${log.timestamp}-${log.stage}-${log.status}-${index}`,
+  };
+}
+
+function offlineMapUploadLogKey(log: OfflineMapUploadLog) {
+  return [log.stage, log.status, log.timestamp, log.message, log.detail ?? ""].join("\u0000");
+}
+
+function offlineMapUploadLogStatusClass(status: string) {
+  switch (status.trim().toLowerCase()) {
+    case "success":
+      return "screen-offline-map-log-item--success";
+    case "error":
+      return "screen-offline-map-log-item--error";
+    case "running":
+      return "screen-offline-map-log-item--running";
+    default:
+      return "screen-offline-map-log-item--pending";
+  }
+}
+
+function isOfflineMapUploadError(error: unknown): error is OfflineMapUploadError {
+  return error instanceof Error && Array.isArray((error as OfflineMapUploadError).logs);
 }
 
 function formatCountdown(seconds: number) {

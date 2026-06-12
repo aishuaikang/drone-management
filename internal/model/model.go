@@ -23,10 +23,20 @@ type OfflineMapStatus struct {
 	Message    string     `json:"message,omitempty"`
 }
 
+// OfflineMapUploadLog describes one stage of an offline map upload.
+type OfflineMapUploadLog struct {
+	Stage     string    `json:"stage"`
+	Message   string    `json:"message"`
+	Status    string    `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Detail    string    `json:"detail,omitempty"`
+}
+
 // OfflineMapUploadResponse returns offline map installation status after upload.
 type OfflineMapUploadResponse struct {
-	Map     OfflineMapStatus `json:"map"`
-	Message string           `json:"message"`
+	Map     OfflineMapStatus      `json:"map"`
+	Message string                `json:"message"`
+	Logs    []OfflineMapUploadLog `json:"logs"`
 }
 
 // GeoPoint describes a WGS84 coordinate.

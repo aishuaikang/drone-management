@@ -122,6 +122,18 @@ func TestOfflineMapUploadAndTiles(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("map upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	var uploadResponse model.OfflineMapUploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&uploadResponse); err != nil {
+		t.Fatalf("decode map upload response: %v", err)
+	}
+	if !uploadResponse.Map.Available {
+		t.Fatalf("map available = false, response = %+v", uploadResponse)
+	}
+	if !slices.ContainsFunc(uploadResponse.Logs, func(log model.OfflineMapUploadLog) bool {
+		return log.Stage == "done" && log.Status == "success"
+	}) {
+		t.Fatalf("upload logs missing done stage: %+v", uploadResponse.Logs)
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/map/dt/12/345/678.jpg", nil)
 	rec = httptest.NewRecorder()

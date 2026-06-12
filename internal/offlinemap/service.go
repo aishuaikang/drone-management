@@ -27,7 +27,11 @@ type UploadOptions struct {
 	SourceFile string
 	KeepBackup bool
 	Now        time.Time
+	Logger     UploadLogger
 }
+
+// UploadLogger records visible stages during offline map installation.
+type UploadLogger func(stage string, message string, status string, detail string)
 
 type manifest struct {
 	TileCount  int       `json:"tileCount"`
@@ -85,22 +89,29 @@ func (s *Service) Status() model.OfflineMapStatus {
 
 // Install validates a zip package and atomically switches the active map directory.
 func (s *Service) Install(packagePath string, options UploadOptions) (model.OfflineMapStatus, error) {
+	logUploadStage(options.Logger, "validate", "检查离线地图服务配置", "running", "")
 	if s == nil || s.root == "" {
+		logUploadStage(options.Logger, "validate", "离线地图服务不可用", "error", "")
 		return model.OfflineMapStatus{}, fmt.Errorf("offline map path is not configured")
 	}
 	packagePath = strings.TrimSpace(packagePath)
 	if packagePath == "" {
+		logUploadStage(options.Logger, "validate", "上传文件为空", "error", "")
 		return model.OfflineMapStatus{}, fmt.Errorf("请选择离线地图 ZIP 包")
 	}
 	if !strings.EqualFold(filepath.Ext(packagePath), ".zip") {
+		logUploadStage(options.Logger, "validate", "文件类型校验失败", "error", filepath.Base(packagePath))
 		return model.OfflineMapStatus{}, fmt.Errorf("离线地图只支持 .zip 文件")
 	}
 
+	logUploadStage(options.Logger, "scan", "扫描 ZIP 包结构", "running", filepath.Base(packagePath))
 	entries, cleanup, err := collectTiles(packagePath)
 	if err != nil {
+		logUploadStage(options.Logger, "scan", "ZIP 包结构校验失败", "error", err.Error())
 		return model.OfflineMapStatus{}, err
 	}
 	defer cleanup()
+	logUploadStage(options.Logger, "scan", "ZIP 包结构校验完成", "success", fmt.Sprintf("发现 %d 个瓦片", len(entries)))
 
 	now := options.Now
 	if now.IsZero() {
@@ -110,17 +121,20 @@ func (s *Service) Install(packagePath string, options UploadOptions) (model.Offl
 	if sourceFile == "" {
 		sourceFile = filepath.Base(packagePath)
 	}
+	logUploadStage(options.Logger, "install", "安装离线地图瓦片", "running", sourceFile)
 	if err := s.installEntries(entries, manifest{
 		TileCount:  len(entries),
 		UploadedAt: now,
 		SourceFile: sourceFile,
-	}, options.KeepBackup); err != nil {
+	}, options.KeepBackup, options.Logger); err != nil {
+		logUploadStage(options.Logger, "install", "离线地图安装失败", "error", err.Error())
 		return model.OfflineMapStatus{}, err
 	}
+	logUploadStage(options.Logger, "install", "离线地图安装完成", "success", sourceFile)
 	return s.Status(), nil
 }
 
-func (s *Service) installEntries(entries []tileEntry, saved manifest, keepBackup bool) error {
+func (s *Service) installEntries(entries []tileEntry, saved manifest, keepBackup bool, logger UploadLogger) error {
 	taskID := strconv.FormatInt(time.Now().UnixNano(), 10)
 	stagingDir := filepath.Join(s.root, ".staging", taskID)
 	stagingDT := filepath.Join(stagingDir, "dt")
@@ -128,13 +142,17 @@ func (s *Service) installEntries(entries []tileEntry, saved manifest, keepBackup
 	backupRoot := filepath.Join(s.root, ".backup")
 	backupDT := filepath.Join(backupRoot, "dt_"+time.Now().Format("20060102150405"))
 
+	logUploadStage(logger, "staging", "创建临时安装目录", "running", stagingDT)
 	if err := os.MkdirAll(stagingDT, 0o755); err != nil {
+		logUploadStage(logger, "staging", "创建临时安装目录失败", "error", err.Error())
 		return err
 	}
 	if err := os.MkdirAll(backupRoot, 0o755); err != nil {
 		_ = os.RemoveAll(stagingDir)
+		logUploadStage(logger, "staging", "创建备份目录失败", "error", err.Error())
 		return err
 	}
+	logUploadStage(logger, "staging", "临时安装目录已创建", "success", stagingDT)
 	cleanupStaging := true
 	defer func() {
 		if cleanupStaging {
@@ -142,26 +160,34 @@ func (s *Service) installEntries(entries []tileEntry, saved manifest, keepBackup
 		}
 	}()
 
+	logUploadStage(logger, "extract", "解压瓦片到临时目录", "running", fmt.Sprintf("%d 个瓦片", len(entries)))
 	for _, entry := range entries {
 		targetPath := filepath.Join(stagingDir, filepath.FromSlash(entry.target))
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			logUploadStage(logger, "extract", "创建瓦片目录失败", "error", err.Error())
 			return err
 		}
 		if err := writeTile(entry.source, targetPath); err != nil {
+			logUploadStage(logger, "extract", "写入瓦片失败", "error", err.Error())
 			return err
 		}
 	}
+	logUploadStage(logger, "extract", "瓦片解压完成", "success", fmt.Sprintf("%d 个瓦片", len(entries)))
 	if err := os.MkdirAll(s.root, 0o755); err != nil {
+		logUploadStage(logger, "switch", "创建地图根目录失败", "error", err.Error())
 		return err
 	}
 
+	logUploadStage(logger, "switch", "切换离线地图目录", "running", currentDT)
 	backupCreated := false
 	if _, err := os.Stat(currentDT); err == nil {
 		if err := os.Rename(currentDT, backupDT); err != nil {
+			logUploadStage(logger, "switch", "备份旧地图失败", "error", err.Error())
 			return err
 		}
 		backupCreated = true
 	} else if err != nil && !os.IsNotExist(err) {
+		logUploadStage(logger, "switch", "读取旧地图状态失败", "error", err.Error())
 		return err
 	}
 
@@ -169,22 +195,42 @@ func (s *Service) installEntries(entries []tileEntry, saved manifest, keepBackup
 		if backupCreated {
 			_ = os.Rename(backupDT, currentDT)
 		}
+		logUploadStage(logger, "switch", "切换离线地图目录失败", "error", err.Error())
 		return err
 	}
 	cleanupStaging = false
 	_ = os.RemoveAll(stagingDir)
+	logUploadStage(logger, "switch", "离线地图目录已切换", "success", currentDT)
 
+	logUploadStage(logger, "manifest", "写入离线地图清单", "running", manifestName)
 	if err := writeManifest(s.root, saved); err != nil {
 		if backupCreated {
 			_ = os.RemoveAll(currentDT)
 			_ = os.Rename(backupDT, currentDT)
 		}
+		logUploadStage(logger, "manifest", "写入离线地图清单失败", "error", err.Error())
 		return err
 	}
+	logUploadStage(logger, "manifest", "离线地图清单已写入", "success", manifestName)
 	if !keepBackup && backupCreated {
+		logUploadStage(logger, "cleanup", "删除旧地图备份", "running", backupDT)
 		_ = os.RemoveAll(backupDT)
+		logUploadStage(logger, "cleanup", "旧地图备份已删除", "success", backupDT)
 	}
-	return syncDir(s.root)
+	logUploadStage(logger, "sync", "同步地图目录到磁盘", "running", s.root)
+	if err := syncDir(s.root); err != nil {
+		logUploadStage(logger, "sync", "同步地图目录失败", "error", err.Error())
+		return err
+	}
+	logUploadStage(logger, "sync", "地图目录同步完成", "success", s.root)
+	return nil
+}
+
+func logUploadStage(logger UploadLogger, stage string, message string, status string, detail string) {
+	if logger == nil {
+		return
+	}
+	logger(stage, message, status, detail)
 }
 
 func writeTile(file *zip.File, targetPath string) error {

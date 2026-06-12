@@ -13,6 +13,7 @@ import type {
   IntrusionRecord,
   ListResponse,
   OfflineMapStatus,
+  OfflineMapUploadLog,
   OfflineMapUploadResponse,
   ScreenDeviceLocationResponse,
   ScreenFPVTarget,
@@ -31,6 +32,10 @@ export const FPV_VIDEO_SESSION_BUSY_CODE = "busy";
 
 export type FPVVideoSessionError = Error & {
   code?: string;
+};
+
+export type OfflineMapUploadError = Error & {
+  logs?: OfflineMapUploadLog[];
 };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -66,21 +71,6 @@ async function requestBlob(path: string, init?: RequestInit): Promise<{ blob: Bl
     blob: await response.blob(),
     fileName: responseFileName(response.headers.get("Content-Disposition")),
   };
-}
-
-async function requestFormJson<T>(path: string, form: FormData, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  headers.set("Accept", "application/json");
-  const response = await fetch(`${API_PREFIX}${path}`, {
-    ...init,
-    method: init?.method ?? "POST",
-    body: form,
-    headers,
-  });
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
-  }
-  return (await response.json()) as T;
 }
 
 async function responseErrorMessage(response: Response) {
@@ -170,11 +160,98 @@ export function getOfflineMapStatus() {
   return requestJson<OfflineMapStatus>("/offline-map/status");
 }
 
-export function uploadOfflineMap(file: File, keepBackup: boolean) {
+export function uploadOfflineMap(
+  file: File,
+  keepBackup: boolean,
+  onProgress?: (progress: { loaded: number; total: number; percent: number }) => void,
+) {
   const form = new FormData();
   form.set("file", file);
   form.set("keepBackup", keepBackup ? "true" : "false");
-  return requestFormJson<OfflineMapUploadResponse>("/offline-map/upload", form);
+  return requestOfflineMapUpload(form, onProgress);
+}
+
+function requestOfflineMapUpload(
+  form: FormData,
+  onProgress?: (progress: { loaded: number; total: number; percent: number }) => void,
+): Promise<OfflineMapUploadResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_PREFIX}/offline-map/upload`);
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !onProgress) {
+        return;
+      }
+      onProgress({
+        loaded: event.loaded,
+        total: event.total,
+        percent: Math.round((event.loaded / event.total) * 100),
+      });
+    };
+    xhr.onload = () => {
+      const payload = parseOfflineMapUploadPayload(xhr.responseText);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve((payload ?? {}) as OfflineMapUploadResponse);
+        return;
+      }
+      const error = new Error(readOfflineMapUploadMessage(payload, `请求失败: ${xhr.status}`)) as OfflineMapUploadError;
+      error.logs = readOfflineMapUploadLogs(payload);
+      reject(error);
+    };
+    xhr.onerror = () => {
+      reject(new Error("网络请求失败"));
+    };
+    xhr.onabort = () => {
+      reject(new Error("上传已取消"));
+    };
+    xhr.send(form);
+  });
+}
+
+function parseOfflineMapUploadPayload(text: string): unknown {
+  if (!text.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function readOfflineMapUploadMessage(payload: unknown, fallback: string) {
+  if (!payload || typeof payload !== "object" || !("message" in payload)) {
+    return fallback;
+  }
+  const message = (payload as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message.trim() : fallback;
+}
+
+function readOfflineMapUploadLogs(payload: unknown): OfflineMapUploadLog[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const value = "logs" in payload
+    ? (payload as { logs?: unknown }).logs
+    : "details" in payload
+      ? (payload as { details?: unknown }).details
+      : null;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isOfflineMapUploadLog);
+}
+
+function isOfflineMapUploadLog(value: unknown): value is OfflineMapUploadLog {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { stage?: unknown }).stage === "string" &&
+      typeof (value as { message?: unknown }).message === "string" &&
+      typeof (value as { status?: unknown }).status === "string" &&
+      typeof (value as { timestamp?: unknown }).timestamp === "string",
+  );
 }
 
 export function getUserSettings() {

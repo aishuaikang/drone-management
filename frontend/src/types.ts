@@ -12,9 +12,18 @@ export interface OfflineMapStatus {
   message?: string;
 }
 
+export interface OfflineMapUploadLog {
+  stage: string;
+  message: string;
+  status: "pending" | "running" | "success" | "error" | string;
+  timestamp: string;
+  detail?: string;
+}
+
 export interface OfflineMapUploadResponse {
   map: OfflineMapStatus;
   message: string;
+  logs?: OfflineMapUploadLog[];
 }
 
 export interface TCPListenerStatus {

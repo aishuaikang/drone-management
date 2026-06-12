@@ -1,16 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 65" fill="none" preserveAspectRatio="none" aria-hidden="true">
   <defs>
-    <linearGradient id="footerPanel" x1="960" y1="18" x2="960" y2="65" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.5" />
-      <stop offset="0.42" stop-color="currentColor" stop-opacity="0.2" />
+    <linearGradient id="screenFooterDeck" x1="960" y1="18" x2="960" y2="65" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.36" />
+      <stop offset="0.48" stop-color="currentColor" stop-opacity="0.15" />
       <stop offset="1" stop-color="currentColor" stop-opacity="0" />
     </linearGradient>
-    <linearGradient id="footerLine" x1="638" y1="18" x2="1282" y2="18" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.25" />
+    <linearGradient id="screenFooterBeam" x1="568" y1="43" x2="1352" y2="43" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0" />
+      <stop offset="0.18" stop-color="currentColor" stop-opacity="0.48" />
       <stop offset="0.5" stop-color="currentColor" />
-      <stop offset="1" stop-color="currentColor" stop-opacity="0.25" />
+      <stop offset="0.82" stop-color="currentColor" stop-opacity="0.48" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0" />
     </linearGradient>
-    <filter id="footerGlow" x="620" y="0" width="680" height="90" color-interpolation-filters="sRGB">
+    <radialGradient id="screenFooterPulse" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(960 48) rotate(90) scale(32 210)">
+      <stop offset="0" stop-color="currentColor" stop-opacity="0.42" />
+      <stop offset="0.54" stop-color="currentColor" stop-opacity="0.12" />
+      <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+    </radialGradient>
+    <filter id="screenFooterGlow" x="520" y="0" width="880" height="86" color-interpolation-filters="sRGB">
       <feGaussianBlur stdDeviation="4" result="blur" />
       <feMerge>
         <feMergeNode in="blur" />
@@ -18,9 +25,13 @@
       </feMerge>
     </filter>
   </defs>
-  <path class="footer-panel" d="M638 64L660 43L834 34L860 45H1060L1086 34L1260 43L1282 64H638Z" fill="url(#footerPanel)" />
-  <path class="footer-frame-line" d="M638 64L660 43L834 34L860 45H1060L1086 34L1260 43L1282 64" stroke="url(#footerLine)" stroke-width="2" filter="url(#footerGlow)" />
-  <path class="footer-main-line" d="M860 45H1060" stroke="currentColor" stroke-width="3" stroke-opacity="0.85" filter="url(#footerGlow)" />
-  <path class="footer-side-blocks" d="M790 46L805 46L818 54H803L790 46ZM812 46L827 46L840 54H825L812 46ZM834 46L849 46L862 54H847L834 46Z" fill="currentColor" fill-opacity="0.65" />
-  <path class="footer-side-blocks" d="M1058 54L1071 46H1086L1073 54H1058ZM1080 54L1093 46H1108L1095 54H1080ZM1102 54L1115 46H1130L1117 54H1102Z" fill="currentColor" fill-opacity="0.65" />
+
+  <path d="M568 65L616 42L802 35L852 48H1068L1118 35L1304 42L1352 65H568Z" fill="url(#screenFooterDeck)" />
+  <path d="M724 44H835L866 55H1054L1085 44H1196" stroke="url(#screenFooterBeam)" stroke-width="3" stroke-linecap="round" filter="url(#screenFooterGlow)" />
+  <path d="M568 65L616 42L802 35L852 48H1068L1118 35L1304 42L1352 65" stroke="url(#screenFooterBeam)" stroke-width="2" stroke-linecap="round" filter="url(#screenFooterGlow)" />
+  <path d="M812 52H1108L1160 65H760L812 52Z" fill="url(#screenFooterPulse)" />
+  <path d="M898 50H1022" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-opacity="0.82" filter="url(#screenFooterGlow)" />
+  <path d="M924 42H996" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.52" />
+  <path d="M750 50H775L788 58H763L750 50ZM797 50H822L835 58H810L797 50ZM844 50H869L882 58H857L844 50Z" fill="currentColor" fill-opacity="0.52" />
+  <path d="M1038 58L1051 50H1076L1063 58H1038ZM1085 58L1098 50H1123L1110 58H1085ZM1132 58L1145 50H1170L1157 58H1132Z" fill="currentColor" fill-opacity="0.52" />
 </svg>
