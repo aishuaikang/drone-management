@@ -43,10 +43,12 @@ func New(cfg config.Config) (*App, error) {
 		state.LoadManualDeviceLocation(point, updatedAt)
 	}
 	userSettings := settings.NewUserStore(cfg.UserSettingsPath)
+	loadedUserSettings := model.UserSettingsWithDefaults(model.UserSettings{})
 	if loaded, ok, err := userSettings.LoadUser(); err != nil {
 		slog.Warn("读取用户设置失败", "path", cfg.UserSettingsPath, "error", err)
 	} else if ok {
 		loaded = model.UserSettingsWithDefaults(loaded)
+		loadedUserSettings = loaded
 		seconds := model.UserSettingsPositionExpireSeconds(loaded)
 		state.SetPositionTTL(time.Duration(seconds) * time.Second)
 		cfg = configWithUserTCPPorts(cfg, loaded)
@@ -74,6 +76,11 @@ func New(cfg config.Config) (*App, error) {
 	interferenceSvc := newInterferenceService(cfg, state)
 	interferenceSvc.SetReportStore(interferenceReportStore)
 	interferenceSvc.SetUserSettingsStore(userSettings)
+	if loadedUserSettings.ScreenStrikeUnattended != nil && loadedUserSettings.ScreenStrikeUnattended.Enabled {
+		if _, err := interferenceSvc.RestoreUnattended(*loadedUserSettings.ScreenStrikeUnattended); err != nil {
+			slog.Warn("恢复无人值守干扰失败", "error", err)
+		}
+	}
 	offlineMapSvc := offlinemap.NewService(cfg.OfflineMapPath)
 
 	positionSvc := position.NewService(state, position.Options{

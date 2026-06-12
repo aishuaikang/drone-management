@@ -448,6 +448,35 @@ func TestUserSettingsRouteRejectsInvalidPositionExpireSeconds(t *testing.T) {
 	}
 }
 
+func TestUserSettingsRoutePreservesUnattendedConfig(t *testing.T) {
+	s := newTestServer(store.New(10, 10))
+	settingsStore := &memoryUserSettingsStore{
+		ok: true,
+		settings: model.UserSettings{
+			ScreenStrikeUnattended: &model.ScreenStrikeUnattendedConfig{
+				Enabled:         true,
+				ChannelIDs:      []string{"io1"},
+				DurationSeconds: 60,
+			},
+		},
+	}
+	s.userSettings = settingsStore
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"screenTitle":"机场","screenStrikeUnattended":{"enabled":false}}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := settingsStore.settings.ScreenStrikeUnattended; got == nil || !got.Enabled || got.DurationSeconds != 60 || len(got.ChannelIDs) != 1 || got.ChannelIDs[0] != "io1" {
+		t.Fatalf("unattended config should be preserved, got %#v", got)
+	}
+}
+
 func TestUserSettingsRouteRejectsInvalidWarningZoneRadius(t *testing.T) {
 	s := newTestServer(store.New(10, 10))
 	s.userSettings = &memoryUserSettingsStore{}
@@ -620,6 +649,66 @@ func TestScreenStrikeRoutes(t *testing.T) {
 	}
 }
 
+func TestScreenStrikeUnattendedRoute(t *testing.T) {
+	s := newTestServer(store.New(10, 10))
+	settingsStore := &memoryUserSettingsStore{}
+	s.userSettings = settingsStore
+	s.interference.SetUserSettingsStore(settingsStore)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/screen/strike/unattended",
+		strings.NewReader(`{"enabled":true,"channelIds":["io1"],"durationSeconds":10}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response model.ScreenStrikeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.State.Unattended.Enabled || response.State.Unattended.DurationSeconds != 10 {
+		t.Fatalf("unattended state = %#v", response.State.Unattended)
+	}
+	if settingsStore.settings.ScreenStrikeUnattended == nil || !settingsStore.settings.ScreenStrikeUnattended.Enabled {
+		t.Fatalf("persisted unattended settings = %#v", settingsStore.settings.ScreenStrikeUnattended)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/screen/strike",
+		strings.NewReader(`{"enabled":true,"channelIds":["io1"],"durationSeconds":10}`),
+	)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("manual while unattended status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var errorBody map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&errorBody); err != nil {
+		t.Fatalf("decode manual error: %v", err)
+	}
+	if errorBody["code"] != "strike_unattended_active" {
+		t.Fatalf("manual error body = %#v", errorBody)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/screen/strike/unattended",
+		strings.NewReader(`{"enabled":false}`),
+	)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if settingsStore.settings.ScreenStrikeUnattended == nil || settingsStore.settings.ScreenStrikeUnattended.Enabled {
+		t.Fatalf("persisted disabled settings = %#v", settingsStore.settings.ScreenStrikeUnattended)
+	}
+}
+
 func TestInterferenceReportRoutes(t *testing.T) {
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
 	reportStore := &memoryInterferenceReportStore{
@@ -628,6 +717,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 				InterferenceReportSummary: model.InterferenceReportSummary{
 					ID:                       "running",
 					Status:                   model.InterferenceReportStatusRunning,
+					OperationType:            model.InterferenceOperationManual,
 					StartedAt:                now,
 					RequestedDurationSeconds: 10,
 					ChannelIDs:               []string{"io1"},
@@ -642,6 +732,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 				InterferenceReportSummary: model.InterferenceReportSummary{
 					ID:                       "failed",
 					Status:                   model.InterferenceReportStatusFailed,
+					OperationType:            model.InterferenceOperationUnattended,
 					StartedAt:                now.Add(time.Minute),
 					EndedAt:                  ptrTime(now.Add(time.Minute + time.Second)),
 					DurationSeconds:          1,

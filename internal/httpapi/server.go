@@ -263,6 +263,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/screen/fpv", s.handleScreenFPV)
 	mux.HandleFunc("GET /api/v1/screen/strike", s.handleScreenStrike)
 	mux.HandleFunc("POST /api/v1/screen/strike", s.handleSetScreenStrike)
+	mux.HandleFunc("POST /api/v1/screen/strike/unattended", s.handleSetScreenStrikeUnattended)
 	mux.HandleFunc("PUT /api/v1/screen/tcp-ports", s.handleUpdateScreenTCPPorts)
 	mux.HandleFunc("GET /api/v1/interference/channels", s.handleInterferenceChannels)
 	mux.HandleFunc("POST /api/v1/interference/channels/{id}/state", s.handleSetInterferenceChannelState)
@@ -451,7 +452,7 @@ func (s *Server) handleSetScreenStrike(w http.ResponseWriter, r *http.Request) {
 	state, err := s.interference.SetScreenStrike(req)
 	if err != nil {
 		if code := interference.ErrorCode(err); code != "" {
-			respondError(w, http.StatusBadRequest, err.Error())
+			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
 			return
 		}
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -460,6 +461,35 @@ func (s *Server) handleSetScreenStrike(w http.ResponseWriter, r *http.Request) {
 	message := "干扰已停止"
 	if req.Enabled {
 		message = "干扰已开启"
+	}
+	respondJSON(w, http.StatusOK, model.ScreenStrikeResponse{
+		State:   state,
+		Message: message,
+	})
+}
+
+func (s *Server) handleSetScreenStrikeUnattended(w http.ResponseWriter, r *http.Request) {
+	var req model.ScreenStrikeUnattendedConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if s.interference == nil {
+		respondError(w, http.StatusServiceUnavailable, "interference service is unavailable")
+		return
+	}
+	state, err := s.interference.SetUnattended(req)
+	if err != nil {
+		if code := interference.ErrorCode(err); code != "" {
+			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
+			return
+		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	message := "无人值守已关闭"
+	if req.Enabled {
+		message = "无人值守已开启"
 	}
 	respondJSON(w, http.StatusOK, model.ScreenStrikeResponse{
 		State:   state,
@@ -495,7 +525,7 @@ func (s *Server) handleSetInterferenceChannelState(w http.ResponseWriter, r *htt
 	channel, err := s.interference.SetState(strings.TrimSpace(r.PathValue("id")), req.Enabled)
 	if err != nil {
 		if code := interference.ErrorCode(err); code != "" {
-			respondError(w, http.StatusBadRequest, err.Error())
+			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
 			return
 		}
 		respondError(w, http.StatusInternalServerError, err.Error())

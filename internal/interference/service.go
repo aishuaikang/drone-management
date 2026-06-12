@@ -1,6 +1,7 @@
 package interference
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -16,6 +17,13 @@ const (
 	screenStrikeEventType          = "screen.strike.updated"
 	screenStrikeMinDurationSeconds = 10
 	screenStrikeMaxDurationSeconds = 180
+	unattendedPhaseDisabled        = "disabled"
+	unattendedPhaseWatching        = "watching"
+	unattendedPhaseStriking        = "striking"
+	unattendedPhaseResting         = "resting"
+	unattendedTargetCheckInterval  = 5 * time.Second
+	unattendedRestInterval         = time.Minute
+	unattendedStatePollInterval    = time.Second
 )
 
 type codedError struct {
@@ -77,6 +85,13 @@ type ReportStore interface {
 // UserSettingsStore reads user settings used in report labels.
 type UserSettingsStore interface {
 	LoadUser() (model.UserSettings, bool, error)
+	SaveEditableUser(model.UserSettings) (model.UserSettings, error)
+}
+
+type unattendedTimings struct {
+	CheckInterval time.Duration
+	RestInterval  time.Duration
+	PollInterval  time.Duration
 }
 
 // Service manages interference channel state and screen strike lifecycle.
@@ -93,6 +108,11 @@ type Service struct {
 
 	activeReport   *model.InterferenceReport
 	activeReportID string
+
+	unattended        model.ScreenStrikeUnattendedState
+	unattendedTimings unattendedTimings
+	unattendedCancel  context.CancelFunc
+	unattendedDone    chan struct{}
 }
 
 // SetConnectionStatusProvider sets the physical output connection status source.
@@ -158,6 +178,14 @@ func NewService(
 		order:         order,
 		outputFactory: outputFactory,
 		store:         store,
+		unattended: model.ScreenStrikeUnattendedState{
+			Phase: unattendedPhaseDisabled,
+		},
+		unattendedTimings: unattendedTimings{
+			CheckInterval: unattendedTargetCheckInterval,
+			RestInterval:  unattendedRestInterval,
+			PollInterval:  unattendedStatePollInterval,
+		},
 	}
 }
 
@@ -173,6 +201,30 @@ func (s *Service) SetUserSettingsStore(settings UserSettingsStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings = settings
+}
+
+func (s *Service) SetUnattendedTimings(checkInterval, restInterval, pollInterval time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if checkInterval > 0 {
+		s.unattendedTimings.CheckInterval = checkInterval
+	}
+	if restInterval > 0 {
+		s.unattendedTimings.RestInterval = restInterval
+	}
+	if pollInterval > 0 {
+		s.unattendedTimings.PollInterval = pollInterval
+	}
+}
+
+// RestoreUnattended starts unattended strike from persisted settings without writing settings again.
+func (s *Service) RestoreUnattended(config model.ScreenStrikeUnattendedConfig) (model.ScreenStrikeState, error) {
+	return s.setUnattended(config, false)
+}
+
+// SetUnattended enables or disables the unattended strike loop.
+func (s *Service) SetUnattended(config model.ScreenStrikeUnattendedConfig) (model.ScreenStrikeState, error) {
+	return s.setUnattended(config, true)
 }
 
 // ListChannels returns channel state in stable display order.
@@ -227,7 +279,277 @@ func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
 func (s *Service) SetScreenStrike(req model.ScreenStrikeRequest) (model.ScreenStrikeState, error) {
 	durationSeconds := req.DurationSeconds
 	duration := time.Duration(durationSeconds) * time.Second
-	return s.applyScreenStrike(req.Enabled, req.ChannelIDs, duration, durationSeconds)
+	return s.applyScreenStrikeWithType(req.Enabled, req.ChannelIDs, duration, durationSeconds, model.InterferenceOperationManual)
+}
+
+func (s *Service) setUnattended(config model.ScreenStrikeUnattendedConfig, persist bool) (model.ScreenStrikeState, error) {
+	if !config.Enabled {
+		return s.disableUnattended(persist)
+	}
+
+	duration := time.Duration(config.DurationSeconds) * time.Second
+	s.mu.Lock()
+	selected, err := s.validateScreenStrikeChannelsLocked(config.ChannelIDs)
+	if err != nil {
+		state := s.screenStrikeStateLocked(time.Now())
+		s.mu.Unlock()
+		return state, err
+	}
+	if duration <= 0 || config.DurationSeconds < screenStrikeMinDurationSeconds || config.DurationSeconds > screenStrikeMaxDurationSeconds {
+		state := s.screenStrikeStateLocked(time.Now())
+		s.mu.Unlock()
+		return state, s.codedError("strike_invalid_duration", "interference duration must be between 10 and 180 seconds")
+	}
+	current := s.screenStrikeSnapshotLocked(time.Now())
+	if current.state.Active {
+		state := current.state
+		s.mu.Unlock()
+		return state, s.codedError("strike_already_active", "interference is already active")
+	}
+	s.stopUnattendedLocked()
+	now := time.Now()
+	s.unattended = model.ScreenStrikeUnattendedState{
+		Enabled:         true,
+		ChannelIDs:      append([]string{}, selected...),
+		DurationSeconds: config.DurationSeconds,
+		Phase:           unattendedPhaseWatching,
+		NextCheckAt:     cloneTime(&now),
+	}
+	s.startUnattendedLocked()
+	state := s.screenStrikeStateLocked(now)
+	s.publishScreenStrikeLocked(state)
+	s.mu.Unlock()
+
+	if persist {
+		if err := s.persistUnattendedConfig(model.ScreenStrikeUnattendedConfig{
+			Enabled:         true,
+			ChannelIDs:      selected,
+			DurationSeconds: config.DurationSeconds,
+		}); err != nil {
+			_, _ = s.disableUnattended(false)
+			return state, err
+		}
+	}
+	return s.ScreenStrikeState(), nil
+}
+
+func (s *Service) disableUnattended(persist bool) (model.ScreenStrikeState, error) {
+	s.mu.Lock()
+	wasEnabled := s.unattended.Enabled
+	s.stopUnattendedLocked()
+	s.unattended = model.ScreenStrikeUnattendedState{Phase: unattendedPhaseDisabled}
+	state := s.screenStrikeStateLocked(time.Now())
+	s.publishScreenStrikeLocked(state)
+	s.mu.Unlock()
+
+	var err error
+	if wasEnabled && state.Active {
+		_, err = s.applyScreenStrikeWithType(false, nil, 0, 0, model.InterferenceOperationUnattended)
+	}
+	if persist {
+		if persistErr := s.persistUnattendedConfig(model.ScreenStrikeUnattendedConfig{}); persistErr != nil && err == nil {
+			err = persistErr
+		}
+	}
+	if err != nil {
+		return s.ScreenStrikeState(), err
+	}
+	return s.ScreenStrikeState(), nil
+}
+
+func (s *Service) startUnattendedLocked() {
+	if !s.unattended.Enabled {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	config := model.ScreenStrikeUnattendedConfig{
+		Enabled:         true,
+		ChannelIDs:      append([]string{}, s.unattended.ChannelIDs...),
+		DurationSeconds: s.unattended.DurationSeconds,
+	}
+	timings := s.unattendedTimings
+	s.unattendedCancel = cancel
+	s.unattendedDone = done
+	go s.runUnattended(ctx, done, config, timings)
+}
+
+func (s *Service) stopUnattendedLocked() {
+	cancel := s.unattendedCancel
+	done := s.unattendedDone
+	s.unattendedCancel = nil
+	s.unattendedDone = nil
+	if cancel == nil {
+		return
+	}
+	cancel()
+	s.mu.Unlock()
+	<-done
+	s.mu.Lock()
+}
+
+func (s *Service) runUnattended(
+	ctx context.Context,
+	done chan<- struct{},
+	config model.ScreenStrikeUnattendedConfig,
+	timings unattendedTimings,
+) {
+	defer close(done)
+	if timings.CheckInterval <= 0 {
+		timings.CheckInterval = unattendedTargetCheckInterval
+	}
+	if timings.RestInterval <= 0 {
+		timings.RestInterval = unattendedRestInterval
+	}
+	if timings.PollInterval <= 0 {
+		timings.PollInterval = unattendedStatePollInterval
+	}
+
+	for {
+		if !sleepUntilDone(ctx, s.unattendedNextCheck()) {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		checkedAt := time.Now()
+		targetPresent := s.hasLiveTarget()
+		if !targetPresent {
+			next := checkedAt.Add(timings.CheckInterval)
+			s.updateUnattendedStatus(unattendedPhaseWatching, targetPresent, checkedAt, &next, "")
+			continue
+		}
+
+		s.updateUnattendedStatus(unattendedPhaseStriking, true, checkedAt, nil, "")
+		_, err := s.applyScreenStrikeWithType(
+			true,
+			config.ChannelIDs,
+			time.Duration(config.DurationSeconds)*time.Second,
+			config.DurationSeconds,
+			model.InterferenceOperationUnattended,
+		)
+		if err != nil {
+			next := time.Now().Add(timings.CheckInterval)
+			s.updateUnattendedStatus(unattendedPhaseWatching, true, checkedAt, &next, err.Error())
+			continue
+		}
+
+		for {
+			if !sleepOrDone(ctx, timings.PollInterval) {
+				return
+			}
+			state := s.ScreenStrikeState()
+			if !state.Active {
+				break
+			}
+		}
+
+		next := time.Now().Add(timings.RestInterval)
+		s.updateUnattendedStatus(unattendedPhaseResting, true, checkedAt, &next, "")
+	}
+}
+
+func (s *Service) unattendedNextCheck() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unattended.NextCheckAt == nil {
+		now := time.Now()
+		s.unattended.NextCheckAt = &now
+		return now
+	}
+	return *s.unattended.NextCheckAt
+}
+
+func (s *Service) hasLiveTarget() bool {
+	if s.store == nil {
+		return false
+	}
+	if len(s.store.FPV(1)) > 0 {
+		return true
+	}
+	settings := s.userSettings()
+	for _, target := range s.store.Positions(0) {
+		if !isWhitelistedPositionTarget(target, settings.Whitelist) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) userSettings() model.UserSettings {
+	if s.settings == nil {
+		return model.UserSettingsWithDefaults(model.UserSettings{})
+	}
+	settings, ok, err := s.settings.LoadUser()
+	if err != nil || !ok {
+		return model.UserSettingsWithDefaults(model.UserSettings{})
+	}
+	return model.UserSettingsWithDefaults(settings)
+}
+
+func isWhitelistedPositionTarget(target model.ScreenPositionTarget, whitelist []model.WhitelistItem) bool {
+	serial := normalizeTargetIdentity(target.Serial)
+	if serial == "" {
+		return false
+	}
+	for _, item := range whitelist {
+		if normalizeTargetIdentity(item.Serial) == serial {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeTargetIdentity(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func (s *Service) updateUnattendedStatus(
+	phase string,
+	targetPresent bool,
+	lastCheckedAt time.Time,
+	nextCheckAt *time.Time,
+	lastError string,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.unattended.Enabled {
+		return
+	}
+	s.unattended.Phase = phase
+	s.unattended.TargetPresent = targetPresent
+	s.unattended.LastCheckedAt = cloneTime(&lastCheckedAt)
+	s.unattended.NextCheckAt = cloneTime(nextCheckAt)
+	s.unattended.LastError = lastError
+	s.publishScreenStrikeLocked(s.screenStrikeStateLocked(time.Now()))
+}
+
+func (s *Service) persistUnattendedConfig(config model.ScreenStrikeUnattendedConfig) error {
+	if s.settings == nil {
+		return nil
+	}
+	settings, ok, err := s.settings.LoadUser()
+	if err != nil {
+		return fmt.Errorf("load user settings: %w", err)
+	}
+	if !ok {
+		settings = model.UserSettings{}
+	}
+	settings = model.UserSettingsWithDefaults(settings)
+	if config.Enabled {
+		settings.ScreenStrikeUnattended = &model.ScreenStrikeUnattendedConfig{
+			Enabled:         true,
+			ChannelIDs:      append([]string{}, config.ChannelIDs...),
+			DurationSeconds: config.DurationSeconds,
+		}
+	} else {
+		settings.ScreenStrikeUnattended = &model.ScreenStrikeUnattendedConfig{}
+	}
+	if _, err := s.settings.SaveEditableUser(settings); err != nil {
+		return fmt.Errorf("save user settings: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) applyScreenStrike(
@@ -236,8 +558,22 @@ func (s *Service) applyScreenStrike(
 	duration time.Duration,
 	durationSeconds int,
 ) (model.ScreenStrikeState, error) {
+	return s.applyScreenStrikeWithType(enabled, channelIDs, duration, durationSeconds, model.InterferenceOperationManual)
+}
+
+func (s *Service) applyScreenStrikeWithType(
+	enabled bool,
+	channelIDs []string,
+	duration time.Duration,
+	durationSeconds int,
+	operationType model.InterferenceOperationType,
+) (model.ScreenStrikeState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if enabled && operationType == model.InterferenceOperationManual && s.unattended.Enabled {
+		return s.screenStrikeStateLocked(time.Now()), s.codedError("strike_unattended_active", "unattended strike is active")
+	}
 
 	if !enabled {
 		endedAt := time.Now()
@@ -281,7 +617,7 @@ func (s *Service) applyScreenStrike(
 		if _, err := s.setTimedStateLocked(id, duration); err != nil {
 			_ = s.stopScreenStrikeChannelIDsLocked(selected)
 			state := s.screenStrikeStateLocked(time.Now())
-			s.createFailedReportLocked(req, selected, startedAt, err, state)
+			s.createFailedReportLocked(req, selected, startedAt, err, state, operationType)
 			s.publishScreenStrikeLocked(state)
 			return state, err
 		}
@@ -294,7 +630,7 @@ func (s *Service) applyScreenStrike(
 		startedAtValue := startedAt
 		state.StartedAt = &startedAtValue
 	}
-	s.createRunningReportLocked(req, selected, startedAt, state)
+	s.createRunningReportLocked(req, selected, startedAt, state, operationType)
 	s.publishScreenStrikeLocked(state)
 	return state, nil
 }
@@ -395,6 +731,7 @@ func (s *Service) Shutdown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.stopUnattendedLocked()
 	for _, state := range s.channels {
 		if state.output == nil {
 			continue
@@ -506,6 +843,7 @@ func (s *Service) screenStrikeSnapshotLocked(now time.Time) screenStrikeSnapshot
 		DurationSeconds:  0,
 		RemainingSeconds: ceilSeconds(maxRemaining),
 		Channels:         channels,
+		Unattended:       cloneUnattendedState(s.unattended),
 	}
 	if active && s.activeReport != nil {
 		state.DurationSeconds = s.activeReport.RequestedDurationSeconds
@@ -538,6 +876,7 @@ func (s *Service) createRunningReportLocked(
 	selected []string,
 	startedAt time.Time,
 	state model.ScreenStrikeState,
+	operationType model.InterferenceOperationType,
 ) {
 	if s.reports == nil {
 		return
@@ -546,6 +885,7 @@ func (s *Service) createRunningReportLocked(
 	report := model.InterferenceReport{
 		InterferenceReportSummary: model.InterferenceReportSummary{
 			Status:                   model.InterferenceReportStatusRunning,
+			OperationType:            normalizeOperationType(operationType),
 			StartedAt:                startedAt,
 			RequestedDurationSeconds: req.DurationSeconds,
 			ChannelIDs:               append([]string{}, selected...),
@@ -571,6 +911,7 @@ func (s *Service) createFailedReportLocked(
 	startedAt time.Time,
 	cause error,
 	endState model.ScreenStrikeState,
+	operationType model.InterferenceOperationType,
 ) {
 	if s.reports == nil || cause == nil {
 		return
@@ -580,6 +921,7 @@ func (s *Service) createFailedReportLocked(
 	report := model.InterferenceReport{
 		InterferenceReportSummary: model.InterferenceReportSummary{
 			Status:                   model.InterferenceReportStatusFailed,
+			OperationType:            normalizeOperationType(operationType),
 			StartedAt:                startedAt,
 			EndedAt:                  &endedAt,
 			RequestedDurationSeconds: req.DurationSeconds,
@@ -722,6 +1064,13 @@ func interferenceReportSummary(labels []string, durationSeconds int) string {
 	return channelText
 }
 
+func normalizeOperationType(operationType model.InterferenceOperationType) model.InterferenceOperationType {
+	if operationType == model.InterferenceOperationUnattended {
+		return model.InterferenceOperationUnattended
+	}
+	return model.InterferenceOperationManual
+}
+
 func cloneStrikeRequest(req model.ScreenStrikeRequest) model.ScreenStrikeRequest {
 	req.ChannelIDs = append([]string{}, req.ChannelIDs...)
 	return req
@@ -765,6 +1114,47 @@ func cloneInterferenceReport(report model.InterferenceReport) model.Interference
 		report.EndedAt = &endedAt
 	}
 	return report
+}
+
+func cloneUnattendedState(state model.ScreenStrikeUnattendedState) model.ScreenStrikeUnattendedState {
+	state.ChannelIDs = append([]string{}, state.ChannelIDs...)
+	state.LastCheckedAt = cloneTime(state.LastCheckedAt)
+	state.NextCheckAt = cloneTime(state.NextCheckAt)
+	if state.Phase == "" {
+		state.Phase = unattendedPhaseDisabled
+	}
+	return state
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func sleepOrDone(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func sleepUntilDone(ctx context.Context, at time.Time) bool {
+	return sleepOrDone(ctx, time.Until(at))
 }
 
 func ceilSeconds(duration time.Duration) int {

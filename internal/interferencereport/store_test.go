@@ -2,6 +2,7 @@ package interferencereport
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -42,6 +43,7 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 		InterferenceReportSummary: model.InterferenceReportSummary{
 			ID:                       "failed",
 			Status:                   model.InterferenceReportStatusFailed,
+			OperationType:            model.InterferenceOperationUnattended,
 			StartedAt:                now.Add(time.Minute),
 			EndedAt:                  &endedAt,
 			RequestedDurationSeconds: 10,
@@ -70,6 +72,9 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 	if items[0].DurationSeconds != 5 || items[0].ChannelLabels[0] != "1.2G" {
 		t.Fatalf("failed summary = %#v", items[0])
 	}
+	if items[0].OperationType != model.InterferenceOperationUnattended || items[1].OperationType != model.InterferenceOperationManual {
+		t.Fatalf("operation types = %#v", items)
+	}
 
 	filtered, err := store.List(context.Background(), QueryOptions{Status: model.InterferenceReportStatusFailed})
 	if err != nil {
@@ -85,6 +90,9 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 	}
 	if !ok || got.Request.DurationSeconds != 10 || got.StartState == nil || !got.StartState.Active {
 		t.Fatalf("Get() = %#v, ok=%v", got, ok)
+	}
+	if got.OperationType != model.InterferenceOperationManual {
+		t.Fatalf("running operation type = %q", got.OperationType)
 	}
 
 	if _, err := store.DeleteFailed(context.Background(), running.ID); !errors.Is(err, ErrNotFailed) {
@@ -114,6 +122,63 @@ func TestStoreCreateListGetDeleteAndCloseRunning(t *testing.T) {
 	}
 	if !ok || got.Status != model.InterferenceReportStatusAbnormal || got.AbnormalReason != "service_restarted" || got.EndedAt == nil {
 		t.Fatalf("closed report = %#v", got)
+	}
+}
+
+func TestStoreMigratesLegacyOperationType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-reports.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE interference_reports (
+	id TEXT PRIMARY KEY,
+	status TEXT NOT NULL,
+	started_at TEXT NOT NULL,
+	ended_at TEXT,
+	duration_seconds INTEGER NOT NULL DEFAULT 0,
+	requested_duration_seconds INTEGER NOT NULL DEFAULT 0,
+	channel_ids_json TEXT,
+	channel_labels_json TEXT,
+	channel_outputs_json TEXT,
+	summary TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT '',
+	abnormal_reason TEXT NOT NULL DEFAULT '',
+	request_json TEXT,
+	start_state_json TEXT,
+	end_state_json TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+INSERT INTO interference_reports (
+	id, status, started_at, duration_seconds, requested_duration_seconds,
+	channel_ids_json, channel_labels_json, channel_outputs_json, summary,
+	created_at, updated_at
+) VALUES (
+	'legacy', 'completed', '2026-06-05T12:00:00Z', 10, 10,
+	'["io1"]', '["433M"]', '[1]', '433M / 10s',
+	'2026-06-05T12:00:00Z', '2026-06-05T12:00:10Z'
+)`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+	got, ok, err := store.Get(context.Background(), "legacy")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok || got.OperationType != model.InterferenceOperationManual {
+		t.Fatalf("legacy report = %#v, ok=%v", got, ok)
 	}
 }
 

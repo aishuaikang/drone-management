@@ -47,16 +47,17 @@ type GeoPoint struct {
 
 // UserSettings stores operator-managed public settings.
 type UserSettings struct {
-	IntrusionRetentionDays    *int            `json:"intrusionRetentionDays,omitempty"`
-	ScreenTitle               string          `json:"screenTitle,omitempty"`
-	PositionExpireSeconds     *int            `json:"positionExpireSeconds,omitempty"`
-	PositionTCPPort           *int            `json:"positionTCPPort,omitempty"`
-	FPVTCPPort                *int            `json:"fpvTCPPort,omitempty"`
-	ScreenStrikeChannelLabels []string        `json:"screenStrikeChannelLabels,omitempty"`
-	WarningZoneEnabled        *bool           `json:"warningZoneEnabled,omitempty"`
-	WarningZoneRadiusMeters   *float64        `json:"warningZoneRadiusMeters,omitempty"`
-	WarningZones              []WarningZone   `json:"warningZones,omitempty"`
-	Whitelist                 []WhitelistItem `json:"whitelist,omitempty"`
+	IntrusionRetentionDays    *int                          `json:"intrusionRetentionDays,omitempty"`
+	ScreenTitle               string                        `json:"screenTitle,omitempty"`
+	PositionExpireSeconds     *int                          `json:"positionExpireSeconds,omitempty"`
+	PositionTCPPort           *int                          `json:"positionTCPPort,omitempty"`
+	FPVTCPPort                *int                          `json:"fpvTCPPort,omitempty"`
+	ScreenStrikeChannelLabels []string                      `json:"screenStrikeChannelLabels,omitempty"`
+	ScreenStrikeUnattended    *ScreenStrikeUnattendedConfig `json:"screenStrikeUnattended,omitempty"`
+	WarningZoneEnabled        *bool                         `json:"warningZoneEnabled,omitempty"`
+	WarningZoneRadiusMeters   *float64                      `json:"warningZoneRadiusMeters,omitempty"`
+	WarningZones              []WarningZone                 `json:"warningZones,omitempty"`
+	Whitelist                 []WhitelistItem               `json:"whitelist,omitempty"`
 }
 
 // WarningZone describes a user-defined map circle used to scope live alarms.
@@ -375,14 +376,34 @@ type ScreenStrikeRequest struct {
 	DurationSeconds int      `json:"durationSeconds"`
 }
 
+// ScreenStrikeUnattendedConfig persists unattended strike configuration.
+type ScreenStrikeUnattendedConfig struct {
+	Enabled         bool     `json:"enabled"`
+	ChannelIDs      []string `json:"channelIds"`
+	DurationSeconds int      `json:"durationSeconds"`
+}
+
+// ScreenStrikeUnattendedState describes the unattended strike loop.
+type ScreenStrikeUnattendedState struct {
+	Enabled         bool       `json:"enabled"`
+	ChannelIDs      []string   `json:"channelIds"`
+	DurationSeconds int        `json:"durationSeconds"`
+	Phase           string     `json:"phase"`
+	TargetPresent   bool       `json:"targetPresent"`
+	LastCheckedAt   *time.Time `json:"lastCheckedAt,omitempty"`
+	NextCheckAt     *time.Time `json:"nextCheckAt,omitempty"`
+	LastError       string     `json:"lastError,omitempty"`
+}
+
 // ScreenStrikeState describes current screen interference control state.
 type ScreenStrikeState struct {
-	Active           bool                  `json:"active"`
-	ChannelIDs       []string              `json:"channelIds"`
-	DurationSeconds  int                   `json:"durationSeconds"`
-	RemainingSeconds int                   `json:"remainingSeconds"`
-	StartedAt        *time.Time            `json:"startedAt,omitempty"`
-	Channels         []InterferenceChannel `json:"channels"`
+	Active           bool                        `json:"active"`
+	ChannelIDs       []string                    `json:"channelIds"`
+	DurationSeconds  int                         `json:"durationSeconds"`
+	RemainingSeconds int                         `json:"remainingSeconds"`
+	StartedAt        *time.Time                  `json:"startedAt,omitempty"`
+	Channels         []InterferenceChannel       `json:"channels"`
+	Unattended       ScreenStrikeUnattendedState `json:"unattended"`
 }
 
 // ScreenStrikeResponse returns screen interference state and a user-facing message.
@@ -394,29 +415,36 @@ type ScreenStrikeResponse struct {
 // InterferenceReportStatus describes one interference report lifecycle.
 type InterferenceReportStatus string
 
+// InterferenceOperationType identifies how an interference operation was started.
+type InterferenceOperationType string
+
 const (
 	InterferenceReportStatusRunning   InterferenceReportStatus = "running"
 	InterferenceReportStatusCompleted InterferenceReportStatus = "completed"
 	InterferenceReportStatusFailed    InterferenceReportStatus = "failed"
 	InterferenceReportStatusAbnormal  InterferenceReportStatus = "abnormal"
+
+	InterferenceOperationManual     InterferenceOperationType = "manual"
+	InterferenceOperationUnattended InterferenceOperationType = "unattended"
 )
 
 // InterferenceReportSummary is the list item for interference reports.
 type InterferenceReportSummary struct {
-	ID                       string                   `json:"id"`
-	Status                   InterferenceReportStatus `json:"status"`
-	StartedAt                time.Time                `json:"startedAt"`
-	EndedAt                  *time.Time               `json:"endedAt,omitempty"`
-	DurationSeconds          int64                    `json:"durationSeconds"`
-	RequestedDurationSeconds int                      `json:"requestedDurationSeconds,omitempty"`
-	ChannelIDs               []string                 `json:"channelIds,omitempty"`
-	ChannelLabels            []string                 `json:"channelLabels,omitempty"`
-	ChannelOutputs           []int                    `json:"channelOutputs,omitempty"`
-	Summary                  string                   `json:"summary,omitempty"`
-	LastError                string                   `json:"lastError,omitempty"`
-	AbnormalReason           string                   `json:"abnormalReason,omitempty"`
-	CreatedAt                time.Time                `json:"createdAt"`
-	UpdatedAt                time.Time                `json:"updatedAt"`
+	ID                       string                    `json:"id"`
+	Status                   InterferenceReportStatus  `json:"status"`
+	OperationType            InterferenceOperationType `json:"operationType"`
+	StartedAt                time.Time                 `json:"startedAt"`
+	EndedAt                  *time.Time                `json:"endedAt,omitempty"`
+	DurationSeconds          int64                     `json:"durationSeconds"`
+	RequestedDurationSeconds int                       `json:"requestedDurationSeconds,omitempty"`
+	ChannelIDs               []string                  `json:"channelIds,omitempty"`
+	ChannelLabels            []string                  `json:"channelLabels,omitempty"`
+	ChannelOutputs           []int                     `json:"channelOutputs,omitempty"`
+	Summary                  string                    `json:"summary,omitempty"`
+	LastError                string                    `json:"lastError,omitempty"`
+	AbnormalReason           string                    `json:"abnormalReason,omitempty"`
+	CreatedAt                time.Time                 `json:"createdAt"`
+	UpdatedAt                time.Time                 `json:"updatedAt"`
 }
 
 // InterferenceReport stores evidence for one screen interference operation.

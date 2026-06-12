@@ -82,6 +82,7 @@ func (s *Store) init(ctx context.Context) error {
 CREATE TABLE IF NOT EXISTS interference_reports (
 	id TEXT PRIMARY KEY,
 	status TEXT NOT NULL,
+	operation_type TEXT NOT NULL DEFAULT 'manual',
 	started_at TEXT NOT NULL,
 	ended_at TEXT,
 	duration_seconds INTEGER NOT NULL DEFAULT 0,
@@ -105,6 +106,9 @@ CREATE INDEX IF NOT EXISTS idx_interference_reports_started_at ON interference_r
 		return fmt.Errorf("initialize interference report database: %w", err)
 	}
 	if err := ensureTextColumn(ctx, s.db, "interference_reports", "channel_outputs_json"); err != nil {
+		return err
+	}
+	if err := ensureTextColumn(ctx, s.db, "interference_reports", "operation_type"); err != nil {
 		return err
 	}
 	return nil
@@ -189,11 +193,12 @@ func (s *Store) Update(report model.InterferenceReport) error {
 
 	result, err := s.db.Exec(
 		`UPDATE interference_reports SET
-			status = ?, started_at = ?, ended_at = ?, duration_seconds = ?, requested_duration_seconds = ?,
+			status = ?, operation_type = ?, started_at = ?, ended_at = ?, duration_seconds = ?, requested_duration_seconds = ?,
 			channel_ids_json = ?, channel_labels_json = ?, channel_outputs_json = ?, summary = ?, last_error = ?,
 			abnormal_reason = ?, request_json = ?, start_state_json = ?, end_state_json = ?, updated_at = ?
 		WHERE id = ?`,
 		string(report.Status),
+		string(report.OperationType),
 		formatTime(report.StartedAt),
 		nullableTime(report.EndedAt),
 		report.DurationSeconds,
@@ -226,12 +231,13 @@ func (s *Store) Update(report model.InterferenceReport) error {
 func (s *Store) insert(report model.InterferenceReport) error {
 	_, err := s.db.Exec(
 		`INSERT INTO interference_reports (
-			id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
+			id, status, operation_type, started_at, ended_at, duration_seconds, requested_duration_seconds,
 			channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 			abnormal_reason, request_json, start_state_json, end_state_json, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		report.ID,
 		string(report.Status),
+		string(report.OperationType),
 		formatTime(report.StartedAt),
 		nullableTime(report.EndedAt),
 		report.DurationSeconds,
@@ -269,7 +275,7 @@ func (s *Store) List(ctx context.Context, options QueryOptions) ([]model.Interfe
 	}
 	args := []any{}
 	query := `SELECT
-		id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
+		id, status, operation_type, started_at, ended_at, duration_seconds, requested_duration_seconds,
 		channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 		abnormal_reason, created_at, updated_at
 		FROM interference_reports`
@@ -310,7 +316,7 @@ func (s *Store) Get(ctx context.Context, id string) (model.InterferenceReport, b
 		return model.InterferenceReport{}, false, nil
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, status, started_at, ended_at, duration_seconds, requested_duration_seconds,
+		id, status, operation_type, started_at, ended_at, duration_seconds, requested_duration_seconds,
 		channel_ids_json, channel_labels_json, channel_outputs_json, summary, last_error,
 		abnormal_reason, request_json, start_state_json, end_state_json, created_at, updated_at
 		FROM interference_reports WHERE id = ?`, id)
@@ -411,11 +417,13 @@ var ErrNotFailed = errors.New("interference report is not failed")
 func scanSummary(rows *sql.Rows) (model.InterferenceReportSummary, error) {
 	var summary model.InterferenceReportSummary
 	var status, startedAt, createdAt, updatedAt string
+	var operationType sql.NullString
 	var endedAt sql.NullString
 	var channelIDsJSON, channelLabelsJSON, channelOutputsJSON sql.NullString
 	err := rows.Scan(
 		&summary.ID,
 		&status,
+		&operationType,
 		&startedAt,
 		&endedAt,
 		&summary.DurationSeconds,
@@ -432,7 +440,7 @@ func scanSummary(rows *sql.Rows) (model.InterferenceReportSummary, error) {
 	if err != nil {
 		return model.InterferenceReportSummary{}, fmt.Errorf("scan interference report summary: %w", err)
 	}
-	fillSummary(&summary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
+	fillSummary(&summary, status, operationType.String, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
 	return summary, nil
 }
 
@@ -443,12 +451,14 @@ type rowScanner interface {
 func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 	var report model.InterferenceReport
 	var status, startedAt, createdAt, updatedAt string
+	var operationType sql.NullString
 	var endedAt sql.NullString
 	var channelIDsJSON, channelLabelsJSON, channelOutputsJSON sql.NullString
 	var requestJSON, startStateJSON, endStateJSON sql.NullString
 	err := scanner.Scan(
 		&report.ID,
 		&status,
+		&operationType,
 		&startedAt,
 		&endedAt,
 		&report.DurationSeconds,
@@ -471,7 +481,7 @@ func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 		}
 		return model.InterferenceReport{}, fmt.Errorf("scan interference report: %w", err)
 	}
-	fillSummary(&report.InterferenceReportSummary, status, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
+	fillSummary(&report.InterferenceReportSummary, status, operationType.String, startedAt, endedAt, createdAt, updatedAt, channelIDsJSON, channelLabelsJSON, channelOutputsJSON)
 	report.Request = decodeJSONValue[model.ScreenStrikeRequest](requestJSON)
 	report.StartState = decodeJSONPtr[model.ScreenStrikeState](startStateJSON)
 	report.EndState = decodeJSONPtr[model.ScreenStrikeState](endStateJSON)
@@ -482,6 +492,7 @@ func scanReport(scanner rowScanner) (model.InterferenceReport, error) {
 func fillSummary(
 	summary *model.InterferenceReportSummary,
 	status string,
+	operationType string,
 	startedAt string,
 	endedAt sql.NullString,
 	createdAt string,
@@ -491,6 +502,7 @@ func fillSummary(
 	channelOutputsJSON sql.NullString,
 ) {
 	summary.Status = model.InterferenceReportStatus(status)
+	summary.OperationType = parseOperationType(operationType)
 	summary.StartedAt = parseStoredTime(startedAt)
 	summary.EndedAt = parseStoredTimePtr(endedAt)
 	summary.CreatedAt = parseStoredTime(createdAt)
@@ -502,6 +514,7 @@ func fillSummary(
 }
 
 func normalizeReportSummary(report model.InterferenceReport) model.InterferenceReport {
+	report.OperationType = parseOperationType(string(report.OperationType))
 	if report.RequestedDurationSeconds == 0 {
 		report.RequestedDurationSeconds = report.Request.DurationSeconds
 	}
@@ -527,6 +540,15 @@ func normalizeReportSummary(report model.InterferenceReport) model.InterferenceR
 	}
 	report.ChannelLabels = normalizeInterferenceBandLabels(report.ChannelIDs, report.ChannelLabels)
 	return report
+}
+
+func parseOperationType(value string) model.InterferenceOperationType {
+	switch model.InterferenceOperationType(strings.TrimSpace(value)) {
+	case model.InterferenceOperationUnattended:
+		return model.InterferenceOperationUnattended
+	default:
+		return model.InterferenceOperationManual
+	}
 }
 
 func strikeChannelMetadata(channels []model.InterferenceChannel, ids []string) ([]string, []int) {

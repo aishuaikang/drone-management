@@ -148,6 +148,7 @@ export interface UserSettings {
   positionTCPPort?: number;
   fpvTCPPort?: number;
   screenStrikeChannelLabels?: string[];
+  screenStrikeUnattended?: ScreenStrikeUnattendedConfig;
   warningZoneEnabled?: boolean;
   warningZoneRadiusMeters?: number;
   warningZones?: WarningZone[];
@@ -284,6 +285,20 @@ export interface ScreenStrikeRequest {
   durationSeconds: number;
 }
 
+export interface ScreenStrikeUnattendedConfig {
+  enabled: boolean;
+  channelIds: string[];
+  durationSeconds: number;
+}
+
+export interface ScreenStrikeUnattendedState extends ScreenStrikeUnattendedConfig {
+  phase: "disabled" | "watching" | "striking" | "resting" | string;
+  targetPresent: boolean;
+  lastCheckedAt?: string;
+  nextCheckAt?: string;
+  lastError?: string;
+}
+
 export interface ScreenStrikeState {
   active: boolean;
   channelIds: string[];
@@ -291,6 +306,7 @@ export interface ScreenStrikeState {
   remainingSeconds: number;
   startedAt?: string;
   channels: InterferenceChannel[];
+  unattended: ScreenStrikeUnattendedState;
 }
 
 export interface ScreenStrikeResponse {
@@ -299,10 +315,12 @@ export interface ScreenStrikeResponse {
 }
 
 export type InterferenceReportStatus = "running" | "completed" | "failed" | "abnormal" | string;
+export type InterferenceOperationType = "manual" | "unattended" | string;
 
 export interface InterferenceReportSummary {
   id: string;
   status: InterferenceReportStatus;
+  operationType?: InterferenceOperationType;
   startedAt: string;
   endedAt?: string;
   durationSeconds: number;
@@ -320,6 +338,7 @@ export interface InterferenceReportSummary {
 export interface InterferenceReport {
   id: string;
   status: InterferenceReportStatus;
+  operationType?: InterferenceOperationType;
   startedAt: string;
   endedAt?: string;
   durationSeconds: number;

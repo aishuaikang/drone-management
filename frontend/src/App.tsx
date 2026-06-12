@@ -66,6 +66,7 @@ import {
   setManualDeviceLocation,
   updateScreenTCPPorts,
   updateScreenStrike,
+  updateScreenStrikeUnattended,
   uploadOfflineMap,
   updateUserSettings,
 } from "./api";
@@ -395,7 +396,16 @@ const labels: Record<Locale, Record<string, string>> = {
     strike: "干扰",
     operationPanel: "操作面板",
     startStrike: "开启干扰",
+    startAllStrike: "一键全开",
     stopStrike: "停止干扰",
+    startUnattendedStrike: "开启无人值守",
+    stopUnattendedStrike: "关闭无人值守",
+    unattendedStrike: "无人值守",
+    unattendedStrikeActive: "已开启",
+    unattendedStrikeWaiting: "等待目标",
+    unattendedStrikeStriking: "自动干扰中",
+    unattendedStrikeResting: "休息中",
+    unattendedStrikeDisabled: "已关闭",
     strikeChannels: "干扰通道",
     strikeDuration: "干扰时长",
     strikeRemaining: "剩余时间",
@@ -411,6 +421,9 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportStatusFailed: "失败",
     interferenceReportStatusAbnormal: "异常",
     interferenceReportChannels: "通道",
+    interferenceReportType: "类型",
+    interferenceReportTypeManual: "手动干扰",
+    interferenceReportTypeUnattended: "无人值守",
     interferenceReportRequestedDuration: "请求时长",
     interferenceReportError: "错误",
     deleteFailedReport: "删除失败报告",
@@ -678,7 +691,16 @@ const labels: Record<Locale, Record<string, string>> = {
     strike: "Strike",
     operationPanel: "Operation",
     startStrike: "Start strike",
+    startAllStrike: "All on",
     stopStrike: "Stop strike",
+    startUnattendedStrike: "Start unattended",
+    stopUnattendedStrike: "Stop unattended",
+    unattendedStrike: "Unattended",
+    unattendedStrikeActive: "On",
+    unattendedStrikeWaiting: "Waiting for target",
+    unattendedStrikeStriking: "Auto striking",
+    unattendedStrikeResting: "Resting",
+    unattendedStrikeDisabled: "Off",
     strikeChannels: "Channels",
     strikeDuration: "Duration",
     strikeRemaining: "Remaining",
@@ -694,6 +716,9 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportStatusFailed: "Failed",
     interferenceReportStatusAbnormal: "Abnormal",
     interferenceReportChannels: "Channels",
+    interferenceReportType: "Type",
+    interferenceReportTypeManual: "Manual",
+    interferenceReportTypeUnattended: "Unattended",
     interferenceReportRequestedDuration: "Requested",
     interferenceReportError: "Error",
     deleteFailedReport: "Delete failed report",
@@ -1333,7 +1358,6 @@ export function App() {
           <h1 title={screenTitle}>{screenTitle}</h1>
         </div>
         <div className="screen-header__right">
-          <ViewSwitch view={view} t={t} onViewChange={setView} />
           <div
             className={languageOpen ? "screen-language-switch screen-language-switch--open" : "screen-language-switch"}
             onBlur={(event) => {
@@ -1382,6 +1406,10 @@ export function App() {
           </div>
         </div>
       </header>
+
+      <div className="screen-view-switch-overlay">
+        <ViewSwitch view={view} t={t} onViewChange={setView} />
+      </div>
 
       {view === "screen" ? (
       <>
@@ -2086,19 +2114,28 @@ function ScreenStrikePanel({
   const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
   const [durationInput, setDurationInput] = useState(String(screenStrikeDefaultDurationSeconds));
   const [busy, setBusy] = useState(false);
+  const [strikeBusyMode, setStrikeBusyMode] = useState<"selected" | "all" | "stop" | null>(null);
   const [error, setError] = useState("");
   const channels = state?.channels ?? [];
   const active = Boolean(state?.active);
+  const unattended = state?.unattended;
+  const unattendedEnabled = Boolean(unattended?.enabled);
+  const locked = active || unattendedEnabled || busy;
   const activeChannelIdsKey = active ? state?.channelIds.join("|") ?? "" : "";
+  const unattendedChannelIdsKey = unattendedEnabled ? unattended?.channelIds.join("|") ?? "" : "";
   const strikeChannelLabels = normalizeScreenStrikeChannelLabels(userSettings.screenStrikeChannelLabels);
   const durationNumber = Number(durationInput);
   const durationValid = Number.isFinite(durationNumber) &&
     durationNumber >= screenStrikeMinDurationSeconds &&
     durationNumber <= screenStrikeMaxDurationSeconds;
   const remainingSeconds = getStrikeRemainingSeconds(state, now, stateSyncedAt);
+  const allStrikeChannelIds = channels.filter((channel) => !channel.reserved).map((channel) => channel.id);
   const selectedCount = active ? state?.channelIds.length ?? 0 : selectedChannelIds.length;
-  const startDisabled = busy || active || selectedChannelIds.length === 0 || !durationValid;
-  const stopDisabled = busy || !active;
+  const startDisabled = busy || active || unattendedEnabled || selectedChannelIds.length === 0 || !durationValid;
+  const startAllDisabled = busy || active || unattendedEnabled || allStrikeChannelIds.length === 0 || !durationValid;
+  const stopDisabled = busy || !active || unattendedEnabled;
+  const unattendedDisabled = busy || (!unattendedEnabled && (active || selectedChannelIds.length === 0 || !durationValid));
+  const unattendedLabel = unattendedStatusLabel(unattended?.phase, t);
 
   useEffect(() => {
     if (active && state?.channelIds?.length) {
@@ -2106,17 +2143,64 @@ function ScreenStrikePanel({
     }
   }, [active, activeChannelIdsKey, state?.channelIds]);
 
+  useEffect(() => {
+    if (unattendedEnabled && unattended?.channelIds?.length) {
+      setSelectedChannelIds(unattended.channelIds);
+      if (unattended.durationSeconds) {
+        setDurationInput(String(unattended.durationSeconds));
+      }
+    }
+  }, [unattendedEnabled, unattendedChannelIdsKey, unattended?.channelIds, unattended?.durationSeconds]);
+
   const toggleChannel = (id: string) => {
     setSelectedChannelIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
     setError("");
   };
 
-  const submit = async () => {
+  const startStrike = async (channelIds: string[]) => {
+    if (channelIds.length === 0) {
+      setError(t.strikeSelectRequired);
+      return;
+    }
+    if (!durationValid) {
+      setError(t.strikeDurationInvalid);
+      return;
+    }
+    const durationSeconds = clampStrikeDuration(durationNumber);
+    setDurationInput(String(durationSeconds));
+    const response = await updateScreenStrike({
+      enabled: true,
+      channelIds,
+      durationSeconds,
+    });
+    onStateChange(response.state);
+  };
+
+  const submit = async (mode: "selected" | "all" = "selected") => {
     setError("");
+    setStrikeBusyMode(active ? "stop" : mode);
     setBusy(true);
     try {
       if (active) {
         const response = await updateScreenStrike({ enabled: false, channelIds: [], durationSeconds: 0 });
+        onStateChange(response.state);
+        return;
+      }
+      await startStrike(mode === "all" ? allStrikeChannelIds : selectedChannelIds);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.saveFailed);
+    } finally {
+      setStrikeBusyMode(null);
+      setBusy(false);
+    }
+  };
+
+  const submitUnattended = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      if (unattendedEnabled) {
+        const response = await updateScreenStrikeUnattended({ enabled: false, channelIds: [], durationSeconds: 0 });
         onStateChange(response.state);
         return;
       }
@@ -2130,7 +2214,7 @@ function ScreenStrikePanel({
       }
       const durationSeconds = clampStrikeDuration(durationNumber);
       setDurationInput(String(durationSeconds));
-      const response = await updateScreenStrike({
+      const response = await updateScreenStrikeUnattended({
         enabled: true,
         channelIds: selectedChannelIds,
         durationSeconds,
@@ -2195,10 +2279,11 @@ function ScreenStrikePanel({
                   <input
                     type="checkbox"
                     checked={selected}
-                    disabled={active || busy || channel.reserved}
+                    disabled={locked || channel.reserved}
                     onChange={() => toggleChannel(channel.id)}
                   />
-                  <span aria-hidden="true" />
+                  <span className="screen-strike-channel__dot" aria-hidden="true" />
+                  <em className="screen-strike-channel__output">Y{channel.output}</em>
                   <strong>{formatStrikeChannelLabel(channel, index, strikeChannelLabels)}</strong>
                 </label>
               );
@@ -2223,7 +2308,7 @@ function ScreenStrikePanel({
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  disabled={active || busy}
+                  disabled={locked}
                   onClick={() => {
                     setDurationInput(String(duration));
                     setError("");
@@ -2237,24 +2322,83 @@ function ScreenStrikePanel({
           </div>
 
           <div className="screen-strike-panel__footer">
-            <button
-              className={active ? "screen-strike-action screen-strike-action--stop" : "screen-strike-action"}
-              type="button"
-              disabled={active ? stopDisabled : startDisabled}
-              onClick={() => void submit()}
-            >
-              {busy ? (
-                <Loader2 className="app-spinner" size={14} aria-hidden="true" />
-              ) : active ? (
-                <Square size={14} aria-hidden="true" />
+            <div className={active ? "screen-strike-actions screen-strike-actions--single" : "screen-strike-actions"}>
+              {active ? (
+                <button
+                  className="screen-strike-action screen-strike-action--stop"
+                  type="button"
+                  disabled={stopDisabled}
+                  onClick={() => void submit()}
+                >
+                  {strikeBusyMode === "stop" ? (
+                    <Loader2 className="app-spinner" size={14} aria-hidden="true" />
+                  ) : (
+                    <Square size={14} aria-hidden="true" />
+                  )}
+                  <span>{t.stopStrike}</span>
+                </button>
               ) : (
-                <Zap size={15} aria-hidden="true" />
+                <>
+                  <button
+                    className="screen-strike-action"
+                    type="button"
+                    disabled={startDisabled}
+                    onClick={() => void submit("selected")}
+                  >
+                    {strikeBusyMode === "selected" ? (
+                      <Loader2 className="app-spinner" size={14} aria-hidden="true" />
+                    ) : (
+                      <Zap size={15} aria-hidden="true" />
+                    )}
+                    <span>{t.startStrike}</span>
+                  </button>
+                  <button
+                    className="screen-strike-action screen-strike-action--all"
+                    type="button"
+                    disabled={startAllDisabled}
+                    onClick={() => void submit("all")}
+                  >
+                    {strikeBusyMode === "all" ? (
+                      <Loader2 className="app-spinner" size={14} aria-hidden="true" />
+                    ) : (
+                      <Radio size={14} aria-hidden="true" />
+                    )}
+                    <span>{t.startAllStrike}</span>
+                  </button>
+                </>
               )}
-              <span>{active ? t.stopStrike : t.startStrike}</span>
-            </button>
+            </div>
             <span className="screen-strike-panel__remaining">
               {t.strikeRemaining}: <strong>{formatCountdown(remainingSeconds)}</strong>
             </span>
+          </div>
+
+          <div className={unattendedEnabled ? "screen-strike-mode screen-strike-mode--active" : "screen-strike-mode"}>
+            <span className="screen-strike-mode__summary">
+              <span className="screen-strike-mode__mark" aria-hidden="true">
+                <ShieldCheck size={13} />
+              </span>
+              <span className="screen-strike-mode__copy">
+                <strong>{t.unattendedStrike}</strong>
+                <em>{unattendedEnabled ? unattendedLabel : t.unattendedStrikeDisabled}</em>
+              </span>
+            </span>
+            <button
+              className={unattendedEnabled ? "screen-strike-mode__button screen-strike-mode__button--active" : "screen-strike-mode__button"}
+              type="button"
+              aria-pressed={unattendedEnabled}
+              disabled={unattendedDisabled}
+              onClick={() => void submitUnattended()}
+            >
+              {busy ? (
+                <Loader2 className="app-spinner" size={14} aria-hidden="true" />
+              ) : unattendedEnabled ? (
+                <ShieldMinus size={14} aria-hidden="true" />
+              ) : (
+                <ShieldPlus size={14} aria-hidden="true" />
+              )}
+              <span>{unattendedEnabled ? t.stopUnattendedStrike : t.startUnattendedStrike}</span>
+            </button>
           </div>
 
           {error ? <p className="screen-strike-panel__error">{error}</p> : null}
@@ -3821,6 +3965,7 @@ function InterferenceReportsManagement({
           <colgroup>
             <col className="screen-management-table__select-col" />
             <col className="screen-management-table__status-col" />
+            <col className="screen-management-table__status-col" />
             <col className="screen-management-table__time-col" />
             <col className="screen-management-table__time-col" />
             <col className="screen-management-table__duration-col" />
@@ -3835,6 +3980,7 @@ function InterferenceReportsManagement({
                 <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelected} aria-label={t.selectedCount} />
               </th>
               <th>{t.status}</th>
+              <th>{t.interferenceReportType}</th>
               <th>{t.firstSeen}</th>
               <th>{t.lastSeen}</th>
               <th>{t.duration}</th>
@@ -3855,6 +4001,7 @@ function InterferenceReportsManagement({
                     {interferenceReportStatusLabel(report.status, t)}
                   </span>
                 </td>
+                <td>{interferenceReportTypeLabel(report.operationType, t)}</td>
                 <td>{formatFullTime(report.startedAt, locale)}</td>
                 <td>{formatFullTime(report.endedAt, locale)}</td>
                 <td>{formatDuration(report.durationSeconds)}</td>
@@ -3885,7 +4032,7 @@ function InterferenceReportsManagement({
               </tr>
             )) : (
               <tr>
-                <td colSpan={9}>
+                <td colSpan={10}>
                   <div className="screen-management-empty">{loading ? t.waiting : t.noInterferenceReports}</div>
                 </td>
               </tr>
@@ -5520,6 +5667,7 @@ function defaultUserSettings(): UserSettings {
     fpvTCPPort: undefined,
     screenTitle: "",
     screenStrikeChannelLabels: defaultStrikeChannelLabels(),
+    screenStrikeUnattended: { enabled: false, channelIds: [], durationSeconds: screenStrikeDefaultDurationSeconds },
     warningZoneEnabled: false,
     warningZoneRadiusMeters: defaultWarningZoneRadiusMeters,
     whitelist: [],
@@ -5534,9 +5682,20 @@ function resolveUserSettings(settings?: UserSettings | null): UserSettings {
     fpvTCPPort: settings?.fpvTCPPort,
     screenTitle: settings?.screenTitle ?? "",
     screenStrikeChannelLabels: normalizeScreenStrikeChannelLabels(settings?.screenStrikeChannelLabels),
+    screenStrikeUnattended: resolveUnattendedConfig(settings?.screenStrikeUnattended),
     warningZoneEnabled: resolveWarningZoneEnabled(settings),
     warningZoneRadiusMeters: resolveWarningZoneRadiusMeters(settings),
     whitelist: settings?.whitelist ?? [],
+  };
+}
+
+function resolveUnattendedConfig(config?: UserSettings["screenStrikeUnattended"] | null) {
+  return {
+    enabled: Boolean(config?.enabled),
+    channelIds: Array.isArray(config?.channelIds)
+      ? config.channelIds.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim())
+      : [],
+    durationSeconds: clampStrikeDuration(Number(config?.durationSeconds ?? screenStrikeDefaultDurationSeconds)),
   };
 }
 
@@ -5893,6 +6052,7 @@ function interferenceReportsToCSV(
   return toCSV([
     [
       t.status,
+      t.interferenceReportType,
       t.firstSeen,
       t.lastSeen,
       t.duration,
@@ -5903,6 +6063,7 @@ function interferenceReportsToCSV(
     ],
     ...reports.map((report) => [
       interferenceReportStatusLabel(report.status, t),
+      interferenceReportTypeLabel(report.operationType, t),
       formatFullTime(report.startedAt, locale),
       formatFullTime(report.endedAt, locale),
       formatDuration(report.durationSeconds),
@@ -6039,6 +6200,23 @@ function interferenceReportStatusLabel(status: InterferenceReportStatus, t: Reco
     default:
       return status || t.unknown;
   }
+}
+
+function unattendedStatusLabel(phase: string | undefined, t: Record<string, string>) {
+  switch (phase) {
+    case "watching":
+      return t.unattendedStrikeWaiting;
+    case "striking":
+      return t.unattendedStrikeStriking;
+    case "resting":
+      return t.unattendedStrikeResting;
+    default:
+      return t.unattendedStrikeActive;
+  }
+}
+
+function interferenceReportTypeLabel(type: string | undefined, t: Record<string, string>) {
+  return type === "unattended" ? t.interferenceReportTypeUnattended : t.interferenceReportTypeManual;
 }
 
 function formatInterferenceReportChannels(report: InterferenceReportSummary, customLabels: string[]) {

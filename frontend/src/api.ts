@@ -24,6 +24,7 @@ import type {
   ScreenStrikeRequest,
   ScreenStrikeResponse,
   ScreenStrikeState,
+  ScreenStrikeUnattendedConfig,
   UserSettings
 } from "./types";
 
@@ -138,6 +139,13 @@ export function updateScreenTCPPorts(payload: ScreenTCPPortRequest) {
 
 export function updateScreenStrike(payload: ScreenStrikeRequest) {
   return requestJson<ScreenStrikeResponse>("/screen/strike", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateScreenStrikeUnattended(payload: ScreenStrikeUnattendedConfig) {
+  return requestJson<ScreenStrikeResponse>("/screen/strike/unattended", {
     method: "POST",
     body: JSON.stringify(payload),
   });
