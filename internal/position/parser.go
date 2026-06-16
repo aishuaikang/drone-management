@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/diddecrypt"
-	"dr600ab-net/internal/model"
+	"drone-management/internal/diddecrypt"
+	"drone-management/internal/model"
 )
 
 // ParsedMessage is the normalized result of one ddsT1 line.

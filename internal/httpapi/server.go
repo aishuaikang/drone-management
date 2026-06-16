@@ -26,19 +26,19 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/config"
-	"dr600ab-net/internal/fpv"
-	"dr600ab-net/internal/fpvrecord"
-	"dr600ab-net/internal/fpvvideo"
-	"dr600ab-net/internal/interference"
-	"dr600ab-net/internal/interferencereport"
-	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/offlinemap"
-	"dr600ab-net/internal/position"
-	"dr600ab-net/internal/settings"
-	"dr600ab-net/internal/store"
-	"dr600ab-net/internal/webassets"
+	"drone-management/internal/config"
+	"drone-management/internal/fpv"
+	"drone-management/internal/fpvrecord"
+	"drone-management/internal/fpvvideo"
+	"drone-management/internal/interference"
+	"drone-management/internal/interferencereport"
+	"drone-management/internal/intrusion"
+	"drone-management/internal/model"
+	"drone-management/internal/offlinemap"
+	"drone-management/internal/position"
+	"drone-management/internal/settings"
+	"drone-management/internal/store"
+	"drone-management/internal/webassets"
 )
 
 const (
@@ -62,10 +62,17 @@ type userSettingsUpdateRequest struct {
 	ScreenTitle               *string                `json:"screenTitle,omitempty"`
 	PositionExpireSeconds     *int                   `json:"positionExpireSeconds,omitempty"`
 	ScreenStrikeChannelLabels *[]string              `json:"screenStrikeChannelLabels,omitempty"`
+	Lingyun                   *model.LingyunSettings `json:"lingyun,omitempty"`
 	WarningZoneEnabled        *bool                  `json:"warningZoneEnabled,omitempty"`
 	WarningZoneRadiusMeters   *float64               `json:"warningZoneRadiusMeters,omitempty"`
 	WarningZones              *[]model.WarningZone   `json:"warningZones,omitempty"`
 	Whitelist                 *[]model.WhitelistItem `json:"whitelist,omitempty"`
+}
+
+// LingyunService controls the optional Lingyun protocol connector.
+type LingyunService interface {
+	ApplySettings(model.UserSettings)
+	Status() model.LingyunStatus
 }
 
 // IntrusionStore persists disappeared positioning targets.
@@ -98,6 +105,7 @@ type Server struct {
 	fpv                 *fpv.Service
 	interference        *interference.Service
 	fpvVideo            *fpvvideo.Service
+	lingyun             LingyunService
 	server              *http.Server
 	userSettings        UserSettingsStore
 	intrusions          IntrusionStore
@@ -147,6 +155,13 @@ type Option func(*Server)
 func WithUserSettingsStore(store UserSettingsStore) Option {
 	return func(s *Server) {
 		s.userSettings = store
+	}
+}
+
+// WithLingyunService injects the optional Lingyun protocol service.
+func WithLingyunService(service LingyunService) Option {
+	return func(s *Server) {
+		s.lingyun = service
 	}
 }
 
@@ -633,6 +648,9 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	if req.ScreenStrikeChannelLabels != nil {
 		settings.ScreenStrikeChannelLabels = normalizeScreenStrikeChannelLabels(*req.ScreenStrikeChannelLabels)
+	}
+	if req.Lingyun != nil {
+		settings.Lingyun = model.LingyunSettingsWithGeneratedClientID(*req.Lingyun)
 	}
 	if req.WarningZoneEnabled != nil {
 		settings.WarningZoneEnabled = req.WarningZoneEnabled
@@ -1714,7 +1732,7 @@ func parseOffset(r *http.Request) int {
 }
 
 func saveMultipartUpload(file multipart.File, filename string) (string, func(), error) {
-	temp, err := os.CreateTemp("", "dr600ab-upload-*.zip")
+	temp, err := os.CreateTemp("", "drone-management-upload-*.zip")
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -2190,6 +2208,9 @@ func (s *Server) applyUserSettings(settings model.UserSettings) {
 	}
 	seconds := model.UserSettingsPositionExpireSeconds(settings)
 	s.store.SetPositionTTL(time.Duration(seconds) * time.Second)
+	if s.lingyun != nil {
+		s.lingyun.ApplySettings(settings)
+	}
 }
 
 func (s *Server) applyTCPPorts(positionPort, fpvPort int) {
@@ -2220,6 +2241,9 @@ func (s *Server) screenRuntimeStatus() model.ScreenRuntimeStatus {
 	if s.interference != nil {
 		status.Interference = s.interference.ConnectionStatus()
 	}
+	if s.lingyun != nil {
+		status.Lingyun = s.lingyun.Status()
+	}
 	return status
 }
 
@@ -2232,6 +2256,12 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 	if settings.FPVTCPPort == nil && s != nil && s.fpv != nil {
 		port := s.fpv.Status().Port
 		settings.FPVTCPPort = &port
+	}
+	if s != nil && s.store != nil {
+		location := s.store.DeviceLocation()
+		if location.Valid && location.Point != nil {
+			settings.Lingyun = model.LingyunSettingsWithDeviceLocation(settings.Lingyun, location.Point)
+		}
 	}
 	return model.UserSettingsWithDefaults(settings)
 }

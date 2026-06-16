@@ -1,6 +1,6 @@
-# DR600AB 网口版
+# Drone Management 网口版
 
-DR600AB 后端启动 HTTP API，并启动两个 TCP server 接收设备数据：
+Drone Management 后端启动 HTTP API，并启动两个 TCP server 接收设备数据：
 
 - ddsT1 定位数据：默认 `0.0.0.0:10007`
 - A3-F9 FPV 告警数据：默认 `0.0.0.0:10005`

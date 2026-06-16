@@ -52,6 +52,34 @@ export interface ScreenRuntimeStatus {
   interference: TCPClientStatus;
   deviceTargetAddress: string;
   fpvVideo: FPVVideoStatus;
+  lingyun: LingyunStatus;
+}
+
+export type LingyunDeviceType = "aoa" | "dcd" | "rid";
+
+export interface LingyunStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  broker?: string;
+  lastError?: string;
+  updatedAt?: string;
+  devices?: LingyunDeviceStatus[];
+}
+
+export interface LingyunDeviceStatus {
+  type: LingyunDeviceType | string;
+  abbr: string;
+  deviceId?: string;
+  enabled: boolean;
+  reportingEnabled: boolean;
+  workState: number;
+  lastRegisterAt?: string;
+  lastStatusAt?: string;
+  lastDataAt?: string;
+  lastControlAt?: string;
+  lastControlResult?: string;
+  lastError?: string;
 }
 
 export interface ScreenTCPPortRequest {
@@ -147,12 +175,53 @@ export interface UserSettings {
   positionExpireSeconds?: number;
   positionTCPPort?: number;
   fpvTCPPort?: number;
+  lingyun?: LingyunSettings;
   screenStrikeChannelLabels?: string[];
   screenStrikeUnattended?: ScreenStrikeUnattendedConfig;
   warningZoneEnabled?: boolean;
   warningZoneRadiusMeters?: number;
   warningZones?: WarningZone[];
   whitelist?: WhitelistItem[];
+}
+
+export interface LingyunSettings {
+  enabled: boolean;
+  broker?: string;
+  clientId?: string;
+  username?: string;
+  password?: string;
+  providerCode?: string;
+  protocolVersion?: string;
+  publishMinIntervalSeconds?: number;
+  registerIntervalSeconds?: number;
+  statusIntervalSeconds?: number;
+  devices?: LingyunDeviceSettings[];
+}
+
+export interface LingyunDeviceSettings {
+  type: LingyunDeviceType | string;
+  enabled: boolean;
+  deviceId?: string;
+  deviceName?: string;
+  deviceLongitude?: number;
+  deviceLatitude?: number;
+  deviceAltitude?: number;
+  installMode?: number;
+  detectionRange?: number;
+  horizontalCoverageStartAngle?: number;
+  horizontalCoverageEndAngle?: number;
+  detectionFrequency?: string[];
+  bandWidth?: string;
+  deviceSpec?: LingyunDeviceSpec;
+}
+
+export interface LingyunDeviceSpec {
+  devModel?: string;
+  devMfr?: string;
+  devSN?: string;
+  devHWVer?: string;
+  devSoftVer?: string;
+  instLoc?: string;
 }
 
 export interface WarningZone {

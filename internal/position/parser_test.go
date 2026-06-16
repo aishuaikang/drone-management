@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/diddecrypt"
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/store"
+	"drone-management/internal/diddecrypt"
+	"drone-management/internal/model"
+	"drone-management/internal/store"
 )
 
 func TestParseDeviceStatus(t *testing.T) {

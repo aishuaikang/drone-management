@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 type manualDeviceLocationFile struct {

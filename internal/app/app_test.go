@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"dr600ab-net/internal/config"
-	"dr600ab-net/internal/model"
+	"drone-management/internal/config"
+	"drone-management/internal/model"
 )
 
 func TestConfigWithUserTCPPorts(t *testing.T) {

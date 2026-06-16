@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 WEBASSETS_DIR="$ROOT_DIR/internal/webassets"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROOT_DIR/dist}"
-OUTPUT_NAME="${OUTPUT_NAME:-dr600ab-net}"
+OUTPUT_NAME="${OUTPUT_NAME:-drone-management}"
 VERSION="${VERSION:-$(date +%Y%m%d%H%M%S)}"
 CGO_ENABLED="${CGO_ENABLED:-0}"
 DEFAULT_TARGETS=(
@@ -26,7 +26,7 @@ Usage:
 Environment:
   TARGETS      Space-separated targets. Overrides positional targets.
                Default: ${DEFAULT_TARGETS[*]}
-  OUTPUT_NAME  Binary/package base name. Default: dr600ab-net
+  OUTPUT_NAME  Binary/package base name. Default: drone-management
   OUTPUT_DIR   Release output directory. Default: ./dist
   VERSION      Package version suffix. Default: current timestamp
   CGO_ENABLED  Go CGO setting for cross compilation. Default: 0

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 // UserStore persists public operator settings.
@@ -44,6 +44,7 @@ func (s *UserStore) LoadUser() (model.UserSettings, bool, error) {
 // SaveEditableUser writes public user settings atomically.
 func (s *UserStore) SaveEditableUser(settings model.UserSettings) (model.UserSettings, error) {
 	settings = model.UserSettingsWithDefaults(settings)
+	settings.Lingyun = model.LingyunSettingsWithGeneratedClientID(settings.Lingyun)
 	if s == nil || s.path == "" {
 		return settings, nil
 	}

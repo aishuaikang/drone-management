@@ -2007,7 +2007,7 @@ button {
 }
 
 /* Source screen parity overrides. These keep the copied screen layout close to
-   /Users/ask/Desktop/spbatc/dr600ab/frontend while preserving this app's data. */
+   /Users/ask/Desktop/spbatc/drone-management/frontend while preserving this app's data. */
 .screen-shell {
   min-height: 0;
   font-family: "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
@@ -4747,6 +4747,13 @@ button.screen-position-card__point {
   transform: none;
 }
 
+.screen-management-panel--about {
+  right: auto;
+  bottom: auto;
+  width: min(64em, calc(100dvw - 2.2em));
+  max-height: calc(100dvh - var(--screen-content-top) - 1.15em);
+}
+
 .screen-management {
   display: grid;
   height: 100%;
@@ -4849,6 +4856,32 @@ button.screen-position-card__point {
   gap: 0.62em;
 }
 
+.screen-management--lingyun {
+  grid-template-areas:
+    "header"
+    "lingyun"
+    "banner"
+    "footer";
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  align-content: stretch;
+  height: auto;
+  max-height: inherit;
+  overflow: hidden;
+  gap: 0.62em;
+}
+
+.screen-management--about {
+  grid-template-areas:
+    "header"
+    "about";
+  grid-template-rows: auto auto;
+  align-content: start;
+  height: auto;
+  max-height: inherit;
+  overflow: hidden;
+  gap: 0.62em;
+}
+
 .screen-management--offline-map {
   grid-template-areas:
     "header"
@@ -4872,6 +4905,11 @@ button.screen-position-card__point {
   max-height: 100%;
 }
 
+.virtual-keyboard-open .screen-management--lingyun {
+  height: auto;
+  max-height: 100%;
+}
+
 .screen-settings-grid {
   display: grid;
   grid-area: settings;
@@ -4886,6 +4924,10 @@ button.screen-position-card__point {
 }
 
 .virtual-keyboard-open .screen-settings-grid {
+  max-height: calc(100dvh - var(--screen-content-top) - 8.4em);
+}
+
+.virtual-keyboard-open .screen-lingyun-page {
   max-height: calc(100dvh - var(--screen-content-top) - 8.4em);
 }
 
@@ -5022,6 +5064,28 @@ button.screen-position-card__point {
   box-shadow: 0 0 0 2px rgba(38, 201, 255, 0.12);
 }
 
+.screen-settings-form-grid .screen-lingyun-static-value,
+.screen-lingyun-device-form .screen-lingyun-static-value {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 2.28em;
+  border-left: 0.24em solid rgba(115, 242, 255, 0.5);
+  border-radius: 0.5em;
+  padding: 0.42em 0.58em;
+  color: #dff7ff;
+  background:
+    linear-gradient(90deg, rgba(115, 242, 255, 0.12), rgba(115, 242, 255, 0.025)),
+    rgba(2, 8, 14, 0.16);
+  font: inherit;
+  font-size: 0.68em;
+  font-weight: 840;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .screen-settings-form-grid input[type="file"] {
   min-height: 2.8em;
   padding: 0.42em 0.52em;
@@ -5152,6 +5216,232 @@ button.screen-position-card__point {
   width: 1.18em;
   height: 1.18em;
   accent-color: var(--screen-primary);
+}
+
+.screen-lingyun-settings {
+  display: grid;
+  min-width: 0;
+  gap: 0.58em;
+}
+
+.screen-lingyun-page {
+  display: grid;
+  grid-area: lingyun;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.62em;
+  min-height: 0;
+  max-height: calc(100dvh - var(--screen-content-top) - 8.4em);
+  overflow: auto;
+  padding: 0.04em 0.12em 0.22em 0;
+}
+
+.screen-lingyun-connection {
+  overflow: hidden;
+}
+
+.screen-settings-form-grid--lingyun-main {
+  grid-template-columns: minmax(10em, 0.8fr) minmax(14em, 1.35fr) repeat(4, minmax(8.8em, 1fr));
+  align-items: end;
+}
+
+.screen-lingyun-status-grid {
+  grid-template-columns: minmax(8em, 0.7fr) minmax(12em, 1fr) minmax(14em, 1.3fr);
+}
+
+.screen-about-section {
+  grid-area: about;
+  max-width: 62em;
+}
+
+.screen-about-grid {
+  grid-template-columns: minmax(10em, 0.7fr) minmax(18em, 1.2fr) minmax(14em, 1fr);
+}
+
+.screen-lingyun-device-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5em;
+  min-width: 0;
+}
+
+.screen-lingyun-device-section {
+  display: grid;
+  min-width: 0;
+  gap: 0.5em;
+}
+
+.screen-lingyun-device-section__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6em;
+  border-bottom: 1px solid rgba(115, 242, 255, 0.14);
+  padding: 0.1em 0 0.52em;
+}
+
+.screen-lingyun-device-section__header span {
+  display: grid;
+  min-width: 0;
+  gap: 0.18em;
+}
+
+.screen-lingyun-device-section__header strong {
+  color: #f5fbff;
+  font-size: 0.76em;
+  font-weight: 920;
+  line-height: 1.1;
+}
+
+.screen-lingyun-device-section__header em {
+  overflow: hidden;
+  color: rgba(202, 225, 230, 0.62);
+  font-size: 0.56em;
+  font-style: normal;
+  font-weight: 720;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-lingyun-device {
+  display: grid;
+  min-width: 0;
+  gap: 0.52em;
+  border: 1px solid rgba(115, 242, 255, 0.16);
+  border-radius: 0.7em;
+  padding: 0.62em;
+  background:
+    linear-gradient(180deg, rgba(115, 242, 255, 0.055), rgba(2, 8, 14, 0.08)),
+    rgba(2, 8, 14, 0.3);
+}
+
+.screen-lingyun-device header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.52em;
+}
+
+.screen-lingyun-device header strong {
+  overflow: hidden;
+  color: #f5fbff;
+  font-size: 0.7em;
+  font-weight: 920;
+  line-height: 1.14;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-lingyun-device header em {
+  flex: none;
+  border: 1px solid rgba(124, 219, 122, 0.22);
+  border-radius: 999px;
+  padding: 0.16em 0.52em;
+  color: #dcfce7;
+  background: rgba(124, 219, 122, 0.08);
+  font-size: 0.5em;
+  font-style: normal;
+  font-weight: 880;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.screen-lingyun-device-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.42em;
+}
+
+.screen-lingyun-device-form label {
+  display: grid;
+  min-width: 0;
+  gap: 0.22em;
+}
+
+.screen-lingyun-device-form label > span {
+  color: rgba(202, 225, 230, 0.66);
+  font-size: 0.52em;
+  font-weight: 850;
+}
+
+.screen-lingyun-device-form input,
+.screen-lingyun-device-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(168, 191, 203, 0.2);
+  border-radius: 0.54em;
+  padding: 0.42em 0.54em;
+  color: #f5fbff;
+  background: rgba(2, 8, 14, 0.48);
+  font: inherit;
+  font-size: 0.64em;
+  font-weight: 800;
+  outline: none;
+}
+
+.screen-lingyun-device-form select {
+  cursor: pointer;
+}
+
+.screen-lingyun-device-form select option {
+  color: #f5fbff;
+  background: #07131b;
+}
+
+.screen-lingyun-device-form input:focus,
+.screen-lingyun-device-form select:focus {
+  border-color: rgba(115, 242, 255, 0.62);
+  box-shadow: 0 0 0 2px rgba(38, 201, 255, 0.12);
+}
+
+.screen-lingyun-device-form .screen-settings-toggle-row {
+  min-height: 2.2em;
+}
+
+.screen-lingyun-topic-list {
+  display: grid;
+  min-width: 0;
+  gap: 0.32em;
+  border-top: 1px solid rgba(168, 191, 203, 0.14);
+  padding-top: 0.48em;
+}
+
+.screen-lingyun-topic-list > strong {
+  color: rgba(245, 251, 255, 0.82);
+  font-size: 0.54em;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.screen-lingyun-topic-row {
+  display: grid;
+  grid-template-columns: minmax(5.8em, 0.32fr) minmax(0, 1fr);
+  gap: 0.44em;
+  align-items: start;
+  min-width: 0;
+}
+
+.screen-lingyun-topic-row span {
+  color: rgba(202, 225, 230, 0.62);
+  font-size: 0.5em;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.screen-lingyun-topic-row code {
+  min-width: 0;
+  border: 1px solid rgba(115, 242, 255, 0.12);
+  border-radius: 0.46em;
+  padding: 0.34em 0.44em;
+  color: #dff7ff;
+  background: rgba(2, 8, 14, 0.4);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.48em;
+  font-weight: 760;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .screen-offline-map-dashboard {
@@ -5616,8 +5906,17 @@ button.screen-position-card__point {
 @media (max-width: 1180px) {
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--lingyun-main,
   .screen-settings-channel-labels {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .screen-lingyun-device-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .screen-lingyun-device-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .screen-offline-map-dashboard {
@@ -5658,19 +5957,33 @@ button.screen-position-card__point {
     gap: 0.08em;
   }
 
+  .screen-lingyun-topic-row {
+    grid-template-columns: 1fr;
+    gap: 0.18em;
+  }
+
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--lingyun-main,
+  .screen-lingyun-status-grid,
+  .screen-about-grid,
   .screen-settings-channel-labels {
     grid-template-columns: 1fr;
+  }
+
+  .screen-lingyun-device-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-height: 660px) {
-  .screen-management--settings {
+  .screen-management--settings,
+  .screen-management--lingyun {
     gap: 0.48em;
   }
 
-  .screen-settings-grid {
+  .screen-settings-grid,
+  .screen-lingyun-page {
     gap: 0.48em;
   }
 
@@ -5686,6 +5999,8 @@ button.screen-position-card__point {
 
   .screen-settings-form-grid,
   .screen-settings-section--warning .screen-settings-form-grid,
+  .screen-settings-form-grid--lingyun-main,
+  .screen-lingyun-device-form,
   .screen-settings-channel-labels {
     gap: 0.38em;
   }
@@ -6941,8 +7256,13 @@ button.screen-position-card__point {
   }
 
   .screen-settings-grid,
+  .screen-lingyun-page,
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--lingyun-main,
+  .screen-lingyun-status-grid,
+  .screen-lingyun-device-grid,
+  .screen-lingyun-device-form,
   .screen-settings-channel-labels {
     grid-template-columns: 1fr;
   }

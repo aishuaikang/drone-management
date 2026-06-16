@@ -2,7 +2,14 @@
 package model
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"math"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,12 +59,72 @@ type UserSettings struct {
 	PositionExpireSeconds     *int                          `json:"positionExpireSeconds,omitempty"`
 	PositionTCPPort           *int                          `json:"positionTCPPort,omitempty"`
 	FPVTCPPort                *int                          `json:"fpvTCPPort,omitempty"`
+	Lingyun                   LingyunSettings               `json:"lingyun,omitempty"`
 	ScreenStrikeChannelLabels []string                      `json:"screenStrikeChannelLabels,omitempty"`
 	ScreenStrikeUnattended    *ScreenStrikeUnattendedConfig `json:"screenStrikeUnattended,omitempty"`
 	WarningZoneEnabled        *bool                         `json:"warningZoneEnabled,omitempty"`
 	WarningZoneRadiusMeters   *float64                      `json:"warningZoneRadiusMeters,omitempty"`
 	WarningZones              []WarningZone                 `json:"warningZones,omitempty"`
 	Whitelist                 []WhitelistItem               `json:"whitelist,omitempty"`
+}
+
+const (
+	LingyunDeviceAOA      = "aoa"
+	LingyunDeviceDCD      = "dcd"
+	LingyunDeviceRemoteID = "rid"
+)
+
+const (
+	DefaultLingyunProtocolVersion       = "V1.3"
+	DefaultLingyunPublishMinIntervalSec = 1
+	DefaultLingyunRegisterIntervalSec   = 300
+	DefaultLingyunStatusIntervalSec     = 10
+	DefaultLingyunBandWidth             = "20MHz"
+	DefaultLingyunClientIDPrefix        = "drone-management-lingyun-"
+	DefaultLingyunDeviceSNPrefix        = "drone-management-"
+)
+
+// LingyunSettings stores China Mobile Lingyun protocol configuration.
+type LingyunSettings struct {
+	Enabled                   bool                    `json:"enabled"`
+	Broker                    string                  `json:"broker"`
+	ClientID                  string                  `json:"clientId"`
+	Username                  string                  `json:"username"`
+	Password                  string                  `json:"password"`
+	ProviderCode              string                  `json:"providerCode"`
+	ProtocolVersion           string                  `json:"protocolVersion"`
+	PublishMinIntervalSeconds int                     `json:"publishMinIntervalSeconds"`
+	RegisterIntervalSeconds   int                     `json:"registerIntervalSeconds"`
+	StatusIntervalSeconds     int                     `json:"statusIntervalSeconds"`
+	Devices                   []LingyunDeviceSettings `json:"devices"`
+}
+
+// LingyunDeviceSettings stores one logical Lingyun device definition.
+type LingyunDeviceSettings struct {
+	Type                         string            `json:"type"`
+	Enabled                      bool              `json:"enabled"`
+	DeviceID                     string            `json:"deviceId"`
+	DeviceName                   string            `json:"deviceName"`
+	DeviceLongitude              float64           `json:"deviceLongitude"`
+	DeviceLatitude               float64           `json:"deviceLatitude"`
+	DeviceAltitude               float64           `json:"deviceAltitude"`
+	InstallMode                  int               `json:"installMode"`
+	DetectionRange               float64           `json:"detectionRange"`
+	HorizontalCoverageStartAngle float64           `json:"horizontalCoverageStartAngle"`
+	HorizontalCoverageEndAngle   float64           `json:"horizontalCoverageEndAngle"`
+	DetectionFrequency           []string          `json:"detectionFrequency"`
+	BandWidth                    string            `json:"bandWidth"`
+	DeviceSpec                   LingyunDeviceSpec `json:"deviceSpec"`
+}
+
+// LingyunDeviceSpec stores public static device specification fields.
+type LingyunDeviceSpec struct {
+	DevModel   string `json:"devModel"`
+	DevMfr     string `json:"devMfr"`
+	DevSN      string `json:"devSN"`
+	DevHWVer   string `json:"devHWVer"`
+	DevSoftVer string `json:"devSoftVer"`
+	InstLoc    string `json:"instLoc"`
 }
 
 // WarningZone describes a user-defined map circle used to scope live alarms.
@@ -115,6 +182,7 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 		settings.PositionTCPPort = nil
 		settings.FPVTCPPort = nil
 	}
+	settings.Lingyun = LingyunSettingsWithSystemDeviceIdentity(settings.Lingyun)
 	legacyZones := settings.WarningZones
 	if settings.WarningZoneEnabled == nil {
 		enabled := false
@@ -136,6 +204,305 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 	}
 	settings.WarningZones = nil
 	return settings
+}
+
+// LingyunSettingsWithDefaults fills optional Lingyun protocol settings.
+func LingyunSettingsWithDefaults(settings LingyunSettings) LingyunSettings {
+	settings.ClientID = strings.TrimSpace(settings.ClientID)
+	settings.ProtocolVersion = DefaultLingyunProtocolVersion
+	if settings.PublishMinIntervalSeconds <= 0 {
+		settings.PublishMinIntervalSeconds = DefaultLingyunPublishMinIntervalSec
+	}
+	if settings.RegisterIntervalSeconds <= 0 {
+		settings.RegisterIntervalSeconds = DefaultLingyunRegisterIntervalSec
+	}
+	if settings.StatusIntervalSeconds <= 0 {
+		settings.StatusIntervalSeconds = DefaultLingyunStatusIntervalSec
+	}
+
+	byType := map[string]LingyunDeviceSettings{}
+	for _, device := range settings.Devices {
+		device = LingyunDeviceSettingsWithDefaults(device)
+		if device.Type == "" {
+			continue
+		}
+		byType[device.Type] = device
+	}
+
+	settings.Devices = []LingyunDeviceSettings{
+		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceAOA), byType[LingyunDeviceAOA]),
+		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceDCD), byType[LingyunDeviceDCD]),
+		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceRemoteID), byType[LingyunDeviceRemoteID]),
+	}
+	return settings
+}
+
+// LingyunSettingsWithGeneratedClientID fills defaults and creates a stable MQTT client ID when omitted.
+func LingyunSettingsWithGeneratedClientID(settings LingyunSettings) LingyunSettings {
+	settings = LingyunSettingsWithDefaults(settings)
+	if settings.ClientID == "" {
+		settings.ClientID = NewLingyunClientID()
+	}
+	return settings
+}
+
+// NewLingyunClientID returns a random MQTT client ID for Lingyun connections.
+func NewLingyunClientID() string {
+	var bytes [6]byte
+	if _, err := rand.Read(bytes[:]); err == nil {
+		return DefaultLingyunClientIDPrefix + hex.EncodeToString(bytes[:])
+	}
+	return DefaultLingyunClientIDPrefix + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+// LingyunSettingsWithSystemDeviceIdentity fills empty Lingyun device IDs and serials from the host MAC address.
+func LingyunSettingsWithSystemDeviceIdentity(settings LingyunSettings) LingyunSettings {
+	return LingyunSettingsWithDeviceIdentity(settings, NewLingyunDeviceSN())
+}
+
+// LingyunSettingsWithDeviceIdentity fills empty Lingyun device IDs and serials with identity.
+func LingyunSettingsWithDeviceIdentity(settings LingyunSettings, identity string) LingyunSettings {
+	settings = LingyunSettingsWithDefaults(settings)
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return settings
+	}
+	for index := range settings.Devices {
+		settings.Devices[index].DeviceID = identity
+		settings.Devices[index].DeviceSpec.DevSN = identity
+	}
+	return settings
+}
+
+// LingyunSettingsWithDeviceLocation fills all logical Lingyun device coordinates with point.
+func LingyunSettingsWithDeviceLocation(settings LingyunSettings, point *GeoPoint) LingyunSettings {
+	if point == nil || !validLingyunGeoPoint(*point) {
+		return settings
+	}
+	for index := range settings.Devices {
+		settings.Devices[index].DeviceLongitude = point.Longitude
+		settings.Devices[index].DeviceLatitude = point.Latitude
+	}
+	return settings
+}
+
+func validLingyunGeoPoint(point GeoPoint) bool {
+	return !math.IsNaN(point.Latitude) &&
+		!math.IsNaN(point.Longitude) &&
+		!math.IsInf(point.Latitude, 0) &&
+		!math.IsInf(point.Longitude, 0) &&
+		point.Latitude >= -90 &&
+		point.Latitude <= 90 &&
+		point.Longitude >= -180 &&
+		point.Longitude <= 180
+}
+
+// NewLingyunDeviceSN returns a stable device serial derived from the host MAC address.
+func NewLingyunDeviceSN() string {
+	return lingyunDeviceSNFromHardwareAddr(firstSystemHardwareAddr())
+}
+
+func lingyunDeviceSNFromHardwareAddr(addr net.HardwareAddr) string {
+	if len(addr) == 0 || hardwareAddrAllZero(addr) {
+		return ""
+	}
+	return DefaultLingyunDeviceSNPrefix + strings.ToUpper(hex.EncodeToString(addr))
+}
+
+func firstSystemHardwareAddr() net.HardwareAddr {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	return stableHardwareAddrFromInterfaces(interfaces)
+}
+
+type hardwareAddrCandidate struct {
+	name   string
+	addr   net.HardwareAddr
+	global bool
+}
+
+func stableHardwareAddrFromInterfaces(interfaces []net.Interface) net.HardwareAddr {
+	candidates := make([]hardwareAddrCandidate, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 ||
+			len(iface.HardwareAddr) == 0 ||
+			hardwareAddrAllZero(iface.HardwareAddr) ||
+			hardwareAddrIsMulticast(iface.HardwareAddr) {
+			continue
+		}
+		candidates = append(candidates, hardwareAddrCandidate{
+			name:   iface.Name,
+			addr:   append(net.HardwareAddr(nil), iface.HardwareAddr...),
+			global: hardwareAddrIsGloballyAdministered(iface.HardwareAddr),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	slices.SortFunc(candidates, func(a, b hardwareAddrCandidate) int {
+		if a.global != b.global {
+			if a.global {
+				return -1
+			}
+			return 1
+		}
+		if cmp := slices.Compare(a.addr, b.addr); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.name, b.name)
+	})
+	return append(net.HardwareAddr(nil), candidates[0].addr...)
+}
+
+func hardwareAddrAllZero(addr net.HardwareAddr) bool {
+	for _, part := range addr {
+		if part != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hardwareAddrIsMulticast(addr net.HardwareAddr) bool {
+	return len(addr) > 0 && addr[0]&0x01 != 0
+}
+
+func hardwareAddrIsGloballyAdministered(addr net.HardwareAddr) bool {
+	return len(addr) > 0 && addr[0]&0x02 == 0
+}
+
+// LingyunDeviceSettingsWithDefaults fills one logical device definition.
+func LingyunDeviceSettingsWithDefaults(device LingyunDeviceSettings) LingyunDeviceSettings {
+	switch device.Type {
+	case LingyunDeviceAOA, LingyunDeviceDCD, LingyunDeviceRemoteID:
+	default:
+		return LingyunDeviceSettings{}
+	}
+	if device.BandWidth == "" {
+		device.BandWidth = DefaultLingyunBandWidth
+	}
+	if lingyunDetectionRangeUsesDefault(device.DetectionRange) {
+		device.DetectionRange = lingyunDefaultDetectionRange(device.Type)
+	}
+	switch device.InstallMode {
+	case 0, 1:
+	default:
+		device.InstallMode = 0
+	}
+	if device.HorizontalCoverageStartAngle == 0 && device.HorizontalCoverageEndAngle == 0 {
+		device.HorizontalCoverageStartAngle = 0
+		device.HorizontalCoverageEndAngle = 360
+	}
+	return device
+}
+
+func defaultLingyunDevice(deviceType string) LingyunDeviceSettings {
+	device := LingyunDeviceSettings{
+		Type:                         deviceType,
+		Enabled:                      true,
+		DetectionRange:               lingyunDefaultDetectionRange(deviceType),
+		HorizontalCoverageStartAngle: 0,
+		HorizontalCoverageEndAngle:   360,
+		BandWidth:                    DefaultLingyunBandWidth,
+		DeviceSpec: LingyunDeviceSpec{
+			DevModel:   "Drone Management",
+			DevHWVer:   "unknown",
+			DevSoftVer: "unknown",
+		},
+	}
+	switch deviceType {
+	case LingyunDeviceAOA:
+		device.DeviceName = "Drone Management AOA"
+	case LingyunDeviceDCD:
+		device.DeviceName = "Drone Management 协议破解"
+	case LingyunDeviceRemoteID:
+		device.DeviceName = "Drone Management RemoteID"
+	}
+	device.DetectionFrequency = lingyunDefaultDetectionFrequency(deviceType)
+	return device
+}
+
+func lingyunDeviceWithOverride(defaults LingyunDeviceSettings, override LingyunDeviceSettings) LingyunDeviceSettings {
+	if override.Type == "" {
+		return defaults
+	}
+	override = LingyunDeviceSettingsWithDefaults(override)
+	if override.DeviceName == "" {
+		override.DeviceName = defaults.DeviceName
+	}
+	if override.BandWidth == "" {
+		override.BandWidth = defaults.BandWidth
+	}
+	if lingyunDetectionRangeUsesDefault(override.DetectionRange) {
+		override.DetectionRange = defaults.DetectionRange
+	}
+	if lingyunDetectionFrequencyUsesDefault(override.Type, override.DetectionFrequency) {
+		override.DetectionFrequency = append([]string(nil), defaults.DetectionFrequency...)
+	}
+	if override.DeviceSpec.DevModel == "" {
+		override.DeviceSpec.DevModel = defaults.DeviceSpec.DevModel
+	}
+	if override.DeviceSpec.DevHWVer == "" {
+		override.DeviceSpec.DevHWVer = defaults.DeviceSpec.DevHWVer
+	}
+	if override.DeviceSpec.DevSoftVer == "" {
+		override.DeviceSpec.DevSoftVer = defaults.DeviceSpec.DevSoftVer
+	}
+	return override
+}
+
+func lingyunDefaultDetectionFrequency(deviceType string) []string {
+	switch deviceType {
+	case LingyunDeviceAOA:
+		return []string{"400MHz-8GHz"}
+	case LingyunDeviceDCD, LingyunDeviceRemoteID:
+		return []string{"2.4GHz", "5.8GHz"}
+	default:
+		return []string{}
+	}
+}
+
+func lingyunDefaultDetectionRange(deviceType string) float64 {
+	switch deviceType {
+	case LingyunDeviceRemoteID:
+		return 3000
+	case LingyunDeviceAOA, LingyunDeviceDCD:
+		return 5000
+	default:
+		return 1000
+	}
+}
+
+func lingyunDetectionRangeUsesDefault(value float64) bool {
+	return value <= 0 || value == 1000
+}
+
+func lingyunDetectionFrequencyUsesDefault(deviceType string, values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	switch deviceType {
+	case LingyunDeviceAOA:
+		return sameLingyunStringList(values, []string{"2.4GHz", "5.8GHz"})
+	case LingyunDeviceRemoteID:
+		return sameLingyunStringList(values, []string{"2.4GHz"})
+	default:
+		return false
+	}
+}
+
+func sameLingyunStringList(values, want []string) bool {
+	if len(values) != len(want) {
+		return false
+	}
+	for index := range values {
+		if strings.TrimSpace(values[index]) != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // UserSettingsIntrusionRetentionDays returns the effective intrusion retention setting.
@@ -189,6 +556,34 @@ type ScreenRuntimeStatus struct {
 	Interference        TCPClientStatus   `json:"interference"`
 	DeviceTargetAddress string            `json:"deviceTargetAddress"`
 	FPVVideo            FPVVideoStatus    `json:"fpvVideo"`
+	Lingyun             LingyunStatus     `json:"lingyun"`
+}
+
+// LingyunStatus describes the Lingyun protocol runtime state.
+type LingyunStatus struct {
+	Enabled    bool                  `json:"enabled"`
+	Configured bool                  `json:"configured"`
+	Connected  bool                  `json:"connected"`
+	Broker     string                `json:"broker,omitempty"`
+	LastError  string                `json:"lastError,omitempty"`
+	UpdatedAt  *time.Time            `json:"updatedAt,omitempty"`
+	Devices    []LingyunDeviceStatus `json:"devices,omitempty"`
+}
+
+// LingyunDeviceStatus describes one logical Lingyun device runtime state.
+type LingyunDeviceStatus struct {
+	Type              string     `json:"type"`
+	Abbr              string     `json:"abbr"`
+	DeviceID          string     `json:"deviceId,omitempty"`
+	Enabled           bool       `json:"enabled"`
+	ReportingEnabled  bool       `json:"reportingEnabled"`
+	WorkState         int        `json:"workState"`
+	LastRegisterAt    *time.Time `json:"lastRegisterAt,omitempty"`
+	LastStatusAt      *time.Time `json:"lastStatusAt,omitempty"`
+	LastDataAt        *time.Time `json:"lastDataAt,omitempty"`
+	LastControlAt     *time.Time `json:"lastControlAt,omitempty"`
+	LastControlResult string     `json:"lastControlResult,omitempty"`
+	LastError         string     `json:"lastError,omitempty"`
 }
 
 // FPVVideoStatus describes the configured FPV video playback endpoint.

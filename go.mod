@@ -1,4 +1,4 @@
-module dr600ab-net
+module drone-management
 
 go 1.25.0
 

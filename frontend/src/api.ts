@@ -39,20 +39,34 @@ export type OfflineMapUploadError = Error & {
   logs?: OfflineMapUploadLog[];
 };
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
+type JsonRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
+
+async function requestJson<T>(path: string, init?: JsonRequestInit): Promise<T> {
+  const { timeoutMs = 0, ...requestInit } = init ?? {};
+  const headers = new Headers(requestInit.headers);
   headers.set("Accept", "application/json");
-  if (init?.body) {
+  if (requestInit.body) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(`${API_PREFIX}${path}`, {
-    ...init,
-    headers,
-  });
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
+  const controller = timeoutMs > 0 && !requestInit.signal ? new AbortController() : null;
+  const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
+  try {
+    const response = await fetch(`${API_PREFIX}${path}`, {
+      ...requestInit,
+      headers,
+      signal: requestInit.signal ?? controller?.signal,
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response));
+    }
+    return (await response.json()) as T;
+  } finally {
+    if (timeout) {
+      window.clearTimeout(timeout);
+    }
   }
-  return (await response.json()) as T;
 }
 
 async function requestBlob(path: string, init?: RequestInit): Promise<{ blob: Blob; fileName: string }> {

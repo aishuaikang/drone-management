@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 
 	_ "modernc.org/sqlite"
 )

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/store"
+	"drone-management/internal/store"
 )
 
 func TestParseASCII(t *testing.T) {

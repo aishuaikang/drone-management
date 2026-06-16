@@ -13,8 +13,8 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
-	"dr600ab-net/internal/diddecrypt"
-	"dr600ab-net/internal/model"
+	"drone-management/internal/diddecrypt"
+	"drone-management/internal/model"
 )
 
 const o4MQTTDefaultRequestQoS = byte(1)
@@ -360,7 +360,7 @@ func (d *mqttO4DIDDecoder) ensureClient() error {
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(fmt.Sprintf("tcp://%s:%d", d.options.Broker, d.options.Port)).
-		SetClientID("dr600ab_net_" + randomHexID()[:8]).
+		SetClientID("drone_management_" + randomHexID()[:8]).
 		SetUsername(d.options.Username).
 		SetPassword(d.options.Password).
 		SetAutoReconnect(true).
@@ -440,7 +440,7 @@ func deviceSNForDIDPacket(packet diddecrypt.Packet) string {
 	if encryptedID := strings.TrimSpace(packet.EncryptedID); encryptedID != "" {
 		return encryptedID
 	}
-	return "dr600ab-net"
+	return "drone-management"
 }
 
 func randomHexID() string {

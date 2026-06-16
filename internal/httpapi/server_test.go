@@ -21,17 +21,17 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/config"
-	"dr600ab-net/internal/fpv"
-	"dr600ab-net/internal/fpvrecord"
-	"dr600ab-net/internal/fpvvideo"
-	"dr600ab-net/internal/interference"
-	"dr600ab-net/internal/interferencereport"
-	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/offlinemap"
-	"dr600ab-net/internal/position"
-	"dr600ab-net/internal/store"
+	"drone-management/internal/config"
+	"drone-management/internal/fpv"
+	"drone-management/internal/fpvrecord"
+	"drone-management/internal/fpvvideo"
+	"drone-management/internal/interference"
+	"drone-management/internal/interferencereport"
+	"drone-management/internal/intrusion"
+	"drone-management/internal/model"
+	"drone-management/internal/offlinemap"
+	"drone-management/internal/position"
+	"drone-management/internal/store"
 )
 
 func TestScreenRoutes(t *testing.T) {
@@ -429,6 +429,104 @@ func TestUserSettingsRoutesNormalizeWhitelist(t *testing.T) {
 	}
 	if settingsStore.settings.Whitelist[1].Serial != "RID-002" {
 		t.Fatalf("stored whitelist = %#v", settingsStore.settings.Whitelist)
+	}
+}
+
+func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
+	state := store.New(10, 10)
+	s := newTestServer(state)
+	settingsStore := &memoryUserSettingsStore{}
+	lingyunSvc := &memoryLingyunService{}
+	s.userSettings = settingsStore
+	s.lingyun = lingyunSvc
+
+	body := `{
+		"lingyun": {
+			"enabled": true,
+			"broker": "tcp://127.0.0.1:1883",
+			"username": "user",
+			"password": "plain-secret",
+			"providerCode": "DPTEST",
+			"devices": [
+				{"type":"aoa","enabled":true,"deviceId":"AOA01","deviceName":"AOA"},
+				{"type":"dcd","enabled":true,"deviceId":"DCD01","deviceName":"DCD"},
+				{"type":"rid","enabled":true,"deviceId":"RID01","deviceName":"RID"}
+			]
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/user/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var saved model.UserSettings
+	if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if saved.Lingyun.Password != "plain-secret" {
+		t.Fatalf("password = %q, want plain-secret", saved.Lingyun.Password)
+	}
+	if !strings.HasPrefix(saved.Lingyun.ClientID, model.DefaultLingyunClientIDPrefix) {
+		t.Fatalf("clientId = %q, want generated prefix %q", saved.Lingyun.ClientID, model.DefaultLingyunClientIDPrefix)
+	}
+	if settingsStore.settings.Lingyun.ProviderCode != "DPTEST" {
+		t.Fatalf("saved Lingyun = %#v", settingsStore.settings.Lingyun)
+	}
+	if !lingyunSvc.applied.Lingyun.Enabled || lingyunSvc.applied.Lingyun.ProviderCode != "DPTEST" {
+		t.Fatalf("applied settings = %#v", lingyunSvc.applied.Lingyun)
+	}
+}
+
+func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T) {
+	state := store.New(10, 10)
+	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
+	s := newTestServer(state)
+	s.userSettings = &memoryUserSettingsStore{
+		ok: true,
+		settings: model.UserSettings{
+			Lingyun: model.LingyunSettings{
+				ClientID: "client-1",
+				Devices: []model.LingyunDeviceSettings{
+					{
+						Type:            model.LingyunDeviceAOA,
+						Enabled:         true,
+						DeviceID:        "old-device",
+						DeviceLongitude: 1,
+						DeviceLatitude:  2,
+						DeviceSpec: model.LingyunDeviceSpec{
+							DevSN: "old-sn",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/user/settings", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body model.UserSettings
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Lingyun.Devices) != 3 {
+		t.Fatalf("devices = %#v, want 3", body.Lingyun.Devices)
+	}
+	for _, device := range body.Lingyun.Devices {
+		if device.DeviceLongitude != 116.5678 || device.DeviceLatitude != 39.1234 {
+			t.Fatalf("device %s location = %.4f/%.4f, want 116.5678/39.1234", device.Type, device.DeviceLongitude, device.DeviceLatitude)
+		}
+	}
+	if identity := model.NewLingyunDeviceSN(); identity != "" {
+		for _, device := range body.Lingyun.Devices {
+			if device.DeviceID != identity || device.DeviceSpec.DevSN != identity {
+				t.Fatalf("device %s identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
+			}
+		}
 	}
 }
 
@@ -1644,6 +1742,19 @@ func (s *memoryUserSettingsStore) SaveEditableUser(settings model.UserSettings) 
 	s.settings = settings
 	s.ok = true
 	return settings, nil
+}
+
+type memoryLingyunService struct {
+	applied model.UserSettings
+	status  model.LingyunStatus
+}
+
+func (s *memoryLingyunService) ApplySettings(settings model.UserSettings) {
+	s.applied = settings
+}
+
+func (s *memoryLingyunService) Status() model.LingyunStatus {
+	return s.status
 }
 
 type memoryIntrusionStore struct {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 func TestPositionsSortByFirstSeen(t *testing.T) {

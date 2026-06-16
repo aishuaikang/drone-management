@@ -8,18 +8,19 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/config"
-	"dr600ab-net/internal/fpv"
-	"dr600ab-net/internal/fpvrecord"
-	"dr600ab-net/internal/httpapi"
-	"dr600ab-net/internal/interference"
-	"dr600ab-net/internal/interferencereport"
-	"dr600ab-net/internal/intrusion"
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/offlinemap"
-	"dr600ab-net/internal/position"
-	"dr600ab-net/internal/settings"
-	"dr600ab-net/internal/store"
+	"drone-management/internal/config"
+	"drone-management/internal/fpv"
+	"drone-management/internal/fpvrecord"
+	"drone-management/internal/httpapi"
+	"drone-management/internal/interference"
+	"drone-management/internal/interferencereport"
+	"drone-management/internal/intrusion"
+	"drone-management/internal/lingyun"
+	"drone-management/internal/model"
+	"drone-management/internal/offlinemap"
+	"drone-management/internal/position"
+	"drone-management/internal/settings"
+	"drone-management/internal/store"
 )
 
 // App owns all long-running backend services.
@@ -105,13 +106,14 @@ func New(cfg config.Config) (*App, error) {
 		ReadIdleTimeout:   cfg.TCPReadIdleTimeout,
 		CommandTimeout:    cfg.FPVCommandTimeout,
 	})
+	lingyunSvc := lingyun.NewService(state, loadedUserSettings)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(2)
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
 			positionSvc.Run(ctx)
@@ -119,6 +121,10 @@ func New(cfg config.Config) (*App, error) {
 		go func() {
 			defer wg.Done()
 			fpvSvc.Run(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			lingyunSvc.Run(ctx)
 		}()
 		<-ctx.Done()
 		wg.Wait()
@@ -131,6 +137,7 @@ func New(cfg config.Config) (*App, error) {
 			positionSvc,
 			fpvSvc,
 			httpapi.WithUserSettingsStore(userSettings),
+			httpapi.WithLingyunService(lingyunSvc),
 			httpapi.WithIntrusionStore(intrusionStore),
 			httpapi.WithFPVVideoRecordStore(fpvRecordStore),
 			httpapi.WithInterferenceService(interferenceSvc),

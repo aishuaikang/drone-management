@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/store"
+	"drone-management/internal/model"
+	"drone-management/internal/store"
 )
 
 const defaultBufferLimit = 1024 * 1024

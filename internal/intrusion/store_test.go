@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 func TestStoreArchivesListsAndIgnoresDuplicatePosition(t *testing.T) {

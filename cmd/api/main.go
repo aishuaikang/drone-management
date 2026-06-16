@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"dr600ab-net/internal/app"
-	"dr600ab-net/internal/config"
+	"drone-management/internal/app"
+	"drone-management/internal/config"
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("DR600AB 后端已启动: %s", cfg.Addr)
+		log.Printf("Drone Management 后端已启动: %s", cfg.Addr)
 		errCh <- server.ListenAndServe()
 	}()
 

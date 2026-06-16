@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/model"
-	"dr600ab-net/internal/store"
+	"drone-management/internal/model"
+	"drone-management/internal/store"
 )
 
 type fakeOutput struct {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"dr600ab-net/internal/store"
+	"drone-management/internal/store"
 )
 
 func TestServiceSetVideoFrequencySendsATCommandAndWaitsOK(t *testing.T) {

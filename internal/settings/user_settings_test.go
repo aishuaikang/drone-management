@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 func TestUserSettingsPersistence(t *testing.T) {

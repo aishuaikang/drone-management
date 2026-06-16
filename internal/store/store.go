@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"dr600ab-net/internal/model"
+	"drone-management/internal/model"
 )
 
 const (
