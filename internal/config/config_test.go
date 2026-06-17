@@ -64,12 +64,16 @@ func TestLoadFPVVideoConfig(t *testing.T) {
 
 func TestLoadDeviceAndOfflineMapConfig(t *testing.T) {
 	t.Setenv("API_DEVICE_SN", "SL67CB3FC848FA0E795P")
+	t.Setenv("API_LICENSE_PATH", "/var/lib/drone-management/license.lic")
 	t.Setenv("API_OFFLINE_MAP_PATH", "/var/lib/drone-management/static/map")
 	t.Setenv("API_OFFLINE_MAP_UPLOAD_MAX_MB", "32")
 
 	cfg := Load()
 	if cfg.DeviceSN != "SL67CB3FC848FA0E795P" {
 		t.Fatalf("device sn = %q", cfg.DeviceSN)
+	}
+	if cfg.LicensePath != "/var/lib/drone-management/license.lic" {
+		t.Fatalf("license path = %q", cfg.LicensePath)
 	}
 	if cfg.OfflineMapPath != "/var/lib/drone-management/static/map" {
 		t.Fatalf("offline map path = %q", cfg.OfflineMapPath)

@@ -67,14 +67,6 @@ require_command() {
   fi
 }
 
-copy_if_exists() {
-  local source="$1"
-  local destination="$2"
-  if [[ -e "$source" ]]; then
-    cp -R "$source" "$destination"
-  fi
-}
-
 copy_mediamtx() {
   local goos="$1"
   local goarch="$2"
@@ -163,9 +155,6 @@ for target in "${target_list[@]}"; do
       go build -trimpath -ldflags="-s -w" -o "$package_dir/$binary_name" ./cmd/api
   )
 
-  copy_if_exists "$ROOT_DIR/README.md" "$package_dir/"
-  copy_if_exists "$ROOT_DIR/.env.example" "$package_dir/"
-  copy_if_exists "$ROOT_DIR/协议" "$package_dir/"
   copy_mediamtx "$goos" "$goarch" "$package_dir"
 
   if [[ "$goos" != "windows" ]]; then

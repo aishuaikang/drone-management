@@ -3,6 +3,23 @@ export interface GeoPoint {
   longitude: number;
 }
 
+export interface LicenseInfo {
+  deviceSn?: string;
+  customer?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  isPermanent: boolean;
+  remainingDays?: number;
+  valid: boolean;
+  code?: string;
+  message?: string;
+}
+
+export interface LicenseUploadResponse {
+  license: LicenseInfo;
+  message: string;
+}
+
 export interface OfflineMapStatus {
   available: boolean;
   tileCount: number;
@@ -55,7 +72,7 @@ export interface ScreenRuntimeStatus {
   lingyun: LingyunStatus;
 }
 
-export type LingyunDeviceType = "aoa" | "dcd" | "rid";
+export type LingyunDeviceType = "aoa" | "dcd" | "rid" | "ifr";
 
 export interface LingyunStatus {
   enabled: boolean;
@@ -212,6 +229,13 @@ export interface LingyunDeviceSettings {
   horizontalCoverageEndAngle?: number;
   detectionFrequency?: string[];
   bandWidth?: string;
+  countermeasureRange?: number;
+  verticalCoverageStartAngle?: number;
+  verticalCoverageEndAngle?: number;
+  bands?: string[];
+  ifrTypes?: number[];
+  antennaType?: number;
+  activeAntennaType?: number;
   deviceSpec?: LingyunDeviceSpec;
 }
 

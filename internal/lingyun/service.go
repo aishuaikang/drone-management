@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,12 +18,25 @@ import (
 const (
 	eventPositionUpdated = "screen.position.updated"
 	eventFPVUpdated      = "screen.fpv.updated"
+	eventStrikeUpdated   = "screen.strike.updated"
+)
+
+const (
+	defaultInterferenceDurationSeconds = 60
+	minInterferenceDurationSeconds     = 10
+	maxInterferenceDurationSeconds     = 180
 )
 
 var _ protocol.Connector = (*Service)(nil)
 
 // Option configures a Lingyun protocol service.
 type Option func(*Service)
+
+type interferenceController interface {
+	ListChannels() []model.InterferenceChannel
+	ScreenStrikeState() model.ScreenStrikeState
+	SetScreenStrike(model.ScreenStrikeRequest) (model.ScreenStrikeState, error)
+}
 
 // WithTransport replaces MQTT transport, primarily for tests.
 func WithTransport(transport transport) Option {
@@ -42,6 +56,13 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
+// WithInterferenceController connects Lingyun interference controls to local hardware control.
+func WithInterferenceController(controller interferenceController) Option {
+	return func(s *Service) {
+		s.interference = controller
+	}
+}
+
 type deviceRuntimeState struct {
 	ReportingEnabled  bool
 	LastRegisterAt    time.Time
@@ -55,9 +76,10 @@ type deviceRuntimeState struct {
 
 // Service publishes local targets to China Mobile Lingyun and handles controls.
 type Service struct {
-	store     *store.Store
-	transport transport
-	now       func() time.Time
+	store        *store.Store
+	transport    transport
+	now          func() time.Time
+	interference interferenceController
 
 	mu          sync.RWMutex
 	settings    model.LingyunSettings
@@ -140,11 +162,12 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 
 // Status returns a runtime snapshot.
 func (s *Service) Status() model.LingyunStatus {
+	interferenceActive := s.interferenceActive()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := s.status
 	status.Connected = s.transport.Connected()
-	status.Devices = s.deviceStatusesLocked()
+	status.Devices = s.deviceStatusesLocked(interferenceActive)
 	status.UpdatedAt = cloneTimeValue(status.UpdatedAt)
 	return status
 }
@@ -205,12 +228,13 @@ func (s *Service) tick(ctx context.Context) {
 				s.setDeviceError(device.Type, err.Error())
 			}
 		}
-		if s.deviceDue(device.Type, "status", now, time.Duration(settings.StatusIntervalSeconds)*time.Second) {
+		statusInterval := s.statusInterval(settings, device)
+		if s.deviceDue(device.Type, "status", now, statusInterval) {
 			if err := s.publishStatus(ctx, settings, def, device); err != nil {
 				s.setDeviceError(device.Type, err.Error())
 			}
 		}
-		if s.deviceDue(device.Type, "data", now, time.Duration(settings.PublishMinIntervalSeconds)*time.Second) {
+		if device.Type != model.LingyunDeviceInterference && s.deviceDue(device.Type, "data", now, time.Duration(settings.PublishMinIntervalSeconds)*time.Second) {
 			if err := s.flushDevice(ctx, settings, def, device); err != nil {
 				s.setDeviceError(device.Type, err.Error())
 			}
@@ -252,8 +276,8 @@ func (s *Service) connect(ctx context.Context, settings model.LingyunSettings) e
 
 func (s *Service) publishRegistration(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
 	device = s.deviceWithCurrentLocation(device)
-	reporting := s.reportingEnabled(device.Type)
-	payload := buildDevicePayload(settings, def, device, reporting)
+	device = s.deviceWithCurrentInterferenceBands(device)
+	payload := buildDevicePayload(settings, def, device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device")
 	if err := s.publishJSON(ctx, topic, payload); err != nil {
 		return err
@@ -264,8 +288,7 @@ func (s *Service) publishRegistration(ctx context.Context, settings model.Lingyu
 
 func (s *Service) publishStatus(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
 	device = s.deviceWithCurrentLocation(device)
-	reporting := s.reportingEnabled(device.Type)
-	payload := buildStatusPayload(device, reporting)
+	payload := buildStatusPayload(device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device_state")
 	if err := s.publishJSON(ctx, topic, payload); err != nil {
 		return err
@@ -275,6 +298,9 @@ func (s *Service) publishStatus(ctx context.Context, settings model.LingyunSetti
 }
 
 func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
+	if device.Type == model.LingyunDeviceInterference {
+		return nil
+	}
 	objects := s.popPending(device.Type)
 	if len(objects) == 0 {
 		return nil
@@ -326,6 +352,54 @@ func (s *Service) deviceWithCurrentLocation(device model.LingyunDeviceSettings) 
 	).Devices[0]
 }
 
+func (s *Service) deviceWithCurrentInterferenceBands(device model.LingyunDeviceSettings) model.LingyunDeviceSettings {
+	if device.Type != model.LingyunDeviceInterference || s.interference == nil {
+		return device
+	}
+	if bands := lingyunInterferenceBandsFromChannels(s.interference.ListChannels()); len(bands) > 0 {
+		device.Bands = bands
+	}
+	return device
+}
+
+func lingyunInterferenceBandsFromChannels(channels []model.InterferenceChannel) []string {
+	bands := make([]string, 0, len(channels))
+	seen := map[string]struct{}{}
+	for _, channel := range channels {
+		if channel.Reserved {
+			continue
+		}
+		for _, band := range channel.Bands {
+			formatted := formatLingyunInterferenceBand(band)
+			if formatted == "" {
+				continue
+			}
+			if _, ok := seen[formatted]; ok {
+				continue
+			}
+			bands = append(bands, formatted)
+			seen[formatted] = struct{}{}
+		}
+	}
+	return bands
+}
+
+func formatLingyunInterferenceBand(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	frequency, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	unit := "G"
+	if frequency >= 100 {
+		unit = "M"
+	}
+	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(frequency, 'f', 3, 64), "0"), ".") + unit
+}
+
 func (s *Service) handleEvent(evt model.Event) {
 	settings := s.settingsSnapshot()
 	if !settings.Enabled {
@@ -359,6 +433,9 @@ func (s *Service) handleEvent(evt model.Event) {
 		if ok {
 			s.addPending(device.Type, object)
 		}
+	case eventStrikeUpdated:
+		s.forceDeviceStatusDue(model.LingyunDeviceInterference)
+		s.signal()
 	}
 }
 
@@ -406,10 +483,16 @@ func (s *Service) handleControlMessage(topic string, payload []byte) {
 		req.Head.DeviceID = device.DeviceID
 	}
 
+	if device.Type == model.LingyunDeviceInterference {
+		code, message := s.handleInterferenceControl(def, device, req)
+		s.publishControlResponse(settings, def, device, req, code, message)
+		return
+	}
+
 	code := 0
 	message := ""
 	switch {
-	case req.Data.OperationCmd != def.OperationCmd:
+	case !def.supportsOperationCmd(req.Data.OperationCmd):
 		code = 1
 		message = "不支持的控制指令"
 	case req.Data.OperationType != 0 && req.Data.OperationType != 1:
@@ -430,6 +513,179 @@ func (s *Service) handleControlMessage(topic string, payload []byte) {
 		s.setDeviceControl(device.Type, false, message)
 	}
 	s.publishControlResponse(settings, def, device, req, code, message)
+}
+
+func (s *Service) handleInterferenceControl(def deviceDefinition, device model.LingyunDeviceSettings, req controlEnvelope) (int, string) {
+	if !def.supportsOperationCmd(req.Data.OperationCmd) {
+		s.setDeviceControl(device.Type, false, "不支持的控制指令")
+		return 1, "不支持的控制指令"
+	}
+	if req.Data.OperationType != 0 && req.Data.OperationType != 1 {
+		s.setDeviceControl(device.Type, false, "不支持的操作类型")
+		return 1, "不支持的操作类型"
+	}
+	if s.interference == nil {
+		s.setDeviceControl(device.Type, false, "干扰服务不可用")
+		return 1, "干扰服务不可用"
+	}
+	if req.Data.OperationType == 0 {
+		if _, err := s.interference.SetScreenStrike(model.ScreenStrikeRequest{Enabled: false}); err != nil {
+			message := err.Error()
+			s.setDeviceControl(device.Type, false, message)
+			return 1, message
+		}
+		s.setDeviceControl(device.Type, true, "stopped")
+		s.forceDeviceStatusDue(device.Type)
+		s.signal()
+		return 0, ""
+	}
+
+	params, err := decodeInterferenceControlParams(req.Data.OperationParams)
+	if err != nil {
+		s.setDeviceControl(device.Type, false, "控制参数格式错误")
+		return 1, "控制参数格式错误"
+	}
+	channelIDs, err := s.interferenceChannelIDs(params.Bands)
+	if err != nil {
+		message := err.Error()
+		s.setDeviceControl(device.Type, false, message)
+		return 1, message
+	}
+	durationSeconds := normalizeInterferenceDuration(params.Duration)
+	if _, err := s.interference.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      channelIDs,
+		DurationSeconds: durationSeconds,
+	}); err != nil {
+		message := err.Error()
+		s.setDeviceControl(device.Type, false, message)
+		return 1, message
+	}
+	s.setDeviceControl(device.Type, true, "started")
+	s.forceDeviceStatusDue(device.Type)
+	s.signal()
+	return 0, ""
+}
+
+type interferenceControlParams struct {
+	Bands    []string
+	Duration int
+}
+
+func decodeInterferenceControlParams(raw json.RawMessage) (interferenceControlParams, error) {
+	if len(raw) == 0 || strings.EqualFold(strings.TrimSpace(string(raw)), "null") {
+		return interferenceControlParams{}, nil
+	}
+	var params struct {
+		Bands    []string `json:"bands"`
+		Duration int      `json:"duration"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return interferenceControlParams{}, err
+	}
+	return interferenceControlParams{
+		Bands:    params.Bands,
+		Duration: params.Duration,
+	}, nil
+}
+
+func (s *Service) interferenceChannelIDs(bands []string) ([]string, error) {
+	channels := s.interference.ListChannels()
+	if len(bands) == 0 {
+		ids := make([]string, 0, len(channels))
+		for _, channel := range channels {
+			if !channel.Reserved && strings.TrimSpace(channel.ID) != "" {
+				ids = append(ids, channel.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("未配置可用干扰通道")
+		}
+		return ids, nil
+	}
+
+	selected := make([]string, 0, len(bands))
+	seen := map[string]struct{}{}
+	missing := make([]string, 0)
+	for _, band := range bands {
+		normalizedBand := normalizeInterferenceBand(band)
+		if normalizedBand == "" {
+			continue
+		}
+		matched := false
+		for _, channel := range channels {
+			if channel.Reserved || strings.TrimSpace(channel.ID) == "" {
+				continue
+			}
+			if interferenceChannelMatchesBand(channel, normalizedBand) {
+				if _, ok := seen[channel.ID]; !ok {
+					selected = append(selected, channel.ID)
+					seen[channel.ID] = struct{}{}
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			missing = append(missing, strings.TrimSpace(band))
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("未匹配干扰频段: %s", strings.Join(missing, ","))
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("未配置可用干扰通道")
+	}
+	return selected, nil
+}
+
+func interferenceChannelMatchesBand(channel model.InterferenceChannel, normalizedBand string) bool {
+	for _, band := range channel.Bands {
+		if normalizeInterferenceBand(band) == normalizedBand {
+			return true
+		}
+	}
+	return normalizeInterferenceBand(channel.Label) == normalizedBand
+}
+
+func normalizeInterferenceBand(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "")
+	switch {
+	case strings.HasSuffix(value, "ghz"):
+		return strings.TrimSuffix(value, "ghz")
+	case strings.HasSuffix(value, "g"):
+		return strings.TrimSuffix(value, "g")
+	case strings.HasSuffix(value, "mhz"):
+		return normalizeMHzBand(strings.TrimSuffix(value, "mhz"))
+	case strings.HasSuffix(value, "m"):
+		return normalizeMHzBand(strings.TrimSuffix(value, "m"))
+	default:
+		return value
+	}
+}
+
+func normalizeMHzBand(value string) string {
+	frequency, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	if frequency >= 1000 {
+		frequency = frequency / 1000
+	}
+	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(frequency, 'f', 3, 64), "0"), ".")
+}
+
+func normalizeInterferenceDuration(seconds int) int {
+	if seconds <= 0 {
+		return defaultInterferenceDurationSeconds
+	}
+	if seconds < minInterferenceDurationSeconds {
+		return minInterferenceDurationSeconds
+	}
+	if seconds > maxInterferenceDurationSeconds {
+		return maxInterferenceDurationSeconds
+	}
+	return seconds
 }
 
 func (s *Service) publishControlResponse(settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings, req controlEnvelope, code int, message string) {
@@ -507,6 +763,13 @@ func (s *Service) setReporting(deviceType string, reporting bool) {
 	defer s.mu.Unlock()
 	state := s.deviceStateLocked(deviceType)
 	state.ReportingEnabled = reporting
+}
+
+func (s *Service) forceDeviceStatusDue(deviceType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.deviceStateLocked(deviceType)
+	state.LastStatusAt = time.Time{}
 }
 
 func (s *Service) nextMsgCnt(deviceType string) int64 {
@@ -642,7 +905,7 @@ func (s *Service) signal() {
 	}
 }
 
-func (s *Service) deviceStatusesLocked() []model.LingyunDeviceStatus {
+func (s *Service) deviceStatusesLocked(interferenceActive bool) []model.LingyunDeviceStatus {
 	items := make([]model.LingyunDeviceStatus, 0, len(s.settings.Devices))
 	for _, device := range s.settings.Devices {
 		def, ok := definitionByType(device.Type)
@@ -660,7 +923,7 @@ func (s *Service) deviceStatusesLocked() []model.LingyunDeviceStatus {
 			DeviceID:         strings.TrimSpace(device.DeviceID),
 			Enabled:          device.Enabled,
 			ReportingEnabled: reporting,
-			WorkState:        workState(device.Enabled, reporting),
+			WorkState:        statusWorkState(device, reporting, interferenceActive),
 		}
 		if state != nil {
 			status.LastRegisterAt = cloneTimeValue(&state.LastRegisterAt)
@@ -673,6 +936,35 @@ func (s *Service) deviceStatusesLocked() []model.LingyunDeviceStatus {
 		items = append(items, status)
 	}
 	return items
+}
+
+func (s *Service) statusInterval(settings model.LingyunSettings, device model.LingyunDeviceSettings) time.Duration {
+	if device.Type == model.LingyunDeviceInterference && s.interferenceActive() {
+		return time.Second
+	}
+	return time.Duration(settings.StatusIntervalSeconds) * time.Second
+}
+
+func (s *Service) currentWorkState(device model.LingyunDeviceSettings) int {
+	reporting := s.reportingEnabled(device.Type)
+	return statusWorkState(device, reporting, s.interferenceActive())
+}
+
+func statusWorkState(device model.LingyunDeviceSettings, reporting bool, interferenceActive bool) int {
+	if device.Type == model.LingyunDeviceInterference {
+		if device.Enabled && interferenceActive {
+			return 1
+		}
+		return 0
+	}
+	return workState(device.Enabled, reporting)
+}
+
+func (s *Service) interferenceActive() bool {
+	if s.interference == nil {
+		return false
+	}
+	return s.interference.ScreenStrikeState().Active
 }
 
 func lingyunConfigured(settings model.LingyunSettings) bool {

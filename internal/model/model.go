@@ -20,6 +20,25 @@ type LocaleMeta struct {
 	Namespaces []string `json:"namespaces"`
 }
 
+// LicenseInfo describes the local license status and decoded license metadata.
+type LicenseInfo struct {
+	DeviceSN      string     `json:"deviceSn,omitempty"`
+	Customer      string     `json:"customer,omitempty"`
+	IssuedAt      *time.Time `json:"issuedAt,omitempty"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
+	IsPermanent   bool       `json:"isPermanent"`
+	RemainingDays int        `json:"remainingDays,omitempty"`
+	Valid         bool       `json:"valid"`
+	Code          string     `json:"code,omitempty"`
+	Message       string     `json:"message,omitempty"`
+}
+
+// LicenseUploadResponse returns the latest license status after activation.
+type LicenseUploadResponse struct {
+	License LicenseInfo `json:"license"`
+	Message string      `json:"message"`
+}
+
 // OfflineMapStatus describes the currently installed offline map package.
 type OfflineMapStatus struct {
 	Available  bool       `json:"available"`
@@ -69,9 +88,10 @@ type UserSettings struct {
 }
 
 const (
-	LingyunDeviceAOA      = "aoa"
-	LingyunDeviceDCD      = "dcd"
-	LingyunDeviceRemoteID = "rid"
+	LingyunDeviceAOA          = "aoa"
+	LingyunDeviceDCD          = "dcd"
+	LingyunDeviceRemoteID     = "rid"
+	LingyunDeviceInterference = "ifr"
 )
 
 const (
@@ -114,6 +134,13 @@ type LingyunDeviceSettings struct {
 	HorizontalCoverageEndAngle   float64           `json:"horizontalCoverageEndAngle"`
 	DetectionFrequency           []string          `json:"detectionFrequency"`
 	BandWidth                    string            `json:"bandWidth"`
+	CountermeasureRange          float64           `json:"countermeasureRange"`
+	VerticalCoverageStartAngle   float64           `json:"verticalCoverageStartAngle"`
+	VerticalCoverageEndAngle     float64           `json:"verticalCoverageEndAngle"`
+	Bands                        []string          `json:"bands"`
+	InterferenceTypes            []int             `json:"ifrTypes"`
+	AntennaType                  int               `json:"antennaType"`
+	ActiveAntennaType            int               `json:"activeAntennaType"`
 	DeviceSpec                   LingyunDeviceSpec `json:"deviceSpec"`
 }
 
@@ -233,6 +260,7 @@ func LingyunSettingsWithDefaults(settings LingyunSettings) LingyunSettings {
 		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceAOA), byType[LingyunDeviceAOA]),
 		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceDCD), byType[LingyunDeviceDCD]),
 		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceRemoteID), byType[LingyunDeviceRemoteID]),
+		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceInterference), byType[LingyunDeviceInterference]),
 	}
 	return settings
 }
@@ -376,7 +404,7 @@ func hardwareAddrIsGloballyAdministered(addr net.HardwareAddr) bool {
 // LingyunDeviceSettingsWithDefaults fills one logical device definition.
 func LingyunDeviceSettingsWithDefaults(device LingyunDeviceSettings) LingyunDeviceSettings {
 	switch device.Type {
-	case LingyunDeviceAOA, LingyunDeviceDCD, LingyunDeviceRemoteID:
+	case LingyunDeviceAOA, LingyunDeviceDCD, LingyunDeviceRemoteID, LingyunDeviceInterference:
 	default:
 		return LingyunDeviceSettings{}
 	}
@@ -394,6 +422,31 @@ func LingyunDeviceSettingsWithDefaults(device LingyunDeviceSettings) LingyunDevi
 	if device.HorizontalCoverageStartAngle == 0 && device.HorizontalCoverageEndAngle == 0 {
 		device.HorizontalCoverageStartAngle = 0
 		device.HorizontalCoverageEndAngle = 360
+	}
+	if device.Type == LingyunDeviceInterference {
+		if lingyunCountermeasureRangeUsesDefault(device.CountermeasureRange) {
+			device.CountermeasureRange = lingyunDefaultCountermeasureRange()
+		}
+		if device.VerticalCoverageStartAngle == 0 && device.VerticalCoverageEndAngle == 0 {
+			device.VerticalCoverageStartAngle = -90
+			device.VerticalCoverageEndAngle = 90
+		}
+		if len(device.Bands) == 0 {
+			device.Bands = lingyunDefaultInterferenceBands()
+		}
+		if len(device.InterferenceTypes) == 0 {
+			device.InterferenceTypes = []int{0, 1, 2}
+		}
+		switch device.AntennaType {
+		case 0, 1, 2:
+		default:
+			device.AntennaType = 1
+		}
+		switch device.ActiveAntennaType {
+		case 0, 1:
+		default:
+			device.ActiveAntennaType = 1
+		}
 	}
 	return device
 }
@@ -419,6 +472,15 @@ func defaultLingyunDevice(deviceType string) LingyunDeviceSettings {
 		device.DeviceName = "Drone Management 协议破解"
 	case LingyunDeviceRemoteID:
 		device.DeviceName = "Drone Management RemoteID"
+	case LingyunDeviceInterference:
+		device.DeviceName = "Drone Management 干扰设备"
+		device.CountermeasureRange = lingyunDefaultCountermeasureRange()
+		device.VerticalCoverageStartAngle = -90
+		device.VerticalCoverageEndAngle = 90
+		device.Bands = lingyunDefaultInterferenceBands()
+		device.InterferenceTypes = []int{0, 1, 2}
+		device.AntennaType = 1
+		device.ActiveAntennaType = 1
 	}
 	device.DetectionFrequency = lingyunDefaultDetectionFrequency(deviceType)
 	return device
@@ -441,6 +503,21 @@ func lingyunDeviceWithOverride(defaults LingyunDeviceSettings, override LingyunD
 	if lingyunDetectionFrequencyUsesDefault(override.Type, override.DetectionFrequency) {
 		override.DetectionFrequency = append([]string(nil), defaults.DetectionFrequency...)
 	}
+	if override.Type == LingyunDeviceInterference {
+		if lingyunCountermeasureRangeUsesDefault(override.CountermeasureRange) {
+			override.CountermeasureRange = defaults.CountermeasureRange
+		}
+		if override.VerticalCoverageStartAngle == 0 && override.VerticalCoverageEndAngle == 0 {
+			override.VerticalCoverageStartAngle = defaults.VerticalCoverageStartAngle
+			override.VerticalCoverageEndAngle = defaults.VerticalCoverageEndAngle
+		}
+		if len(override.Bands) == 0 {
+			override.Bands = append([]string(nil), defaults.Bands...)
+		}
+		if len(override.InterferenceTypes) == 0 {
+			override.InterferenceTypes = append([]int(nil), defaults.InterferenceTypes...)
+		}
+	}
 	if override.DeviceSpec.DevModel == "" {
 		override.DeviceSpec.DevModel = defaults.DeviceSpec.DevModel
 	}
@@ -462,6 +539,18 @@ func lingyunDefaultDetectionFrequency(deviceType string) []string {
 	default:
 		return []string{}
 	}
+}
+
+func lingyunDefaultCountermeasureRange() float64 {
+	return 3000
+}
+
+func lingyunCountermeasureRangeUsesDefault(value float64) bool {
+	return value <= 0 || value == 1000
+}
+
+func lingyunDefaultInterferenceBands() []string {
+	return []string{"433M", "915M", "1.2G", "1.4G", "1.5G", "2.4G", "5.2G", "5.8G"}
 }
 
 func lingyunDefaultDetectionRange(deviceType string) float64 {

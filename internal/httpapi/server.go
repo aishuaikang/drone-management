@@ -33,6 +33,7 @@ import (
 	"drone-management/internal/interference"
 	"drone-management/internal/interferencereport"
 	"drone-management/internal/intrusion"
+	"drone-management/internal/license"
 	"drone-management/internal/model"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
@@ -112,6 +113,7 @@ type Server struct {
 	fpvRecords          FPVVideoRecordStore
 	interferenceReports InterferenceReportStore
 	offlineMap          *offlinemap.Service
+	license             *license.Service
 
 	fpvVideoStopMu               sync.Mutex
 	fpvVideoMu                   sync.Mutex
@@ -200,6 +202,13 @@ func WithOfflineMapService(service *offlinemap.Service) Option {
 	}
 }
 
+// WithLicenseService injects the local license service.
+func WithLicenseService(service *license.Service) Option {
+	return func(s *Server) {
+		s.license = service
+	}
+}
+
 // New creates a configured HTTP server.
 func New(
 	cfg config.Config,
@@ -271,38 +280,55 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/meta/locales", s.handleLocales)
-	mux.HandleFunc("GET /api/v1/offline-map/status", s.handleOfflineMapStatus)
-	mux.HandleFunc("POST /api/v1/offline-map/upload", s.handleUploadOfflineMap)
-	mux.HandleFunc("GET /api/v1/screen/status", s.handleScreenStatus)
-	mux.HandleFunc("GET /api/v1/screen/positions", s.handleScreenPositions)
-	mux.HandleFunc("GET /api/v1/screen/fpv", s.handleScreenFPV)
-	mux.HandleFunc("GET /api/v1/screen/strike", s.handleScreenStrike)
-	mux.HandleFunc("POST /api/v1/screen/strike", s.handleSetScreenStrike)
-	mux.HandleFunc("POST /api/v1/screen/strike/unattended", s.handleSetScreenStrikeUnattended)
-	mux.HandleFunc("PUT /api/v1/screen/tcp-ports", s.handleUpdateScreenTCPPorts)
-	mux.HandleFunc("GET /api/v1/interference/channels", s.handleInterferenceChannels)
-	mux.HandleFunc("POST /api/v1/interference/channels/{id}/state", s.handleSetInterferenceChannelState)
-	mux.HandleFunc("GET /api/v1/screen/device-location", s.handleScreenDeviceLocation)
-	mux.HandleFunc("PUT /api/v1/screen/device-location/manual", s.handleSetManualDeviceLocation)
-	mux.HandleFunc("DELETE /api/v1/screen/device-location/manual", s.handleClearManualDeviceLocation)
-	mux.HandleFunc("GET /api/v1/user/settings", s.handleUserSettings)
-	mux.HandleFunc("PUT /api/v1/user/settings", s.handleUpdateUserSettings)
-	mux.HandleFunc("GET /api/v1/intrusions", s.handleIntrusions)
-	mux.HandleFunc("DELETE /api/v1/intrusions", s.handleDeleteIntrusions)
-	mux.HandleFunc("GET /api/v1/fpv-video-records", s.handleFPVVideoRecords)
-	mux.HandleFunc("POST /api/v1/fpv-video-records/export", s.handleExportFPVVideoRecords)
-	mux.HandleFunc("GET /api/v1/fpv-video-records/{id}/file", s.handleFPVVideoRecordFile)
-	mux.HandleFunc("DELETE /api/v1/fpv-video-records", s.handleDeleteFPVVideoRecords)
-	mux.HandleFunc("GET /api/v1/interference-reports", s.handleInterferenceReports)
-	mux.HandleFunc("GET /api/v1/interference-reports/{id}", s.handleInterferenceReport)
-	mux.HandleFunc("DELETE /api/v1/interference-reports/{id}", s.handleDeleteFailedInterferenceReport)
-	mux.HandleFunc("/api/v1/screen/fpv-video/whep", s.handleScreenFPVVideoWHEP)
-	mux.HandleFunc("/api/v1/screen/fpv-video/whep/{resource...}", s.handleScreenFPVVideoWHEP)
-	mux.HandleFunc("GET /api/v1/screen/fpv-video/session", s.handleScreenFPVVideoSession)
-	mux.HandleFunc("POST /api/v1/screen/fpv-video/session/close", s.handleScreenFPVVideoSessionClose)
-	mux.HandleFunc("GET /api/v1/screen/stream", s.handleScreenStream)
-	mux.HandleFunc("GET /map/", s.handleOfflineMapTile)
+	mux.HandleFunc("GET /api/v1/license/status", s.handleLicenseStatus)
+	mux.HandleFunc("POST /api/v1/license/upload", s.handleUploadLicense)
+	mux.HandleFunc("GET /api/v1/offline-map/status", s.requireLicense(s.handleOfflineMapStatus))
+	mux.HandleFunc("POST /api/v1/offline-map/upload", s.requireLicense(s.handleUploadOfflineMap))
+	mux.HandleFunc("GET /api/v1/screen/status", s.requireLicense(s.handleScreenStatus))
+	mux.HandleFunc("GET /api/v1/screen/positions", s.requireLicense(s.handleScreenPositions))
+	mux.HandleFunc("GET /api/v1/screen/fpv", s.requireLicense(s.handleScreenFPV))
+	mux.HandleFunc("GET /api/v1/screen/strike", s.requireLicense(s.handleScreenStrike))
+	mux.HandleFunc("POST /api/v1/screen/strike", s.requireLicense(s.handleSetScreenStrike))
+	mux.HandleFunc("POST /api/v1/screen/strike/unattended", s.requireLicense(s.handleSetScreenStrikeUnattended))
+	mux.HandleFunc("PUT /api/v1/screen/tcp-ports", s.requireLicense(s.handleUpdateScreenTCPPorts))
+	mux.HandleFunc("GET /api/v1/interference/channels", s.requireLicense(s.handleInterferenceChannels))
+	mux.HandleFunc("POST /api/v1/interference/channels/{id}/state", s.requireLicense(s.handleSetInterferenceChannelState))
+	mux.HandleFunc("GET /api/v1/screen/device-location", s.requireLicense(s.handleScreenDeviceLocation))
+	mux.HandleFunc("PUT /api/v1/screen/device-location/manual", s.requireLicense(s.handleSetManualDeviceLocation))
+	mux.HandleFunc("DELETE /api/v1/screen/device-location/manual", s.requireLicense(s.handleClearManualDeviceLocation))
+	mux.HandleFunc("GET /api/v1/user/settings", s.requireLicense(s.handleUserSettings))
+	mux.HandleFunc("PUT /api/v1/user/settings", s.requireLicense(s.handleUpdateUserSettings))
+	mux.HandleFunc("GET /api/v1/intrusions", s.requireLicense(s.handleIntrusions))
+	mux.HandleFunc("DELETE /api/v1/intrusions", s.requireLicense(s.handleDeleteIntrusions))
+	mux.HandleFunc("GET /api/v1/fpv-video-records", s.requireLicense(s.handleFPVVideoRecords))
+	mux.HandleFunc("POST /api/v1/fpv-video-records/export", s.requireLicense(s.handleExportFPVVideoRecords))
+	mux.HandleFunc("GET /api/v1/fpv-video-records/{id}/file", s.requireLicense(s.handleFPVVideoRecordFile))
+	mux.HandleFunc("DELETE /api/v1/fpv-video-records", s.requireLicense(s.handleDeleteFPVVideoRecords))
+	mux.HandleFunc("GET /api/v1/interference-reports", s.requireLicense(s.handleInterferenceReports))
+	mux.HandleFunc("GET /api/v1/interference-reports/{id}", s.requireLicense(s.handleInterferenceReport))
+	mux.HandleFunc("DELETE /api/v1/interference-reports/{id}", s.requireLicense(s.handleDeleteFailedInterferenceReport))
+	mux.HandleFunc("/api/v1/screen/fpv-video/whep", s.requireLicense(s.handleScreenFPVVideoWHEP))
+	mux.HandleFunc("/api/v1/screen/fpv-video/whep/{resource...}", s.requireLicense(s.handleScreenFPVVideoWHEP))
+	mux.HandleFunc("GET /api/v1/screen/fpv-video/session", s.requireLicense(s.handleScreenFPVVideoSession))
+	mux.HandleFunc("POST /api/v1/screen/fpv-video/session/close", s.requireLicense(s.handleScreenFPVVideoSessionClose))
+	mux.HandleFunc("GET /api/v1/screen/stream", s.requireLicense(s.handleScreenStream))
+	mux.HandleFunc("GET /map/", s.requireLicense(s.handleOfflineMapTile))
 	mux.HandleFunc("/", s.handleFrontend)
+}
+
+func (s *Server) requireLicense(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.license == nil {
+			respondErrorCode(w, http.StatusServiceUnavailable, "license_unavailable", "license service is unavailable", nil)
+			return
+		}
+		status, err := s.license.Status()
+		if err != nil || !status.Valid {
+			respondErrorCode(w, http.StatusForbidden, "license_required", "license required", status)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

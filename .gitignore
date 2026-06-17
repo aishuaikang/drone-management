@@ -1,4 +1,5 @@
 .DS_Store
+.codegraph/daemon.pid
 .playwright-cli/
 data/
 output/
@@ -10,3 +11,6 @@ frontend/*.tsbuildinfo
 frontend/vite.config.d.ts
 frontend/vite.config.js
 static/
+license.lic
+!tools/drone-management-tool/frontend/dist/
+!tools/drone-management-tool/frontend/dist/.gitkeep

@@ -29,6 +29,7 @@ type Config struct {
 	InterferenceReportDBPath string
 	FPVVideoRecordDBPath     string
 	UserSettingsPath         string
+	LicensePath              string
 	OfflineMapPath           string
 	OfflineMapUploadMaxBytes int64
 	InterferenceRelay        InterferenceRelayConfig
@@ -90,6 +91,7 @@ func Load() Config {
 		InterferenceReportDBPath: envString("API_INTERFERENCE_REPORT_DB_PATH", "./data/interference-reports.db"),
 		FPVVideoRecordDBPath:     envString("API_FPV_VIDEO_RECORD_DB_PATH", "./data/fpv-videos.db"),
 		UserSettingsPath:         envString("API_USER_SETTINGS_PATH", "./data/user-settings.json"),
+		LicensePath:              envString("API_LICENSE_PATH", "./license.lic"),
 		OfflineMapPath:           envString("API_OFFLINE_MAP_PATH", "./static/map"),
 		OfflineMapUploadMaxBytes: int64(envInt("API_OFFLINE_MAP_UPLOAD_MAX_MB", 2048)) * 1024 * 1024,
 		InterferenceRelay: InterferenceRelayConfig{

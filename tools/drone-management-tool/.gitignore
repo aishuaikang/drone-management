@@ -1,0 +1,9 @@
+build/
+frontend/node_modules/
+frontend/wailsjs/
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/package.json.md5
+frontend/*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js

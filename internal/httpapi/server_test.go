@@ -5,8 +5,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -28,11 +31,15 @@ import (
 	"drone-management/internal/interference"
 	"drone-management/internal/interferencereport"
 	"drone-management/internal/intrusion"
+	"drone-management/internal/license"
 	"drone-management/internal/model"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
 	"drone-management/internal/store"
 )
+
+const testLicensePublicKeyBase64 = "B89i5BRmOubveVj7N+fd5IVMlVBwyivxAIQhJZsKi3Y="
+const testLicensePrivateKeyBase64 = "Fb4+lhNNk2IaAIv0ocXZr/nKjvYnrCjfeG0Ihd/whdMHz2LkFGY65u95WPs3593khUyVUHDKK/EAhCElmwqLdg=="
 
 func TestScreenRoutes(t *testing.T) {
 	state := store.New(10, 10)
@@ -68,7 +75,7 @@ func TestScreenRoutes(t *testing.T) {
 		},
 	})
 
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	tests := []struct {
 		name string
 		path string
@@ -90,9 +97,203 @@ func TestScreenRoutes(t *testing.T) {
 	}
 }
 
+func TestLicenseStatusReturnsCurrentDeviceSNWhenMissing(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), deviceSN)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/license/status", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body model.LicenseInfo
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if body.Valid || body.DeviceSN != deviceSN || body.Code != "license_not_found" {
+		t.Fatalf("body = %#v, want missing license status with current SN", body)
+	}
+}
+
+func TestUploadLicenseActivatesStatus(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	path := filepath.Join(t.TempDir(), "license.lic")
+	s := newTestServerWithLicense(t, path, deviceSN)
+	raw := generateHTTPTestLicense(t, deviceSN, 24*time.Hour, "customer", time.Now())
+
+	req := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", raw, nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var upload model.LicenseUploadResponse
+	if err := json.NewDecoder(rec.Body).Decode(&upload); err != nil {
+		t.Fatalf("Decode(upload) error = %v", err)
+	}
+	if !upload.License.Valid || upload.License.DeviceSN != deviceSN || upload.Message == "" {
+		t.Fatalf("upload = %#v, want valid license response", upload)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/license/status", nil)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var status model.LicenseInfo
+	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+		t.Fatalf("Decode(status) error = %v", err)
+	}
+	if !status.Valid || status.DeviceSN != deviceSN || status.Customer != "customer" {
+		t.Fatalf("status = %#v, want activated license", status)
+	}
+}
+
+func TestUploadLicenseRejectsMissingFile(t *testing.T) {
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), "drone-management-001A2B3C4D5E")
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("ignored", "value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/license/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if payload["code"] != "invalid_request" {
+		t.Fatalf("payload = %#v, want invalid_request", payload)
+	}
+}
+
+func TestUploadLicenseRejectsSNMismatch(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), deviceSN)
+	raw := generateHTTPTestLicense(t, "drone-management-OTHER", 24*time.Hour, "customer", time.Now())
+
+	req := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", raw, nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code    string            `json:"code"`
+		Details model.LicenseInfo `json:"details"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if payload.Code != "license_sn_mismatch" || payload.Details.DeviceSN != deviceSN {
+		t.Fatalf("payload = %#v, want mismatch with current SN details", payload)
+	}
+}
+
+func TestUploadLicenseRejectsInvalidLicense(t *testing.T) {
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), "drone-management-001A2B3C4D5E")
+
+	req := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", []byte("not-base64"), nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if payload["code"] != "license_invalid" {
+		t.Fatalf("payload = %#v, want license_invalid", payload)
+	}
+}
+
+func TestUploadLicenseReturnsServiceUnavailableWhenDeviceSNMissing(t *testing.T) {
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), "")
+
+	req := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", []byte("not-base64"), nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if payload["code"] != "device_sn_missing" {
+		t.Fatalf("payload = %#v, want device_sn_missing", payload)
+	}
+}
+
+func TestLicenseRequiredBlocksBusinessAPI(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), deviceSN)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/status", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code    string            `json:"code"`
+		Details model.LicenseInfo `json:"details"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if payload.Code != "license_required" || payload.Details.Code != "license_not_found" || payload.Details.DeviceSN != deviceSN {
+		t.Fatalf("payload = %#v, want license_required with missing license details", payload)
+	}
+}
+
+func TestLicenseEndpointsBypassLicenseRequired(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), deviceSN)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/license/status", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBusinessAPIAllowedAfterLicenseUpload(t *testing.T) {
+	deviceSN := "drone-management-001A2B3C4D5E"
+	path := filepath.Join(t.TempDir(), "license.lic")
+	s := newTestServerWithLicense(t, path, deviceSN)
+	raw := generateHTTPTestLicense(t, deviceSN, 24*time.Hour, "customer", time.Now())
+	uploadReq := newMultipartRequest(t, "/api/v1/license/upload", "file", "license.lic", raw, nil)
+	uploadRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %s", uploadRec.Code, uploadRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/status", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOfflineMapUploadAndTiles(t *testing.T) {
 	dir := t.TempDir()
-	s := newTestServerWithOfflineMap(
+	s := newTestServerWithOfflineMap(t,
 		store.New(10, 10),
 		filepath.Join(dir, "map"),
 	)
@@ -151,7 +352,7 @@ func TestOfflineMapUploadAndTiles(t *testing.T) {
 }
 
 func TestScreenStatusIncludesFPVVideoPlaybackURL(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.cfg.FPVVideo.RTSPURL = "rtsp://192.168.100.106:554/live/1_1"
 	s.fpvVideo = nil
 	s.fpvVideo = newTestFPVVideo(s.cfg)
@@ -178,7 +379,7 @@ func TestScreenStatusIncludesFPVVideoPlaybackURL(t *testing.T) {
 }
 
 func TestScreenStatusIncludesActiveFPVVideoSession(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.cfg.FPVVideo.RTSPURL = "rtsp://192.168.100.106:554/live/1_1"
 	s.fpvVideo = newTestFPVVideo(s.cfg)
 	sessionID, _, ok := s.tryBeginFPVVideoSession(1360)
@@ -204,7 +405,7 @@ func TestScreenStatusIncludesActiveFPVVideoSession(t *testing.T) {
 
 func TestManualDeviceLocationRoutes(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 
 	req := httptest.NewRequest(
 		http.MethodPut,
@@ -254,7 +455,7 @@ func TestManualDeviceLocationRoutes(t *testing.T) {
 }
 
 func TestManualDeviceLocationRouteRejectsInvalidPoint(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	req := httptest.NewRequest(
 		http.MethodPut,
 		"/api/v1/screen/device-location/manual",
@@ -269,7 +470,7 @@ func TestManualDeviceLocationRouteRejectsInvalidPoint(t *testing.T) {
 
 func TestManualDeviceLocationRoutePersistsFile(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	path := filepath.Join(t.TempDir(), "manual-device-location.json")
 	s.cfg.ManualLocationPath = path
 
@@ -300,7 +501,7 @@ func TestManualDeviceLocationRoutePersistsFile(t *testing.T) {
 
 func TestUpdateScreenTCPPortsRoute(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	settingsStore := &memoryUserSettingsStore{}
 	s.userSettings = settingsStore
 
@@ -328,7 +529,7 @@ func TestUpdateScreenTCPPortsRoute(t *testing.T) {
 }
 
 func TestUpdateScreenTCPPortsRouteRejectsInvalidPorts(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	tests := []struct {
 		name string
 		body string
@@ -350,7 +551,7 @@ func TestUpdateScreenTCPPortsRouteRejectsInvalidPorts(t *testing.T) {
 
 func TestUserSettingsRoutesNormalizeWhitelist(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	settingsStore := &memoryUserSettingsStore{}
 	s.userSettings = settingsStore
 
@@ -434,7 +635,7 @@ func TestUserSettingsRoutesNormalizeWhitelist(t *testing.T) {
 
 func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	settingsStore := &memoryUserSettingsStore{}
 	lingyunSvc := &memoryLingyunService{}
 	s.userSettings = settingsStore
@@ -481,7 +682,7 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	s.userSettings = &memoryUserSettingsStore{
 		ok: true,
 		settings: model.UserSettings{
@@ -513,8 +714,8 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T)
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(body.Lingyun.Devices) != 3 {
-		t.Fatalf("devices = %#v, want 3", body.Lingyun.Devices)
+	if len(body.Lingyun.Devices) != 4 {
+		t.Fatalf("devices = %#v, want 4", body.Lingyun.Devices)
 	}
 	for _, device := range body.Lingyun.Devices {
 		if device.DeviceLongitude != 116.5678 || device.DeviceLatitude != 39.1234 {
@@ -531,7 +732,7 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T)
 }
 
 func TestUserSettingsRouteRejectsInvalidPositionExpireSeconds(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.userSettings = &memoryUserSettingsStore{}
 
 	req := httptest.NewRequest(
@@ -547,7 +748,7 @@ func TestUserSettingsRouteRejectsInvalidPositionExpireSeconds(t *testing.T) {
 }
 
 func TestUserSettingsRoutePreservesUnattendedConfig(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	settingsStore := &memoryUserSettingsStore{
 		ok: true,
 		settings: model.UserSettings{
@@ -576,7 +777,7 @@ func TestUserSettingsRoutePreservesUnattendedConfig(t *testing.T) {
 }
 
 func TestUserSettingsRouteRejectsInvalidWarningZoneRadius(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.userSettings = &memoryUserSettingsStore{}
 
 	req := httptest.NewRequest(
@@ -592,7 +793,7 @@ func TestUserSettingsRouteRejectsInvalidWarningZoneRadius(t *testing.T) {
 }
 
 func TestUserSettingsRouteMigratesLegacyWarningZones(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.userSettings = &memoryUserSettingsStore{}
 
 	req := httptest.NewRequest(
@@ -638,7 +839,7 @@ func TestUserSettingsRouteMergesPartialUpdate(t *testing.T) {
 			},
 		},
 	}
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.userSettings = settingsStore
 
 	req := httptest.NewRequest(
@@ -676,7 +877,7 @@ func TestUserSettingsRouteMergesPartialUpdate(t *testing.T) {
 }
 
 func TestInterferenceChannelRoutes(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/interference/channels", nil)
 	rec := httptest.NewRecorder()
@@ -701,7 +902,7 @@ func TestInterferenceChannelRoutes(t *testing.T) {
 }
 
 func TestScreenStrikeRoutes(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/strike", nil)
 	rec := httptest.NewRecorder()
@@ -748,7 +949,7 @@ func TestScreenStrikeRoutes(t *testing.T) {
 }
 
 func TestScreenStrikeUnattendedRoute(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	settingsStore := &memoryUserSettingsStore{}
 	s.userSettings = settingsStore
 	s.interference.SetUserSettingsStore(settingsStore)
@@ -846,7 +1047,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 			},
 		},
 	}
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.interferenceReports = reportStore
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/interference-reports?limit=1", nil)
@@ -901,7 +1102,7 @@ func TestInterferenceReportRoutes(t *testing.T) {
 
 func TestIntrusionRoutesPageAndDeleteRecords(t *testing.T) {
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	intrusions := &memoryIntrusionStore{
 		items: []model.IntrusionRecord{
 			{ID: "new", TargetType: model.IntrusionTargetTypePosition, Serial: "SN-2", FirstSeen: now, LastSeen: now, ArchivedAt: now},
@@ -942,7 +1143,7 @@ func TestIntrusionRoutesPageAndDeleteRecords(t *testing.T) {
 
 func TestIntrusionRoutesFilterRecords(t *testing.T) {
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.intrusions = &memoryIntrusionStore{
 		items: []model.IntrusionRecord{
 			{ID: "match", TargetType: model.IntrusionTargetTypePosition, Model: "Mini 4 Pro", Serial: "SN-2", FirstSeen: now, LastSeen: now, ArchivedAt: now},
@@ -969,7 +1170,7 @@ func TestIntrusionRoutesFilterRecords(t *testing.T) {
 }
 
 func TestIntrusionRoutesRejectInvalidInput(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	s.intrusions = &memoryIntrusionStore{}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/intrusions?type=fpv", nil)
@@ -989,7 +1190,7 @@ func TestIntrusionRoutesRejectInvalidInput(t *testing.T) {
 
 func TestScreenStream(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := httptest.NewServer(s.server.Handler)
@@ -1037,7 +1238,7 @@ func TestScreenStream(t *testing.T) {
 
 func TestFPVVideoSessionSendsTuneAndStopsOnDisconnect(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	configureFakeFPVVideo(t, s)
 	port := freeHTTPTestTCPPort(t)
 	s.fpv = fpv.NewService(state, fpv.Options{
@@ -1099,7 +1300,7 @@ func TestFPVVideoSessionSendsTuneAndStopsOnDisconnect(t *testing.T) {
 }
 
 func TestFPVVideoSessionOnlyActiveSessionCanFinish(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 
 	first, _, ok := s.tryBeginFPVVideoSession(1360)
 	if !ok {
@@ -1129,7 +1330,7 @@ func TestFPVVideoSessionOnlyActiveSessionCanFinish(t *testing.T) {
 }
 
 func TestFPVVideoSessionRejectsConcurrentViewer(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	configureFakeFPVVideo(t, s)
 	first, _, ok := s.tryBeginFPVVideoSession(1360)
 	if !ok {
@@ -1154,7 +1355,7 @@ func TestFPVVideoSessionRejectsConcurrentViewer(t *testing.T) {
 }
 
 func TestFPVVideoWHEPRequiresActiveSessionToken(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	upstream, calls := newWHEPTestServer(t)
 	s.cfg.FPVVideo = config.FPVVideoConfig{
 		WHEPURL: upstream.URL + "/fpv/whep",
@@ -1219,7 +1420,7 @@ func TestFPVVideoWHEPRequiresActiveSessionToken(t *testing.T) {
 }
 
 func TestFPVVideoPlayerAssetsAreNotExposed(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	for _, path := range []string{
 		"/api/v1/screen/fpv-video/player",
 		"/api/v1/screen/fpv-video/reader.js",
@@ -1234,7 +1435,7 @@ func TestFPVVideoPlayerAssetsAreNotExposed(t *testing.T) {
 }
 
 func TestFPVVideoSessionCloseReleasesActiveViewer(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	configureFakeFPVVideo(t, s)
 	deviceConn, commands, cancelFPV := connectFPVCommandDevice(t, s, time.Second, true)
 	defer cancelFPV()
@@ -1262,7 +1463,7 @@ func TestFPVVideoSessionCloseReleasesActiveViewer(t *testing.T) {
 }
 
 func TestFPVVideoSessionCloseReleasesAndRecordsFailedWhenStopFails(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	configureFakeFPVVideo(t, s)
 	recordDir := t.TempDir()
 	s.cfg.FPVVideo.RecordDir = recordDir
@@ -1309,7 +1510,7 @@ func TestFPVVideoSessionCloseReleasesAndRecordsFailedWhenStopFails(t *testing.T)
 }
 
 func TestStopActiveFPVVideoSessionReleasesAndRecordsFailedWhenStopFails(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	configureFakeFPVVideo(t, s)
 	recordDir := t.TempDir()
 	s.cfg.FPVVideo.RecordDir = recordDir
@@ -1352,7 +1553,7 @@ func TestStopActiveFPVVideoSessionReleasesAndRecordsFailedWhenStopFails(t *testi
 }
 
 func TestFPVVideoSessionStartupFailureReleasesActiveWhenStopFails(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	configureFailingFPVVideo(t, s)
 	port := freeHTTPTestTCPPort(t)
 	s.fpv = fpv.NewService(s.store, fpv.Options{
@@ -1403,7 +1604,7 @@ func TestFPVVideoSessionStartupFailureReleasesActiveWhenStopFails(t *testing.T) 
 
 func TestFPVVideoRecordRoutesListFileAndDelete(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	recordDir := t.TempDir()
 	s.cfg.FPVVideo.RecordDir = recordDir
 	videoPath := filepath.Join(recordDir, "record.mp4")
@@ -1472,7 +1673,7 @@ func TestFPVVideoRecordRoutesListFileAndDelete(t *testing.T) {
 
 func TestExportFPVVideoRecordsRoute(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	recordDir := t.TempDir()
 	s.cfg.FPVVideo.RecordDir = recordDir
 	if err := os.WriteFile(filepath.Join(recordDir, "record-a.mp4"), []byte("video-a"), 0o644); err != nil {
@@ -1543,7 +1744,7 @@ func TestExportFPVVideoRecordsRoute(t *testing.T) {
 }
 
 func TestPersistFPVVideoRecordMarksReadyAndFailed(t *testing.T) {
-	s := newTestServer(store.New(10, 10))
+	s := newTestServer(t, store.New(10, 10))
 	recordDir := t.TempDir()
 	s.cfg.FPVVideo.RecordDir = recordDir
 	recordStore := &memoryFPVVideoRecordStore{}
@@ -1605,7 +1806,9 @@ func TestPersistFPVVideoRecordMarksReadyAndFailed(t *testing.T) {
 	}
 }
 
-func newTestServer(state *store.Store) *Server {
+func newTestServer(t *testing.T, state *store.Store) *Server {
+	t.Helper()
+	deviceSN := "drone-management-001A2B3C4D5E"
 	cfg := config.Config{
 		Addr:                ":0",
 		TCPBindHost:         "127.0.0.1",
@@ -1618,6 +1821,7 @@ func newTestServer(state *store.Store) *Server {
 		EventBufferSize:     16,
 		DefaultLocale:       "zh-CN",
 		DeviceTargetAddress: "192.168.100.101",
+		LicensePath:         filepath.Join(t.TempDir(), "license.lic"),
 	}
 	positionSvc := position.NewService(state, position.Options{Host: "127.0.0.1", Port: 10007})
 	fpvSvc := fpv.NewService(state, fpv.Options{Host: "127.0.0.1", Port: 10005, CommandTimeout: time.Second})
@@ -1630,10 +1834,24 @@ func newTestServer(state *store.Store) *Server {
 		}
 		return output
 	})
-	return New(cfg, state, positionSvc, fpvSvc, WithInterferenceService(interferenceSvc))
+	licenseSvc := newValidTestLicenseService(t, cfg.LicensePath, deviceSN)
+	return New(cfg, state, positionSvc, fpvSvc, WithInterferenceService(interferenceSvc), WithLicenseService(licenseSvc))
 }
 
-func newTestServerWithOfflineMap(state *store.Store, mapPath string) *Server {
+func newTestServerWithLicense(t *testing.T, path string, deviceSN string) *Server {
+	t.Helper()
+	s := newTestServer(t, store.New(10, 10))
+	licenseSvc, err := license.NewServiceWithPublicKey(path, func() (string, error) { return deviceSN, nil }, httpTestLicensePublicKey(t))
+	if err != nil {
+		t.Fatalf("NewServiceWithPublicKey() error = %v", err)
+	}
+	s.license = licenseSvc
+	return s
+}
+
+func newTestServerWithOfflineMap(t *testing.T, state *store.Store, mapPath string) *Server {
+	t.Helper()
+	deviceSN := "drone-management-001A2B3C4D5E"
 	cfg := config.Config{
 		Addr:                     ":0",
 		TCPBindHost:              "127.0.0.1",
@@ -1648,13 +1866,89 @@ func newTestServerWithOfflineMap(state *store.Store, mapPath string) *Server {
 		DeviceTargetAddress:      "192.168.100.101",
 		OfflineMapPath:           mapPath,
 		OfflineMapUploadMaxBytes: 64 << 20,
+		LicensePath:              filepath.Join(t.TempDir(), "license.lic"),
 	}
 	positionSvc := position.NewService(state, position.Options{Host: "127.0.0.1", Port: 10007})
 	fpvSvc := fpv.NewService(state, fpv.Options{Host: "127.0.0.1", Port: 10005, CommandTimeout: time.Second})
+	licenseSvc := newValidTestLicenseService(t, cfg.LicensePath, deviceSN)
 	options := []Option{
 		WithOfflineMapService(offlinemap.NewService(mapPath)),
+		WithLicenseService(licenseSvc),
 	}
 	return New(cfg, state, positionSvc, fpvSvc, options...)
+}
+
+func newValidTestLicenseService(t *testing.T, path string, deviceSN string) *license.Service {
+	t.Helper()
+	service, err := license.NewServiceWithPublicKey(path, func() (string, error) { return deviceSN, nil }, httpTestLicensePublicKey(t))
+	if err != nil {
+		t.Fatalf("NewServiceWithPublicKey() error = %v", err)
+	}
+	raw := generateHTTPTestLicense(t, deviceSN, 24*time.Hour, "test", time.Now())
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile(license) error = %v", err)
+	}
+	return service
+}
+
+func generateHTTPTestLicense(t *testing.T, deviceSN string, duration time.Duration, customer string, now time.Time) []byte {
+	t.Helper()
+	deviceSN = strings.TrimSpace(deviceSN)
+	if deviceSN == "" {
+		t.Fatal("test license device SN is required")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	info := license.Info{
+		DeviceSN:    deviceSN,
+		IssuedAt:    now,
+		Customer:    customer,
+		IsPermanent: duration <= 0,
+	}
+	if info.IsPermanent {
+		info.ExpiresAt = now.AddDate(100, 0, 0)
+	} else {
+		info.ExpiresAt = now.Add(duration)
+	}
+	privateKey := httpTestLicensePrivateKey(t)
+	payload := fmt.Sprintf("%s|%d|%d|%t|%s",
+		strings.TrimSpace(info.DeviceSN),
+		info.IssuedAt.Unix(),
+		info.ExpiresAt.Unix(),
+		info.IsPermanent,
+		info.Customer,
+	)
+	info.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload)))
+	raw, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent(license) error = %v", err)
+	}
+	return []byte(base64.StdEncoding.EncodeToString(raw))
+}
+
+func httpTestLicensePrivateKey(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(testLicensePrivateKeyBase64)
+	if err != nil {
+		t.Fatalf("DecodeString(private key) error = %v", err)
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		t.Fatalf("private key size = %d, want %d", len(raw), ed25519.PrivateKeySize)
+	}
+	return ed25519.PrivateKey(raw)
+}
+
+func httpTestLicensePublicKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(testLicensePublicKeyBase64)
+	if err != nil {
+		t.Fatalf("DecodeString(public key) error = %v", err)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		t.Fatalf("public key size = %d, want %d", len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw)
 }
 
 func newMultipartRequest(
@@ -2239,7 +2533,7 @@ func waitForStream(t *testing.T, reader *bufio.Reader, pattern string) {
 
 func TestListResponsesAreJSON(t *testing.T) {
 	state := store.New(10, 10)
-	s := newTestServer(state)
+	s := newTestServer(t, state)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/fpv", nil)
 	rec := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(rec, req)

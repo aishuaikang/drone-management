@@ -15,6 +15,7 @@ import (
 	"drone-management/internal/interference"
 	"drone-management/internal/interferencereport"
 	"drone-management/internal/intrusion"
+	"drone-management/internal/license"
 	"drone-management/internal/lingyun"
 	"drone-management/internal/model"
 	"drone-management/internal/offlinemap"
@@ -83,6 +84,9 @@ func New(cfg config.Config) (*App, error) {
 		}
 	}
 	offlineMapSvc := offlinemap.NewService(cfg.OfflineMapPath)
+	licenseSvc := license.NewService(cfg.LicensePath, func() (string, error) {
+		return model.NewLingyunDeviceSN(), nil
+	})
 
 	positionSvc := position.NewService(state, position.Options{
 		Host:              cfg.TCPBindHost,
@@ -106,7 +110,7 @@ func New(cfg config.Config) (*App, error) {
 		ReadIdleTimeout:   cfg.TCPReadIdleTimeout,
 		CommandTimeout:    cfg.FPVCommandTimeout,
 	})
-	lingyunSvc := lingyun.NewService(state, loadedUserSettings)
+	lingyunSvc := lingyun.NewService(state, loadedUserSettings, lingyun.WithInterferenceController(interferenceSvc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -143,6 +147,7 @@ func New(cfg config.Config) (*App, error) {
 			httpapi.WithInterferenceService(interferenceSvc),
 			httpapi.WithInterferenceReportStore(interferenceReportStore),
 			httpapi.WithOfflineMapService(offlineMapSvc),
+			httpapi.WithLicenseService(licenseSvc),
 		),
 		intrusions:          intrusionStore,
 		fpvRecords:          fpvRecordStore,

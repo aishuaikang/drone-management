@@ -15,16 +15,37 @@ const (
 )
 
 type deviceDefinition struct {
-	Type         string
-	Abbr         string
-	DeviceType   int
-	OperationCmd int
+	Type          string
+	Abbr          string
+	DeviceType    int
+	OperationCmd  int
+	OperationCmds []int
 }
 
 var deviceDefinitions = []deviceDefinition{
 	{Type: model.LingyunDeviceAOA, Abbr: "aoa", DeviceType: 9, OperationCmd: 90000},
 	{Type: model.LingyunDeviceDCD, Abbr: "dcd", DeviceType: 11, OperationCmd: 110000},
 	{Type: model.LingyunDeviceRemoteID, Abbr: "rid", DeviceType: 102, OperationCmd: 1020000},
+	{Type: model.LingyunDeviceInterference, Abbr: "ifr", DeviceType: 6, OperationCmd: 60001, OperationCmds: []int{60001, 60002, 60003}},
+}
+
+func (def deviceDefinition) operationCmds() []int {
+	if len(def.OperationCmds) > 0 {
+		return append([]int(nil), def.OperationCmds...)
+	}
+	if def.OperationCmd == 0 {
+		return nil
+	}
+	return []int{def.OperationCmd}
+}
+
+func (def deviceDefinition) supportsOperationCmd(cmd int) bool {
+	for _, supported := range def.operationCmds() {
+		if supported == cmd {
+			return true
+		}
+	}
+	return false
 }
 
 func definitionByType(deviceType string) (deviceDefinition, bool) {
@@ -83,18 +104,30 @@ type devicePayload struct {
 	DeviceType      int                     `json:"deviceType"`
 	InstallMode     int                     `json:"installMode"`
 	WorkState       int                     `json:"workState"`
-	Extension       deviceExtension         `json:"extension"`
+	Extension       any                     `json:"extension"`
 	SupFun          []int                   `json:"supFun"`
 	DeviceSpec      model.LingyunDeviceSpec `json:"deviceSpec"`
 	ProtocolVersion string                  `json:"ver"`
 }
 
-type deviceExtension struct {
+type detectionDeviceExtension struct {
 	DetectionRange               float64  `json:"detectionRange"`
 	HorizontalCoverageStartAngle float64  `json:"horizontalCoverageStartAngle"`
 	HorizontalCoverageEndAngle   float64  `json:"horizontalCoverageEndAngle"`
 	DetectionFrequency           []string `json:"detectionFrequency,omitempty"`
 	BandWidth                    string   `json:"bandWidth"`
+}
+
+type interferenceDeviceExtension struct {
+	CountermeasureRange          float64  `json:"countermeasureRange"`
+	Bands                        []string `json:"bands"`
+	InterferenceTypes            []int    `json:"ifrTypes"`
+	AntennaType                  int      `json:"antennaType"`
+	ActiveAntennaType            int      `json:"activeAntennaType"`
+	HorizontalCoverageStartAngle float64  `json:"horizontalCoverageStartAngle"`
+	HorizontalCoverageEndAngle   float64  `json:"horizontalCoverageEndAngle"`
+	VerticalCoverageStartAngle   float64  `json:"verticalCoverageStartAngle"`
+	VerticalCoverageEndAngle     float64  `json:"verticalCoverageEndAngle"`
 }
 
 type statusPayload struct {
@@ -176,7 +209,7 @@ type controlResponseData struct {
 	OperationCmd  int    `json:"operationCmd"`
 }
 
-func buildDevicePayload(settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings, reporting bool) devicePayload {
+func buildDevicePayload(settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings, state int) devicePayload {
 	return devicePayload{
 		ProviderCode:    strings.TrimSpace(settings.ProviderCode),
 		DeviceID:        strings.TrimSpace(device.DeviceID),
@@ -186,24 +219,41 @@ func buildDevicePayload(settings model.LingyunSettings, def deviceDefinition, de
 		DeviceAltitude:  device.DeviceAltitude,
 		DeviceType:      def.DeviceType,
 		InstallMode:     device.InstallMode,
-		WorkState:       workState(device.Enabled, reporting),
-		Extension: deviceExtension{
-			DetectionRange:               device.DetectionRange,
-			HorizontalCoverageStartAngle: device.HorizontalCoverageStartAngle,
-			HorizontalCoverageEndAngle:   device.HorizontalCoverageEndAngle,
-			DetectionFrequency:           append([]string(nil), device.DetectionFrequency...),
-			BandWidth:                    firstNonEmpty(device.BandWidth, model.DefaultLingyunBandWidth),
-		},
-		SupFun:          []int{def.OperationCmd},
+		WorkState:       state,
+		Extension:       buildDeviceExtension(device),
+		SupFun:          def.operationCmds(),
 		DeviceSpec:      device.DeviceSpec,
 		ProtocolVersion: strings.TrimSpace(settings.ProtocolVersion),
 	}
 }
 
-func buildStatusPayload(device model.LingyunDeviceSettings, reporting bool) statusPayload {
+func buildDeviceExtension(device model.LingyunDeviceSettings) any {
+	if device.Type == model.LingyunDeviceInterference {
+		return interferenceDeviceExtension{
+			CountermeasureRange:          device.CountermeasureRange,
+			Bands:                        append([]string(nil), device.Bands...),
+			InterferenceTypes:            append([]int(nil), device.InterferenceTypes...),
+			AntennaType:                  device.AntennaType,
+			ActiveAntennaType:            device.ActiveAntennaType,
+			HorizontalCoverageStartAngle: device.HorizontalCoverageStartAngle,
+			HorizontalCoverageEndAngle:   device.HorizontalCoverageEndAngle,
+			VerticalCoverageStartAngle:   device.VerticalCoverageStartAngle,
+			VerticalCoverageEndAngle:     device.VerticalCoverageEndAngle,
+		}
+	}
+	return detectionDeviceExtension{
+		DetectionRange:               device.DetectionRange,
+		HorizontalCoverageStartAngle: device.HorizontalCoverageStartAngle,
+		HorizontalCoverageEndAngle:   device.HorizontalCoverageEndAngle,
+		DetectionFrequency:           append([]string(nil), device.DetectionFrequency...),
+		BandWidth:                    firstNonEmpty(device.BandWidth, model.DefaultLingyunBandWidth),
+	}
+}
+
+func buildStatusPayload(device model.LingyunDeviceSettings, state int) statusPayload {
 	payload := statusPayload{
 		DeviceID:   strings.TrimSpace(device.DeviceID),
-		WorkState:  workState(device.Enabled, reporting),
+		WorkState:  state,
 		WorkTemp:   0,
 		AlarmState: 0,
 	}

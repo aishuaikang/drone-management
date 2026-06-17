@@ -40,10 +40,10 @@ func TestLingyunSettingsWithDefaultsAddsLogicalDevices(t *testing.T) {
 		settings.StatusIntervalSeconds != DefaultLingyunStatusIntervalSec {
 		t.Fatalf("settings defaults = %#v", settings)
 	}
-	if len(settings.Devices) != 3 {
-		t.Fatalf("devices = %#v, want 3", settings.Devices)
+	if len(settings.Devices) != 4 {
+		t.Fatalf("devices = %#v, want 4", settings.Devices)
 	}
-	want := []string{LingyunDeviceAOA, LingyunDeviceDCD, LingyunDeviceRemoteID}
+	want := []string{LingyunDeviceAOA, LingyunDeviceDCD, LingyunDeviceRemoteID, LingyunDeviceInterference}
 	for index, deviceType := range want {
 		if settings.Devices[index].Type != deviceType || !settings.Devices[index].Enabled {
 			t.Fatalf("device[%d] = %#v, want enabled %s", index, settings.Devices[index], deviceType)
@@ -70,6 +70,11 @@ func TestLingyunSettingsWithDefaultsAddsLogicalDevices(t *testing.T) {
 	if settings.Devices[2].DetectionRange != 3000 {
 		t.Fatalf("RID detectionRange = %.0f, want 3000", settings.Devices[2].DetectionRange)
 	}
+	if settings.Devices[3].CountermeasureRange != 3000 ||
+		!slices.Equal(settings.Devices[3].Bands, []string{"433M", "915M", "1.2G", "1.4G", "1.5G", "2.4G", "5.2G", "5.8G"}) ||
+		!slices.Equal(settings.Devices[3].InterferenceTypes, []int{0, 1, 2}) {
+		t.Fatalf("IFR defaults = %#v", settings.Devices[3])
+	}
 }
 
 func TestLingyunSettingsWithDefaultsMigratesLegacyDetectionFrequency(t *testing.T) {
@@ -93,6 +98,7 @@ func TestLingyunSettingsWithDefaultsMigratesLegacyDetectionRange(t *testing.T) {
 			{Type: LingyunDeviceAOA, DetectionRange: 1000},
 			{Type: LingyunDeviceDCD, DetectionRange: 1000},
 			{Type: LingyunDeviceRemoteID, DetectionRange: 1000},
+			{Type: LingyunDeviceInterference, CountermeasureRange: 1000},
 		},
 	})
 	if settings.Devices[0].DetectionRange != 5000 {
@@ -103,6 +109,9 @@ func TestLingyunSettingsWithDefaultsMigratesLegacyDetectionRange(t *testing.T) {
 	}
 	if settings.Devices[2].DetectionRange != 3000 {
 		t.Fatalf("RID detectionRange = %.0f, want 3000", settings.Devices[2].DetectionRange)
+	}
+	if settings.Devices[3].CountermeasureRange != 3000 {
+		t.Fatalf("IFR countermeasureRange = %.0f, want 3000", settings.Devices[3].CountermeasureRange)
 	}
 }
 

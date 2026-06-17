@@ -11,6 +11,8 @@ import type {
   IntrusionDeleteRequest,
   IntrusionDeleteResponse,
   IntrusionRecord,
+  LicenseInfo,
+  LicenseUploadResponse,
   ListResponse,
   OfflineMapStatus,
   OfflineMapUploadLog,
@@ -39,6 +41,11 @@ export type OfflineMapUploadError = Error & {
   logs?: OfflineMapUploadLog[];
 };
 
+export type LicenseUploadError = Error & {
+  code?: string;
+  license?: LicenseInfo;
+};
+
 type JsonRequestInit = RequestInit & {
   timeoutMs?: number;
 };
@@ -47,7 +54,7 @@ async function requestJson<T>(path: string, init?: JsonRequestInit): Promise<T> 
   const { timeoutMs = 0, ...requestInit } = init ?? {};
   const headers = new Headers(requestInit.headers);
   headers.set("Accept", "application/json");
-  if (requestInit.body) {
+  if (requestInit.body && !(requestInit.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   const controller = timeoutMs > 0 && !requestInit.signal ? new AbortController() : null;
@@ -182,6 +189,35 @@ export function getOfflineMapStatus() {
   return requestJson<OfflineMapStatus>("/offline-map/status");
 }
 
+export function getLicenseStatus() {
+  return requestJson<LicenseInfo>("/license/status");
+}
+
+export function uploadLicense(file: File) {
+  const form = new FormData();
+  form.set("file", file);
+  return requestLicenseUpload(form);
+}
+
+async function requestLicenseUpload(form: FormData): Promise<LicenseUploadResponse> {
+  const response = await fetch(`${API_PREFIX}/license/upload`, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+    },
+    body: form,
+  });
+  const text = await response.text();
+  const payload = parseJSONPayload(text);
+  if (!response.ok) {
+    const error = new Error(readPayloadMessage(payload, `请求失败: ${response.status}`)) as LicenseUploadError;
+    error.code = readPayloadCode(payload);
+    error.license = readPayloadLicense(payload);
+    throw error;
+  }
+  return (payload ?? {}) as LicenseUploadResponse;
+}
+
 export function uploadOfflineMap(
   file: File,
   keepBackup: boolean,
@@ -232,6 +268,10 @@ function requestOfflineMapUpload(
 }
 
 function parseOfflineMapUploadPayload(text: string): unknown {
+  return parseJSONPayload(text);
+}
+
+function parseJSONPayload(text: string): unknown {
   if (!text.trim()) {
     return null;
   }
@@ -242,12 +282,32 @@ function parseOfflineMapUploadPayload(text: string): unknown {
   }
 }
 
-function readOfflineMapUploadMessage(payload: unknown, fallback: string) {
+function readPayloadMessage(payload: unknown, fallback: string) {
   if (!payload || typeof payload !== "object" || !("message" in payload)) {
     return fallback;
   }
   const message = (payload as { message?: unknown }).message;
   return typeof message === "string" && message.trim() ? message.trim() : fallback;
+}
+
+function readPayloadCode(payload: unknown) {
+  if (!payload || typeof payload !== "object" || !("code" in payload)) {
+    return undefined;
+  }
+  const code = (payload as { code?: unknown }).code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+}
+
+function readPayloadLicense(payload: unknown): LicenseInfo | undefined {
+  if (!payload || typeof payload !== "object" || !("details" in payload)) {
+    return undefined;
+  }
+  const details = (payload as { details?: unknown }).details;
+  return details && typeof details === "object" ? details as LicenseInfo : undefined;
+}
+
+function readOfflineMapUploadMessage(payload: unknown, fallback: string) {
+  return readPayloadMessage(payload, fallback);
 }
 
 function readOfflineMapUploadLogs(payload: unknown): OfflineMapUploadLog[] {

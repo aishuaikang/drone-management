@@ -362,11 +362,19 @@ export function VirtualKeyboard({
       setPinyinBuffer("");
       setPinyinCandidates(emptyCandidates);
       setVisible(true);
-      window.requestAnimationFrame(() => {
+      const keepVisible = () => {
+        if (!document.body.contains(element)) {
+          return;
+        }
         const height = Math.ceil(keyboardRef.current?.getBoundingClientRect().height ?? 0);
         if (height > 0) {
           keepElementAboveKeyboard(element, height, adjustedScrollContainersRef.current);
         }
+      };
+      window.requestAnimationFrame(() => {
+        keepVisible();
+        window.requestAnimationFrame(keepVisible);
+        window.setTimeout(keepVisible, 80);
       });
     },
     [cancelClose, locale, supportsChinese],

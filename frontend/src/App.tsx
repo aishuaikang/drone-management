@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Crosshair,
   LocateFixed,
   Download,
@@ -17,6 +18,7 @@ import {
   MapPinned,
   Maximize2,
   MapPin,
+  Palette,
   Play,
   FileVideo,
   RefreshCw,
@@ -26,6 +28,7 @@ import {
   Satellite,
   Search,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   ShieldMinus,
   ShieldPlus,
@@ -54,6 +57,7 @@ import {
   getInterferenceReports,
   deleteIntrusions,
   getIntrusions,
+  getLicenseStatus,
   getOfflineMapStatus,
   getScreenDeviceLocation,
   getScreenFPV,
@@ -68,9 +72,10 @@ import {
   updateScreenStrike,
   updateScreenStrikeUnattended,
   uploadOfflineMap,
+  uploadLicense,
   updateUserSettings,
 } from "./api";
-import type { InterferenceReportQuery, IntrusionQuery, OfflineMapUploadError } from "./api";
+import type { InterferenceReportQuery, IntrusionQuery, LicenseUploadError, OfflineMapUploadError } from "./api";
 import { VirtualKeyboard } from "./components/VirtualKeyboard";
 import centerPointIcon from "./assets/images/centerPoint.svg";
 import detectionDeviceIconOnlineUrl from "./assets/images/detectionDeviceIconOnline.svg";
@@ -93,6 +98,7 @@ import type {
   InterferenceReportStatus,
   InterferenceReportSummary,
   IntrusionRecord,
+  LicenseInfo,
   LingyunDeviceSettings,
   LingyunDeviceType,
   OfflineMapStatus,
@@ -116,6 +122,7 @@ import { installLeafletCoordConverter } from "./utils/leafletCoordConverter";
 type Locale = "zh-CN" | "en-US";
 type Tab = "positions" | "fpv";
 type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "offlineMap" | "lingyun" | "about";
+type ThemeColor = "cyan" | "amber" | "blue" | "rose";
 type CSVCell = string | number | null | undefined;
 type NavigationMapProvider = "amap" | "google";
 type NavigationCoordinateSystem = "WGS84" | "GCJ-02";
@@ -167,6 +174,13 @@ type ScreenMapData = {
   positions: ScreenPositionTarget[];
   warningZone: WarningZone | null;
 };
+type ThemeColorOption = {
+  id: ThemeColor;
+  className: string;
+  labelKey: string;
+  primary: string;
+  trackColor: string;
+};
 
 const virtualKeyboardLocaleOptions = ["zh-CN", "en-US"] as const;
 
@@ -186,7 +200,7 @@ const screenStrikeDurationPresets = [10, 30, 60, 90, 120, 180];
 const defaultWarningZoneRadiusMeters = 500;
 const minWarningZoneRadiusMeters = 10;
 const maxWarningZoneRadiusMeters = 50000;
-const lingyunDeviceTypes: LingyunDeviceType[] = ["aoa", "dcd", "rid"];
+const lingyunDeviceTypes: LingyunDeviceType[] = ["aoa", "dcd", "rid", "ifr"];
 const defaultLingyunClientID = createLingyunClientID();
 const defaultLingyunProtocolVersion = "V1.3";
 const defaultLingyunBandWidth = "20MHz";
@@ -195,8 +209,16 @@ const referenceMapZoom = 13;
 const referenceMapLayerStorageKey = "drone-management.mapLayer";
 const referenceLegacyMapLayerStorageKey = "mapLayer";
 const screenAlarmSoundStorageKey = "drone-management.soundAlarmEnabled";
+const screenThemeColorStorageKey = "drone-management.themeColor";
 const referenceDefaultMapLayer: ReferenceMapLayer = "leaflet.map.gaodeSatellite";
 let offlineMapUploadLogSequence = 0;
+const themeColorOptions: ThemeColorOption[] = [
+  { id: "blue", className: "screen-shell--theme-blue", labelKey: "themeBlue", primary: "#60a5fa", trackColor: "#60a5fa" },
+  { id: "cyan", className: "screen-shell--theme-cyan", labelKey: "themeCyan", primary: "#5eead4", trackColor: "#5eead4" },
+  { id: "amber", className: "screen-shell--theme-amber", labelKey: "themeAmber", primary: "#fbbf24", trackColor: "#fbbf24" },
+  { id: "rose", className: "screen-shell--theme-rose", labelKey: "themeRose", primary: "#fb7185", trackColor: "#fb7185" },
+];
+const defaultThemeColorOption = themeColorOptions[0];
 const referenceMapLayers: ReferenceMapLayer[] = [
   "leaflet.map.googleMap",
   "leaflet.map.googleSatellite",
@@ -206,8 +228,7 @@ const referenceMapLayers: ReferenceMapLayer[] = [
 ];
 const deviceIconSize: [number, number] = [40, 52];
 const targetIconSize: [number, number] = [32, 52];
-const droneTrackColor = "#26c9ff";
-const pilotTrackColor = "#f4c95d";
+const pilotTrackColor = "#fbbf24";
 const warningZoneControlIcon = `
   <span class="warning-zone-button__icon" aria-hidden="true">
     <svg viewBox="0 0 24 24" focusable="false">
@@ -312,6 +333,11 @@ const labels: Record<Locale, Record<string, string>> = {
     signal: "信号",
     client: "设备连接",
     language: "语言",
+    themeColor: "主题颜色",
+    themeCyan: "冰青",
+    themeAmber: "琥珀",
+    themeBlue: "天蓝",
+    themeRose: "玫红",
     meters: "米",
     metersPerSecond: "米/秒",
     seconds: "秒",
@@ -372,7 +398,7 @@ const labels: Record<Locale, Record<string, string>> = {
     fpvTCPPort: "FPV 模块端口",
     tcpPortInvalid: "请输入 1 到 65535 之间且不重复的端口",
     lingyunSettings: "中移凌云协议",
-    lingyunSettingsHint: "控制三类逻辑设备向凌云平台注册、上报和响应控制命令。",
+    lingyunSettingsHint: "控制四类逻辑设备向凌云平台注册、上报和响应控制命令。",
     lingyunConnectionSettings: "连接配置",
     lingyunDeviceSettings: "逻辑设备",
     lingyunEnabled: "凌云上报已开启",
@@ -394,11 +420,14 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunAOA: "AOA",
     lingyunDCD: "协议破解",
     lingyunRID: "RemoteID",
+    lingyunIFR: "干扰设备",
     lingyunDeviceId: "平台设备 ID",
     lingyunDeviceName: "设备名称",
     lingyunDetectionRange: "探测范围",
     lingyunBandWidth: "带宽",
     lingyunDetectionFrequency: "探测频段",
+    lingyunCountermeasureRange: "干扰范围",
+    lingyunInterferenceBands: "干扰频段",
     lingyunDevModel: "设备型号",
     lingyunDevSN: "设备序列号",
     lingyunInstallLocation: "安装位置",
@@ -408,15 +437,50 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunDataTopic: "数据发布",
     lingyunControlTopic: "控制订阅",
     lingyunControlRespTopic: "控制响应",
+    lingyunShowTopics: "查看 Topic",
+    lingyunHideTopics: "收起 Topic",
     aboutTitle: "关于软件",
     productName: "软件名称",
     softwareIdentityHint: "软件唯一 SN 由本机 MAC 地址生成，后续授权校验使用同一个 SN。",
     currentDeviceLocation: "当前设备位置",
+    licenseStatus: "授权状态",
+    licenseValid: "已授权",
+    licenseInvalid: "未授权",
+    licenseDeviceSN: "软件 SN",
+    licenseNoDeviceSN: "未获取 SN",
+    copyLicenseDeviceSN: "复制软件 SN",
+    licenseIssuedAt: "签发时间",
+    licenseExpiresAt: "到期时间",
+    licenseRemaining: "剩余时间",
+    licensePermanent: "永久授权",
+    licenseRemainingDays: "剩余 {days} 天",
+    licenseFile: "授权文件",
+    licenseSelectFile: "选择 .lic 文件",
+    licenseUpload: "上传授权",
+    licenseUploaded: "授权文件已上传",
+    licenseUploadFailed: "授权上传失败",
+    licenseNoFile: "请选择授权文件",
+    licenseRefresh: "刷新授权",
+    licenseLoading: "读取授权状态",
+    licenseStatusFailed: "授权状态读取失败",
+    licenseRequired: "未授权，请先上传授权文件",
+    licenseErrorDeviceSNMissing: "未获取软件 SN，请确认本机存在可用 MAC 地址",
+    licenseErrorNotFound: "未找到授权文件",
+    licenseErrorExpired: "授权已过期",
+    licenseErrorSNMismatch: "授权文件与当前软件 SN 不匹配",
+    licenseErrorInvalidSignature: "授权签名无效",
+    licenseErrorInvalid: "授权文件无效",
+    licenseErrorUnavailable: "授权服务不可用",
+    licenseErrorUploadInvalid: "授权上传请求无效",
+    licenseErrorVerificationFailed: "授权校验失败",
+    copied: "已复制",
     locationUnavailable: "暂无有效位置",
     lingyunInvalid: "开启凌云协议时必须填写 Broker、Provider Code，并成功获取软件唯一 SN",
     lingyunUnconfigured: "未配置",
     lingyunReportingStopped: "上报停止",
     lingyunReporting: "上报中",
+    lingyunInterfering: "干扰中",
+    lingyunIdle: "待机",
     positionExpireSettings: "定位过期设置",
     positionExpireSeconds: "定位过期秒数",
     positionExpireHint: "控制定位目标从大屏消失并归档为入侵记录的时间，默认 5 秒。",
@@ -658,6 +722,11 @@ const labels: Record<Locale, Record<string, string>> = {
     signal: "Signal",
     client: "Source",
     language: "Language",
+    themeColor: "Theme color",
+    themeCyan: "Ice cyan",
+    themeAmber: "Amber",
+    themeBlue: "Sky blue",
+    themeRose: "Rose",
     meters: "m",
     metersPerSecond: "m/s",
     seconds: "s",
@@ -718,7 +787,7 @@ const labels: Record<Locale, Record<string, string>> = {
     fpvTCPPort: "FPV module port",
     tcpPortInvalid: "Enter unique ports from 1 to 65535",
     lingyunSettings: "China Mobile Lingyun",
-    lingyunSettingsHint: "Registers three logical devices, publishes targets, and responds to platform controls.",
+    lingyunSettingsHint: "Registers four logical devices, publishes targets, and responds to platform controls.",
     lingyunConnectionSettings: "Connection",
     lingyunDeviceSettings: "Logical Devices",
     lingyunEnabled: "Lingyun reporting enabled",
@@ -740,11 +809,14 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunAOA: "AOA",
     lingyunDCD: "Protocol Decode",
     lingyunRID: "RemoteID",
+    lingyunIFR: "Interference",
     lingyunDeviceId: "Platform Device ID",
     lingyunDeviceName: "Device name",
     lingyunDetectionRange: "Detection range",
     lingyunBandWidth: "Bandwidth",
     lingyunDetectionFrequency: "Detection bands",
+    lingyunCountermeasureRange: "Countermeasure range",
+    lingyunInterferenceBands: "Interference bands",
     lingyunDevModel: "Device model",
     lingyunDevSN: "Device serial",
     lingyunInstallLocation: "Install location",
@@ -754,15 +826,50 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunDataTopic: "Data publish",
     lingyunControlTopic: "Control subscribe",
     lingyunControlRespTopic: "Control response",
+    lingyunShowTopics: "Show topics",
+    lingyunHideTopics: "Hide topics",
     aboutTitle: "About",
     productName: "Product",
     softwareIdentityHint: "The software SN is generated from this machine's MAC address and will be reused for license checks.",
     currentDeviceLocation: "Current device location",
+    licenseStatus: "License status",
+    licenseValid: "Licensed",
+    licenseInvalid: "Unlicensed",
+    licenseDeviceSN: "Software SN",
+    licenseNoDeviceSN: "SN unavailable",
+    copyLicenseDeviceSN: "Copy software SN",
+    licenseIssuedAt: "Issued at",
+    licenseExpiresAt: "Expires at",
+    licenseRemaining: "Remaining",
+    licensePermanent: "Permanent",
+    licenseRemainingDays: "{days} days remaining",
+    licenseFile: "License file",
+    licenseSelectFile: "Select .lic file",
+    licenseUpload: "Upload license",
+    licenseUploaded: "License uploaded",
+    licenseUploadFailed: "License upload failed",
+    licenseNoFile: "Select a license file",
+    licenseRefresh: "Refresh license",
+    licenseLoading: "Loading license status",
+    licenseStatusFailed: "Failed to load license status",
+    licenseRequired: "Unlicensed. Upload a license file first.",
+    licenseErrorDeviceSNMissing: "Software SN is unavailable. Check that this machine has an available MAC address.",
+    licenseErrorNotFound: "License file not found",
+    licenseErrorExpired: "License has expired",
+    licenseErrorSNMismatch: "License file does not match the current software SN",
+    licenseErrorInvalidSignature: "License signature is invalid",
+    licenseErrorInvalid: "License file is invalid",
+    licenseErrorUnavailable: "License service is unavailable",
+    licenseErrorUploadInvalid: "License upload request is invalid",
+    licenseErrorVerificationFailed: "License verification failed",
+    copied: "Copied",
     locationUnavailable: "No valid location",
     lingyunInvalid: "When Lingyun is enabled, Broker, Provider Code, and a valid software SN are required",
     lingyunUnconfigured: "Unconfigured",
     lingyunReportingStopped: "Reporting stopped",
     lingyunReporting: "Reporting",
+    lingyunInterfering: "Interfering",
+    lingyunIdle: "Idle",
     positionExpireSettings: "Position Expiration",
     positionExpireSeconds: "Position expiration seconds",
     positionExpireHint: "Controls when positioning targets disappear and archive as intrusion records. Default is 5 seconds.",
@@ -972,8 +1079,12 @@ export function App() {
   const [tab, setTab] = useState<Tab>("positions");
   const [now, setNow] = useState(() => new Date());
   const [streamError, setStreamError] = useState("");
+  const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
+  const [licenseChecked, setLicenseChecked] = useState(false);
   const [soundAlarmEnabled, setSoundAlarmEnabled] = useState(() => getStoredSoundAlarmEnabled());
   const [languageOpen, setLanguageOpen] = useState(false);
+  const [themeOpen, setThemeOpen] = useState(false);
+  const [themeColor, setThemeColor] = useState<ThemeColor>(() => getStoredThemeColor());
   const [strikeCollapsed, setStrikeCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [navigationQRCode, setNavigationQRCode] = useState<NavigationQRCodeState | null>(null);
@@ -996,10 +1107,36 @@ export function App() {
   const positionExpireSeconds = resolvePositionExpireSeconds(userSettings.positionExpireSeconds);
   const screenTitle = userSettings.screenTitle?.trim() || t.title;
   const [strikeStateSyncedAt, setStrikeStateSyncedAt] = useState(() => Date.now());
+  const licenseValid = Boolean(licenseInfo?.valid);
+  const licenseLocked = licenseChecked && !licenseValid;
+  const effectiveView: View = licenseValid ? view : "about";
+  const licenseRequiredMessage = licenseLocked ? (licenseInfo?.code ? formatLicenseMessage(licenseInfo.code, t) : t.licenseRequired) : "";
+  const themeOption = useMemo(() => getThemeColorOption(themeColor), [themeColor]);
+  const screenShellClassName = [
+    "screen-shell",
+    "screen-shell--strike-available",
+    themeOption.className,
+    licenseValid ? "" : "screen-shell--license-locked",
+  ].filter(Boolean).join(" ");
 
   const syncStrikeState = useCallback((nextState: ScreenStrikeState) => {
     setStrikeState(nextState);
     setStrikeStateSyncedAt(Date.now());
+  }, []);
+
+  const syncLicenseStatus = useCallback(async () => {
+    try {
+      const nextLicense = await getLicenseStatus();
+      setLicenseInfo(nextLicense);
+    } catch {
+      setLicenseInfo({
+        isPermanent: false,
+        valid: false,
+        code: "license_unavailable",
+      });
+    } finally {
+      setLicenseChecked(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -1008,6 +1145,29 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    persistThemeColor(themeColor);
+  }, [themeColor]);
+
+  useEffect(() => {
+    void syncLicenseStatus();
+    const timer = window.setInterval(() => void syncLicenseStatus(), 30000);
+    return () => window.clearInterval(timer);
+  }, [syncLicenseStatus]);
+
+  useEffect(() => {
+    if (!licenseLocked) {
+      return;
+    }
+    if (view !== "about") {
+      setView("about");
+    }
+    setStreamError(licenseRequiredMessage);
+  }, [licenseLocked, licenseRequiredMessage, view]);
+
+  useEffect(() => {
+    if (!licenseValid) {
+      return;
+    }
     let cancelled = false;
     let syncing = false;
 
@@ -1050,9 +1210,12 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [syncStrikeState]);
+  }, [licenseValid, syncStrikeState]);
 
   useEffect(() => {
+    if (!licenseValid) {
+      return;
+    }
     return openScreenStream({
       onPosition: (event) => {
         if (event.payload) {
@@ -1084,10 +1247,10 @@ export function App() {
       },
       onError: (error) => setStreamError(error.message),
     });
-  }, [syncStrikeState]);
+  }, [licenseValid, syncStrikeState]);
 
   useEffect(() => {
-    if (!strikeState?.active || view !== "screen") {
+    if (!licenseValid || !strikeState?.active || effectiveView !== "screen") {
       return;
     }
 
@@ -1119,7 +1282,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [strikeState?.active, syncStrikeState, view]);
+  }, [effectiveView, licenseValid, strikeState?.active, syncStrikeState]);
 
   const visiblePositions = useMemo(() => filterVisiblePositions(positions, now, positionExpireSeconds), [now, positionExpireSeconds, positions]);
   const selectedPosition = useMemo(
@@ -1134,16 +1297,30 @@ export function App() {
   );
   const alarmSound = useScreenAlarmSound(alarmTargetCount > 0 && soundAlarmEnabled);
 
+  const handleViewChange = useCallback((nextView: View) => {
+    if (licenseLocked && nextView !== "about") {
+      setView("about");
+      setStreamError(licenseRequiredMessage);
+      return;
+    }
+    setView(nextView);
+  }, [licenseLocked, licenseRequiredMessage]);
+
   const handleSetSoundAlarmEnabled = useCallback((enabled: boolean) => {
     setSoundAlarmEnabled(enabled);
     persistSoundAlarmEnabled(enabled);
   }, []);
 
   const handleSelectPosition = useCallback((target: ScreenPositionTarget) => {
+    if (licenseLocked) {
+      setView("about");
+      setStreamError(licenseRequiredMessage);
+      return;
+    }
     setSelectedPositionId((current) => (current === target.id ? "" : target.id));
     setTab("positions");
     setView("screen");
-  }, []);
+  }, [licenseLocked, licenseRequiredMessage]);
 
   const saveUserSettings = useCallback(async (next: UserSettings) => {
     const saved = await updateUserSettings({
@@ -1435,11 +1612,12 @@ export function App() {
   }, [handleCloseManualLocation, manualLocationOpen]);
 
   return (
-    <main className="screen-shell screen-shell--strike-available">
+    <main className={screenShellClassName}>
       <ScreenMap
         positions={visiblePositions}
         selectedPosition={selectedPosition}
         deviceLocation={deviceLocation}
+        theme={themeOption}
         whitelist={userSettings.whitelist}
         warningZone={activeWarningZone}
         warningZoneEnabled={Boolean(userSettings.warningZoneEnabled)}
@@ -1452,9 +1630,9 @@ export function App() {
         t={t}
         locale={locale}
       />
-      {view === "screen" ? (
+      {effectiveView === "screen" ? (
         <div className="screen-map-legend-overlay">
-          <ScreenMapLegend t={t} />
+          <ScreenMapLegend t={t} theme={themeOption} />
         </div>
       ) : null}
 
@@ -1468,6 +1646,58 @@ export function App() {
           <h1 title={screenTitle}>{screenTitle}</h1>
         </div>
         <div className="screen-header__right">
+          <div
+            className={themeOpen ? "screen-theme-switch screen-theme-switch--open" : "screen-theme-switch"}
+            onBlur={(event) => {
+              const nextFocus = event.relatedTarget;
+              if (!(nextFocus instanceof Node) || !event.currentTarget.contains(nextFocus)) {
+                setThemeOpen(false);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setThemeOpen(false);
+              }
+            }}
+          >
+            <button
+              className="screen-theme-switch__button"
+              type="button"
+              aria-label={t.themeColor}
+              title={t.themeColor}
+              aria-haspopup="listbox"
+              aria-expanded={themeOpen}
+              onClick={() => {
+                setThemeOpen((value) => !value);
+                setLanguageOpen(false);
+              }}
+            >
+              <Palette aria-hidden="true" />
+              <span>{t[themeOption.labelKey]}</span>
+              <ChevronDown className="screen-theme-switch__arrow" aria-hidden="true" />
+            </button>
+            {themeOpen ? (
+              <div className="screen-theme-menu" role="listbox" aria-label={t.themeColor}>
+                {themeColorOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    className={option.id === themeColor ? "screen-theme-menu__item screen-theme-menu__item--active" : "screen-theme-menu__item"}
+                    type="button"
+                    role="option"
+                    aria-selected={option.id === themeColor}
+                    onClick={() => {
+                      setThemeColor(option.id);
+                      setThemeOpen(false);
+                    }}
+                  >
+                    <span className="screen-theme-menu__swatch" style={{ backgroundColor: option.primary }} aria-hidden="true" />
+                    <span>{t[option.labelKey]}</span>
+                    {option.id === themeColor ? <Check size={12} aria-hidden="true" /> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div
             className={languageOpen ? "screen-language-switch screen-language-switch--open" : "screen-language-switch"}
             onBlur={(event) => {
@@ -1488,7 +1718,10 @@ export function App() {
               aria-label={t.language}
               aria-haspopup="listbox"
               aria-expanded={languageOpen}
-              onClick={() => setLanguageOpen((value) => !value)}
+              onClick={() => {
+                setLanguageOpen((value) => !value);
+                setThemeOpen(false);
+              }}
             >
               <Globe2 aria-hidden="true" />
               <span>{locale === "zh-CN" ? "中文" : "EN"}</span>
@@ -1518,173 +1751,177 @@ export function App() {
       </header>
 
       <div className="screen-view-switch-overlay">
-        <ViewSwitch view={view} t={t} onViewChange={setView} />
+        <ViewSwitch view={effectiveView} t={t} licenseLocked={!licenseValid} onViewChange={handleViewChange} />
       </div>
 
-      {view === "screen" ? (
-      <>
-      <ScreenStrikePanel
-        state={strikeState}
-        stateSyncedAt={strikeStateSyncedAt}
-        connectionStatus={status?.interference}
-        now={now}
-        locale={locale}
-        userSettings={userSettings}
-        collapsed={strikeCollapsed}
-        t={t}
-        onStateChange={syncStrikeState}
-        onToggleCollapsed={() => setStrikeCollapsed((value) => !value)}
-      />
-      <aside
-        className={rightCollapsed ? "screen-right-panel screen-right-panel--collapsed screen-right-panel--show-toggle" : "screen-right-panel screen-right-panel--show-toggle"}
-      >
-        <button
-          className="screen-side-toggle screen-side-toggle--right"
-          type="button"
-          aria-label={rightCollapsed ? t.expandPanel : t.collapsePanel}
-          onClick={() => setRightCollapsed((value) => !value)}
-        >
-          {rightCollapsed ? <ChevronLeft aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-          <span aria-hidden="true" />
-        </button>
-        <div className="screen-info-list">
-          <div className="screen-info-list__header">
-            <div className="screen-panel-title">
-              <span className="screen-panel-title__icon screen-panel-title__icon--target">
-                <Antenna aria-hidden="true" />
-              </span>
-              <span className="screen-panel-title__text">
-                <em>{streamError ? t.stream : t.allClear}</em>
-                <strong>{tab === "positions" ? t.positions : t.fpv}</strong>
-              </span>
-            </div>
-            <div className="screen-info-list__counts">
-              {streamError ? <span className="screen-stream-error" title={streamError}>!</span> : null}
-              {alarmTargetCount > 0 ? (
-                <span className="screen-alarm-count" title={`${t.activeAlarmTargets}: ${alarmTargetCount}`}>
-                  <BellRing size={12} aria-hidden="true" />
-                  <strong>{alarmTargetCount}</strong>
-                </span>
-              ) : null}
-              <button
-                type="button"
-                className={soundAlarmEnabled ? "screen-sound-toggle screen-sound-toggle--active" : "screen-sound-toggle"}
-                aria-pressed={soundAlarmEnabled}
-                title={soundAlarmEnabled ? t.muteSoundAlarm : t.unmuteSoundAlarm}
-              onClick={() => handleSetSoundAlarmEnabled(!soundAlarmEnabled)}
-              >
-                {soundAlarmEnabled ? <Volume2 size={13} aria-hidden="true" /> : <VolumeX size={13} aria-hidden="true" />}
-              </button>
-              <strong className="screen-info-list__count">{tab === "positions" ? visiblePositions.length : visibleFPV.length}</strong>
-            </div>
-          </div>
-
-          <ScreenAlarmBanner
-            activeCount={alarmTargetCount}
-            soundEnabled={soundAlarmEnabled}
-            soundBlocked={alarmSound.blocked}
-            t={t}
-            onEnableSound={() => {
-              handleSetSoundAlarmEnabled(true);
-              void alarmSound.enable();
-            }}
-          />
-
-          <DeviceSummary
-            location={deviceLocation}
-            t={t}
+      {effectiveView === "screen" ? (
+        <>
+          <ScreenStrikePanel
+            state={strikeState}
+            stateSyncedAt={strikeStateSyncedAt}
+            connectionStatus={status?.interference}
+            now={now}
             locale={locale}
-            onOpenManualLocation={handleOpenManualLocation}
-            manualLocationPickMode={manualLocationPickMode}
-            onManualLocationPickToggle={handleToggleManualLocationPickMode}
-          />
-
-          <div className={tab === "fpv" ? "screen-list screen-list--fpv" : "screen-list"}>
-            {tab === "positions" ? (
-              visiblePositions.length ? (
-                visiblePositions.map((target) => {
-                  const whitelisted = isSerialWhitelisted(target.serial, userSettings.whitelist);
-                  const alert = targetTriggersAlarm(target, whitelisted, activeWarningZone);
-                  return (
-                    <PositionCard
-                      key={target.id}
-                      target={target}
-                      whitelisted={whitelisted}
-                      alert={alert}
-                      whitelistBusy={whitelistBusySerial === normalizeWhitelistSerial(target.serial)}
-                      selected={target.id === selectedPositionId}
-                      t={t}
-                      locale={locale}
-                      now={now}
-                      expireSeconds={positionExpireSeconds}
-                      onSelect={() => handleSelectPosition(target)}
-                      onOpenNavigationQRCode={handleOpenNavigationQRCode}
-                      onToggleWhitelist={handleTogglePositionWhitelist}
-                    />
-                  );
-                })
-              ) : (
-                <EmptyState icon={<Satellite aria-hidden="true" />} text={t.emptyPositions} />
-              )
-            ) : visibleFPV.length ? (
-              <FPVTable
-                targets={visibleFPV}
-                t={t}
-                now={now}
-                videoAvailable={Boolean(fpvVideoPlaybackURL)}
-                videoBusy={fpvVideoBusy}
-                videoOpeningId={fpvVideoOpeningId}
-                onViewVideo={handleOpenFPVVideo}
-              />
-            ) : (
-              <EmptyState icon={<Signal aria-hidden="true" />} text={t.emptyFPV} />
-            )}
-          </div>
-
-          <div className="screen-tabs" role="tablist">
-            <button
-              type="button"
-              className={tab === "positions" ? "screen-tab screen-tab--active" : "screen-tab"}
-              role="tab"
-              aria-selected={tab === "positions"}
-              onClick={() => setTab("positions")}
-            >
-              <TabStatusDot status={status?.position} />
-              <MapPin className="screen-tab__icon" aria-hidden="true" />
-              <span>{t.positions}</span>
-              <strong>{visiblePositions.length}</strong>
-            </button>
-            <button
-              type="button"
-              className={tab === "fpv" ? "screen-tab screen-tab--active" : "screen-tab"}
-              role="tab"
-              aria-selected={tab === "fpv"}
-              onClick={() => setTab("fpv")}
-            >
-              <TabStatusDot status={status?.fpv} />
-              <Radio className="screen-tab__icon" aria-hidden="true" />
-              <span>{t.fpv}</span>
-              <strong>{fpv.length}</strong>
-            </button>
-          </div>
-        </div>
-      </aside>
-      </>
-      ) : (
-          <ManagementView
-            view={view}
-            t={t}
-            locale={locale}
-            offlineMapState={offlineMapState}
             userSettings={userSettings}
-            userSettingsLoaded={userSettingsLoaded}
-            deviceLocation={deviceLocation}
-            status={status}
-            defaultScreenTitle={t.title}
-            onOfflineMapStateChange={setOfflineMapState}
-            onStatusChange={setStatus}
-            onSaveUserSettings={saveUserSettings}
+            collapsed={strikeCollapsed}
+            t={t}
+            onStateChange={syncStrikeState}
+            onToggleCollapsed={() => setStrikeCollapsed((value) => !value)}
           />
+          <aside
+            className={rightCollapsed ? "screen-right-panel screen-right-panel--collapsed screen-right-panel--show-toggle" : "screen-right-panel screen-right-panel--show-toggle"}
+          >
+            <button
+              className="screen-side-toggle screen-side-toggle--right"
+              type="button"
+              aria-label={rightCollapsed ? t.expandPanel : t.collapsePanel}
+              onClick={() => setRightCollapsed((value) => !value)}
+            >
+              {rightCollapsed ? <ChevronLeft aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+              <span aria-hidden="true" />
+            </button>
+            <div className="screen-info-list">
+              <div className="screen-info-list__header">
+                <div className="screen-panel-title">
+                  <span className="screen-panel-title__icon screen-panel-title__icon--target">
+                    <Antenna aria-hidden="true" />
+                  </span>
+                  <span className="screen-panel-title__text">
+                    <em>{streamError ? t.stream : t.allClear}</em>
+                    <strong>{tab === "positions" ? t.positions : t.fpv}</strong>
+                  </span>
+                </div>
+                <div className="screen-info-list__counts">
+                  {streamError ? <span className="screen-stream-error" title={streamError}>!</span> : null}
+                  {alarmTargetCount > 0 ? (
+                    <span className="screen-alarm-count" title={`${t.activeAlarmTargets}: ${alarmTargetCount}`}>
+                      <BellRing size={12} aria-hidden="true" />
+                      <strong>{alarmTargetCount}</strong>
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={soundAlarmEnabled ? "screen-sound-toggle screen-sound-toggle--active" : "screen-sound-toggle"}
+                    aria-pressed={soundAlarmEnabled}
+                    title={soundAlarmEnabled ? t.muteSoundAlarm : t.unmuteSoundAlarm}
+                    onClick={() => handleSetSoundAlarmEnabled(!soundAlarmEnabled)}
+                  >
+                    {soundAlarmEnabled ? <Volume2 size={13} aria-hidden="true" /> : <VolumeX size={13} aria-hidden="true" />}
+                  </button>
+                  <strong className="screen-info-list__count">{tab === "positions" ? visiblePositions.length : visibleFPV.length}</strong>
+                </div>
+              </div>
+
+              <ScreenAlarmBanner
+                activeCount={alarmTargetCount}
+                soundEnabled={soundAlarmEnabled}
+                soundBlocked={alarmSound.blocked}
+                t={t}
+                onEnableSound={() => {
+                  handleSetSoundAlarmEnabled(true);
+                  void alarmSound.enable();
+                }}
+              />
+
+              <DeviceSummary
+                location={deviceLocation}
+                t={t}
+                locale={locale}
+                onOpenManualLocation={handleOpenManualLocation}
+                manualLocationPickMode={manualLocationPickMode}
+                onManualLocationPickToggle={handleToggleManualLocationPickMode}
+              />
+
+              <div className={tab === "fpv" ? "screen-list screen-list--fpv" : "screen-list"}>
+                {tab === "positions" ? (
+                  visiblePositions.length ? (
+                    visiblePositions.map((target) => {
+                      const whitelisted = isSerialWhitelisted(target.serial, userSettings.whitelist);
+                      const alert = targetTriggersAlarm(target, whitelisted, activeWarningZone);
+                      return (
+                        <PositionCard
+                          key={target.id}
+                          target={target}
+                          whitelisted={whitelisted}
+                          alert={alert}
+                          whitelistBusy={whitelistBusySerial === normalizeWhitelistSerial(target.serial)}
+                          selected={target.id === selectedPositionId}
+                          t={t}
+                          locale={locale}
+                          now={now}
+                          expireSeconds={positionExpireSeconds}
+                          onSelect={() => handleSelectPosition(target)}
+                          onOpenNavigationQRCode={handleOpenNavigationQRCode}
+                          onToggleWhitelist={handleTogglePositionWhitelist}
+                        />
+                      );
+                    })
+                  ) : (
+                    <EmptyState icon={<Satellite aria-hidden="true" />} text={t.emptyPositions} />
+                  )
+                ) : visibleFPV.length ? (
+                  <FPVTable
+                    targets={visibleFPV}
+                    t={t}
+                    now={now}
+                    videoAvailable={Boolean(fpvVideoPlaybackURL)}
+                    videoBusy={fpvVideoBusy}
+                    videoOpeningId={fpvVideoOpeningId}
+                    onViewVideo={handleOpenFPVVideo}
+                  />
+                ) : (
+                  <EmptyState icon={<Signal aria-hidden="true" />} text={t.emptyFPV} />
+                )}
+              </div>
+
+              <div className="screen-tabs" role="tablist">
+                <button
+                  type="button"
+                  className={tab === "positions" ? "screen-tab screen-tab--active" : "screen-tab"}
+                  role="tab"
+                  aria-selected={tab === "positions"}
+                  onClick={() => setTab("positions")}
+                >
+                  <TabStatusDot status={status?.position} />
+                  <MapPin className="screen-tab__icon" aria-hidden="true" />
+                  <span>{t.positions}</span>
+                  <strong>{visiblePositions.length}</strong>
+                </button>
+                <button
+                  type="button"
+                  className={tab === "fpv" ? "screen-tab screen-tab--active" : "screen-tab"}
+                  role="tab"
+                  aria-selected={tab === "fpv"}
+                  onClick={() => setTab("fpv")}
+                >
+                  <TabStatusDot status={status?.fpv} />
+                  <Radio className="screen-tab__icon" aria-hidden="true" />
+                  <span>{t.fpv}</span>
+                  <strong>{fpv.length}</strong>
+                </button>
+              </div>
+            </div>
+          </aside>
+        </>
+      ) : (
+        <ManagementView
+          view={effectiveView}
+          t={t}
+          locale={locale}
+          theme={themeOption}
+          licenseInfo={licenseInfo}
+          offlineMapState={offlineMapState}
+          userSettings={userSettings}
+          userSettingsLoaded={userSettingsLoaded}
+          strikeState={strikeState}
+          deviceLocation={deviceLocation}
+          status={status}
+          defaultScreenTitle={t.title}
+          onOfflineMapStateChange={setOfflineMapState}
+          onStatusChange={setStatus}
+          onLicenseInfoChange={setLicenseInfo}
+          onSaveUserSettings={saveUserSettings}
+        />
       )}
 
       <footer className="screen-footer" aria-hidden="true">
@@ -1728,6 +1965,7 @@ function ScreenMap({
   positions,
   selectedPosition,
   deviceLocation,
+  theme,
   whitelist,
   warningZone,
   warningZoneEnabled = false,
@@ -1742,6 +1980,7 @@ function ScreenMap({
   positions: ScreenPositionTarget[];
   selectedPosition: ScreenPositionTarget | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
+  theme: ThemeColorOption;
   whitelist?: WhitelistItem[];
   warningZone?: WarningZone | null;
   warningZoneEnabled?: boolean;
@@ -1944,8 +2183,8 @@ function ScreenMap({
     }
     renderDeviceMarker(layer, deviceLocation, t);
     positions.forEach((target) => {
-      renderTrajectory(layer, target, "pilot", selectedPosition?.id === target.id, onSelectPosition, t);
-      renderTrajectory(layer, target, "drone", selectedPosition?.id === target.id, onSelectPosition, t);
+      renderTrajectory(layer, target, "pilot", selectedPosition?.id === target.id, onSelectPosition, t, theme);
+      renderTrajectory(layer, target, "drone", selectedPosition?.id === target.id, onSelectPosition, t, theme);
       const whitelisted = isSerialWhitelisted(target.serial, whitelist);
       const alert = targetTriggersAlarm(target, whitelisted, warningZone ?? null);
       renderTargetMarker(layer, target, "pilot", selectedPosition?.id === target.id, alert, onSelectPosition, t);
@@ -1958,7 +2197,7 @@ function ScreenMap({
       fitBounds(map, points);
       fitOnceRef.current = true;
     }
-  }, [deviceLocation, locale, onSelectPosition, positions, selectedPosition?.id, t, warningZone, whitelist]);
+  }, [deviceLocation, locale, onSelectPosition, positions, selectedPosition?.id, t, theme, warningZone, whitelist]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -2086,16 +2325,16 @@ function resolveActiveMapLayer(
   return availableMapLayers[0] ?? referenceDefaultMapLayer;
 }
 
-function ScreenMapLegend({ t }: { t: Record<string, string> }) {
+function ScreenMapLegend({ t, theme }: { t: Record<string, string>; theme: ThemeColorOption }) {
   const items = [
     { id: "device", label: t.deviceLocation, kind: "marker" as const, iconUrl: detectionDeviceIconOnlineUrl },
     { id: "drone", label: t.whitelistDrone, kind: "marker" as const, iconUrl: uavIconUrl, iconClassName: "screen-legend-panel__icon--whitelist" },
     { id: "drone-alert", label: t.unwhitelistedDrone, kind: "marker" as const, iconUrl: uavBlackFlyIconUrl, iconClassName: "screen-legend-panel__icon--alert" },
     { id: "pilot", label: t.whitelistPilot, kind: "marker" as const, iconUrl: remoteControlIconUrl, iconClassName: "screen-legend-panel__icon--whitelist" },
     { id: "pilot-alert", label: t.unwhitelistedPilot, kind: "marker" as const, iconUrl: remoteControlBlackFlyIconUrl, iconClassName: "screen-legend-panel__icon--alert" },
-    { id: "drone-track", label: t.trajectory, kind: "line" as const, color: droneTrackColor },
+    { id: "drone-track", label: t.trajectory, kind: "line" as const, color: theme.trackColor },
     { id: "pilot-track", label: t.pilotTrajectory, kind: "line" as const, color: pilotTrackColor },
-    { id: "warning-zone", label: t.warningZone, kind: "circle" as const, color: "#f97316" },
+    { id: "warning-zone", label: t.warningZone, kind: "circle" as const, color: "#f59e0b" },
   ];
 
   return (
@@ -2128,10 +2367,12 @@ function ScreenMapLegend({ t }: { t: Record<string, string> }) {
 function ViewSwitch({
   view,
   t,
+  licenseLocked,
   onViewChange,
 }: {
   view: View;
   t: Record<string, string>;
+  licenseLocked?: boolean;
   onViewChange: (view: View) => void;
 }) {
   const items: Array<{ id: View; label: string; icon: ReactNode; hidden?: boolean }> = [
@@ -2147,7 +2388,7 @@ function ViewSwitch({
   ];
   return (
     <nav className="screen-view-switch" aria-label="view">
-      {items.filter((item) => !item.hidden).map((item) => (
+      {items.filter((item) => !item.hidden && (!licenseLocked || item.id === "about")).map((item) => (
         <button
           key={item.id}
           className={view === item.id ? "screen-view-switch__item screen-view-switch__item--active" : "screen-view-switch__item"}
@@ -2526,27 +2767,35 @@ function ManagementView({
   view,
   t,
   locale,
+  theme,
+  licenseInfo,
   offlineMapState,
   userSettings,
   userSettingsLoaded,
+  strikeState,
   deviceLocation,
   status,
   defaultScreenTitle,
   onOfflineMapStateChange,
   onStatusChange,
+  onLicenseInfoChange,
   onSaveUserSettings,
 }: {
   view: Exclude<View, "screen">;
   t: Record<string, string>;
   locale: Locale;
+  theme: ThemeColorOption;
+  licenseInfo: LicenseInfo | null;
   offlineMapState: OfflineMapViewState;
   userSettings: UserSettings;
   userSettingsLoaded: boolean;
+  strikeState: ScreenStrikeState | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
   status: ScreenRuntimeStatus | null;
   defaultScreenTitle: string;
   onOfflineMapStateChange: Dispatch<SetStateAction<OfflineMapViewState>>;
   onStatusChange: (status: ScreenRuntimeStatus) => void;
+  onLicenseInfoChange: (license: LicenseInfo | null) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
 }) {
   const panelClassName = [
@@ -2560,7 +2809,7 @@ function ManagementView({
   return (
     <section className={panelClassName}>
       {view === "intrusions" ? (
-        <IntrusionsManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
+        <IntrusionsManagement t={t} locale={locale} theme={theme} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
       ) : view === "fpvRecords" ? (
         <FPVVideoRecordsManagement t={t} locale={locale} />
       ) : view === "interferenceReports" ? (
@@ -2570,6 +2819,7 @@ function ManagementView({
           t={t}
           userSettings={userSettings}
           settingsLoaded={userSettingsLoaded}
+          strikeState={strikeState}
           deviceLocation={deviceLocation}
           status={status}
           onSaveUserSettings={onSaveUserSettings}
@@ -2591,7 +2841,7 @@ function ManagementView({
           onStateChange={onOfflineMapStateChange}
         />
       ) : view === "about" ? (
-        <AboutManagement t={t} userSettings={userSettings} settingsLoaded={userSettingsLoaded} deviceLocation={deviceLocation} />
+        <AboutManagement t={t} locale={locale} licenseInfo={licenseInfo} deviceLocation={deviceLocation} onLicenseInfoChange={onLicenseInfoChange} />
       ) : (
         <WhitelistManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
       )}
@@ -3227,6 +3477,7 @@ function LingyunSettingsManagement({
   t,
   userSettings,
   settingsLoaded,
+  strikeState,
   deviceLocation,
   status,
   onSaveUserSettings,
@@ -3234,6 +3485,7 @@ function LingyunSettingsManagement({
   t: Record<string, string>;
   userSettings: UserSettings;
   settingsLoaded: boolean;
+  strikeState: ScreenStrikeState | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
   status: ScreenRuntimeStatus | null;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
@@ -3247,24 +3499,30 @@ function LingyunSettingsManagement({
     setLingyunDraft(savedLingyun);
   }, [JSON.stringify(savedLingyun)]);
 
+  const draftLingyunWithRuntimeLocation = lingyunSettingsWithRuntimeLocation(lingyunDraft, deviceLocation);
   const normalizedLingyun = resolveLingyunSettingsWithDeviceLocation(lingyunDraft, deviceLocation);
   const savedLingyunWithRuntimeLocation = resolveLingyunSettingsWithDeviceLocation(savedLingyun, deviceLocation);
-  const changed = JSON.stringify(normalizedLingyun) !== JSON.stringify(savedLingyunWithRuntimeLocation);
-  const softwareSN = lingyunDeviceIdentity(normalizedLingyun) || "-";
+  const changed = JSON.stringify(draftLingyunWithRuntimeLocation) !== JSON.stringify(savedLingyunWithRuntimeLocation);
+  const softwareSN = lingyunDeviceIdentity(draftLingyunWithRuntimeLocation) || "-";
+  const interferenceBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
+  const [expandedTopicTypes, setExpandedTopicTypes] = useState<Record<string, boolean>>({});
 
   const updateLingyun = (patch: Partial<NonNullable<UserSettings["lingyun"]>>) => {
-    setLingyunDraft((current) => resolveLingyunSettings({ ...current, ...patch }));
+    setLingyunDraft((current) => ({ ...current, ...patch }));
   };
   const updateLingyunDevice = (type: LingyunDeviceType, patch: Partial<LingyunDeviceSettings>) => {
     setLingyunDraft((current) => {
-      const normalized = resolveLingyunSettings(current);
+      const devices = current.devices ?? lingyunDeviceTypes.map((deviceType) => defaultLingyunDevice(deviceType, lingyunDeviceIdentity(current)));
       return {
-        ...normalized,
-        devices: normalized.devices?.map((device) => (
-          device.type === type ? resolveLingyunDevice(type, { ...device, ...patch }) : device
+        ...current,
+        devices: devices.map((device) => (
+          device.type === type ? { ...device, ...patch, type } : device
         )),
       };
     });
+  };
+  const toggleDeviceTopics = (type: LingyunDeviceType) => {
+    setExpandedTopicTypes((current) => ({ ...current, [type]: !current[type] }));
   };
 
   const saveLingyun = async () => {
@@ -3334,17 +3592,17 @@ function LingyunSettingsManagement({
           <div className="screen-lingyun-settings">
             <div className="screen-settings-form-grid screen-settings-form-grid--lingyun-main">
               <label className="screen-settings-toggle-row">
-                <span>{normalizedLingyun.enabled ? t.lingyunEnabled : t.lingyunDisabled}</span>
+                <span>{draftLingyunWithRuntimeLocation.enabled ? t.lingyunEnabled : t.lingyunDisabled}</span>
                 <input
                   type="checkbox"
-                  checked={normalizedLingyun.enabled}
+                  checked={draftLingyunWithRuntimeLocation.enabled}
                   onChange={(event) => updateLingyun({ enabled: event.target.checked })}
                 />
               </label>
               <label>
                 <span>{t.lingyunBroker}</span>
                 <input
-                  value={normalizedLingyun.broker ?? ""}
+                  value={draftLingyunWithRuntimeLocation.broker ?? ""}
                   placeholder="tcp://127.0.0.1:1883"
                   onChange={(event) => updateLingyun({ broker: event.target.value })}
                 />
@@ -3352,14 +3610,14 @@ function LingyunSettingsManagement({
               <label>
                 <span>{t.lingyunProviderCode}</span>
                 <input
-                  value={normalizedLingyun.providerCode ?? ""}
+                  value={draftLingyunWithRuntimeLocation.providerCode ?? ""}
                   maxLength={64}
                   onChange={(event) => updateLingyun({ providerCode: event.target.value.trim() })}
                 />
               </label>
               <label>
                 <span>{t.lingyunClientId}</span>
-                <LingyunStaticValue value={normalizedLingyun.clientId ?? "-"} />
+                <LingyunStaticValue value={draftLingyunWithRuntimeLocation.clientId ?? "-"} />
               </label>
               <label>
                 <span>{t.lingyunSoftwareSN}</span>
@@ -3368,7 +3626,7 @@ function LingyunSettingsManagement({
               <label>
                 <span>{t.lingyunUsername}</span>
                 <input
-                  value={normalizedLingyun.username ?? ""}
+                  value={draftLingyunWithRuntimeLocation.username ?? ""}
                   maxLength={64}
                   onChange={(event) => updateLingyun({ username: event.target.value })}
                 />
@@ -3376,7 +3634,7 @@ function LingyunSettingsManagement({
               <label>
                 <span>{t.lingyunPassword}</span>
                 <input
-                  value={normalizedLingyun.password ?? ""}
+                  value={draftLingyunWithRuntimeLocation.password ?? ""}
                   maxLength={128}
                   onChange={(event) => updateLingyun({ password: event.target.value })}
                 />
@@ -3388,34 +3646,34 @@ function LingyunSettingsManagement({
               <label>
                 <span>{t.lingyunPublishInterval}</span>
                 <input
-                  value={String(normalizedLingyun.publishMinIntervalSeconds ?? 1)}
+                  value={numberInputValue(draftLingyunWithRuntimeLocation.publishMinIntervalSeconds)}
                   type="text"
                   inputMode="numeric"
                   data-keyboard="digits"
                   pattern="[0-9]*"
-                  onChange={(event) => updateLingyun({ publishMinIntervalSeconds: parseNumberInput(event.target.value.replace(/\D/g, "").slice(0, 4)) })}
+                  onChange={(event) => updateLingyun({ publishMinIntervalSeconds: parseOptionalNumberInput(event.target.value.replace(/\D/g, "").slice(0, 4)) })}
                 />
               </label>
               <label>
                 <span>{t.lingyunRegisterInterval}</span>
                 <input
-                  value={String(normalizedLingyun.registerIntervalSeconds ?? 300)}
+                  value={numberInputValue(draftLingyunWithRuntimeLocation.registerIntervalSeconds)}
                   type="text"
                   inputMode="numeric"
                   data-keyboard="digits"
                   pattern="[0-9]*"
-                  onChange={(event) => updateLingyun({ registerIntervalSeconds: parseNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })}
+                  onChange={(event) => updateLingyun({ registerIntervalSeconds: parseOptionalNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })}
                 />
               </label>
               <label>
                 <span>{t.lingyunStatusInterval}</span>
                 <input
-                  value={String(normalizedLingyun.statusIntervalSeconds ?? 10)}
+                  value={numberInputValue(draftLingyunWithRuntimeLocation.statusIntervalSeconds)}
                   type="text"
                   inputMode="numeric"
                   data-keyboard="digits"
                   pattern="[0-9]*"
-                  onChange={(event) => updateLingyun({ statusIntervalSeconds: parseNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })}
+                  onChange={(event) => updateLingyun({ statusIntervalSeconds: parseOptionalNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })}
                 />
               </label>
             </div>
@@ -3427,7 +3685,7 @@ function LingyunSettingsManagement({
               </div>
               <div className="screen-info-block">
                 <span>{t.lingyunBroker}</span>
-                <strong title={status?.lingyun?.broker || normalizedLingyun.broker || "-"}>{status?.lingyun?.broker || normalizedLingyun.broker || "-"}</strong>
+                <strong title={status?.lingyun?.broker || draftLingyunWithRuntimeLocation.broker || "-"}>{status?.lingyun?.broker || draftLingyunWithRuntimeLocation.broker || "-"}</strong>
               </div>
               <div className="screen-info-block">
                 <span>{t.lingyunLastError}</span>
@@ -3446,9 +3704,12 @@ function LingyunSettingsManagement({
           </header>
           <div className="screen-lingyun-device-grid screen-lingyun-device-grid--page">
             {lingyunDeviceTypes.map((type) => {
-              const device = normalizedLingyun.devices?.find((item) => item.type === type) ?? defaultLingyunDevice(type);
+              const device = draftLingyunWithRuntimeLocation.devices?.find((item) => item.type === type) ?? defaultLingyunDevice(type);
               const runtime = lingyunDeviceRuntime(status?.lingyun, type);
-              const topics = lingyunDeviceTopics(normalizedLingyun, device, t);
+              const topics = lingyunDeviceTopics(draftLingyunWithRuntimeLocation, device, t);
+              const isInterference = type === "ifr";
+              const topicsExpanded = Boolean(expandedTopicTypes[type]);
+              const topicsId = `lingyun-topics-${type}`;
               return (
                 <article key={type} className="screen-lingyun-device">
                   <header>
@@ -3483,9 +3744,9 @@ function LingyunSettingsManagement({
                     <label>
                       <span>{t.altitude}</span>
                       <input
-                        value={String(device.deviceAltitude ?? 0)}
+                        value={numberInputValue(device.deviceAltitude)}
                         inputMode="decimal"
-                        onChange={(event) => updateLingyunDevice(type, { deviceAltitude: parseNumberInput(event.target.value) })}
+                        onChange={(event) => updateLingyunDevice(type, { deviceAltitude: parseOptionalNumberInput(event.target.value) })}
                       />
                     </label>
                     <label>
@@ -3498,29 +3759,48 @@ function LingyunSettingsManagement({
                         <option value="1">{t.lingyunInstallModeMobile}</option>
                       </select>
                     </label>
-                    <label>
-                      <span>{t.lingyunDetectionRange}</span>
-                      <input
-                        value={String(device.detectionRange ?? defaultLingyunDetectionRange(type))}
-                        inputMode="numeric"
-                        onChange={(event) => updateLingyunDevice(type, { detectionRange: parseNumberInput(event.target.value) })}
-                      />
-                    </label>
-                    <label>
-                      <span>{t.lingyunBandWidth}</span>
-                      <input
-                        value={device.bandWidth ?? defaultLingyunBandWidth}
-                        maxLength={16}
-                        onChange={(event) => updateLingyunDevice(type, { bandWidth: event.target.value })}
-                      />
-                    </label>
-                    <label>
-                      <span>{t.lingyunDetectionFrequency}</span>
-                      <input
-                        value={(device.detectionFrequency ?? []).join(",")}
-                        onChange={(event) => updateLingyunDevice(type, { detectionFrequency: splitCSVInput(event.target.value) })}
-                      />
-                    </label>
+                    {isInterference ? (
+                      <>
+                        <label>
+                          <span>{t.lingyunCountermeasureRange}</span>
+                          <input
+                            value={numberInputValue(device.countermeasureRange)}
+                            inputMode="numeric"
+                            onChange={(event) => updateLingyunDevice(type, { countermeasureRange: parseOptionalNumberInput(event.target.value) })}
+                          />
+                        </label>
+                        <label>
+                          <span>{t.lingyunInterferenceBands}</span>
+                          <LingyunStaticValue value={interferenceBands.join(", ") || "-"} />
+                        </label>
+                      </>
+                    ) : (
+                      <>
+                        <label>
+                          <span>{t.lingyunDetectionRange}</span>
+                          <input
+                            value={numberInputValue(device.detectionRange)}
+                            inputMode="numeric"
+                            onChange={(event) => updateLingyunDevice(type, { detectionRange: parseOptionalNumberInput(event.target.value) })}
+                          />
+                        </label>
+                        <label>
+                          <span>{t.lingyunBandWidth}</span>
+                          <input
+                            value={device.bandWidth ?? defaultLingyunBandWidth}
+                            maxLength={16}
+                            onChange={(event) => updateLingyunDevice(type, { bandWidth: event.target.value })}
+                          />
+                        </label>
+                        <label>
+                          <span>{t.lingyunDetectionFrequency}</span>
+                          <input
+                            value={(device.detectionFrequency ?? []).join(",")}
+                            onChange={(event) => updateLingyunDevice(type, { detectionFrequency: splitCSVInput(event.target.value) })}
+                          />
+                        </label>
+                      </>
+                    )}
                     <label>
                       <span>{t.lingyunDevModel}</span>
                       <input
@@ -3538,15 +3818,28 @@ function LingyunSettingsManagement({
                       />
                     </label>
                   </div>
-                  <div className="screen-lingyun-topic-list" aria-label={t.lingyunTopics}>
-                    <strong>{t.lingyunTopics}</strong>
-                    {topics.map((topic) => (
-                      <div key={topic.label} className="screen-lingyun-topic-row">
-                        <span>{topic.label}</span>
-                        <code title={topic.value}>{topic.value}</code>
-                      </div>
-                    ))}
+                  <div className="screen-lingyun-topic-summary">
+                    <span>{t.lingyunTopics}</span>
+                    <button
+                      type="button"
+                      aria-expanded={topicsExpanded}
+                      aria-controls={topicsId}
+                      onClick={() => toggleDeviceTopics(type)}
+                    >
+                      <ChevronDown aria-hidden="true" className={topicsExpanded ? "screen-lingyun-topic-toggle-icon screen-lingyun-topic-toggle-icon--open" : "screen-lingyun-topic-toggle-icon"} />
+                      <span>{topicsExpanded ? t.lingyunHideTopics : t.lingyunShowTopics}</span>
+                    </button>
                   </div>
+                  {topicsExpanded ? (
+                    <div id={topicsId} className="screen-lingyun-topic-list" aria-label={t.lingyunTopics}>
+                      {topics.map((topic) => (
+                        <div key={topic.label} className="screen-lingyun-topic-row">
+                          <span>{topic.label}</span>
+                          <code title={topic.value}>{topic.value}</code>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               );
             })}
@@ -3583,18 +3876,199 @@ function LingyunStaticValue({ value }: { value: string | number }) {
   );
 }
 
+function copyTextFallback(text: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+  try {
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+async function copyTextToClipboard(text: string) {
+  if (!text) {
+    return false;
+  }
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the textarea fallback for restricted browser contexts.
+    }
+  }
+  return copyTextFallback(text);
+}
+
+function licenseStatusTone(license: LicenseInfo | null) {
+  if (license?.valid) {
+    return "valid";
+  }
+  if (license?.code === "device_sn_missing") {
+    return "warning";
+  }
+  return "invalid";
+}
+
+function formatLicenseRemaining(license: LicenseInfo | null, t: Record<string, string>) {
+  if (!license) {
+    return "-";
+  }
+  if (license.isPermanent) {
+    return t.licensePermanent;
+  }
+  if (typeof license.remainingDays === "number") {
+    return t.licenseRemainingDays.replace("{days}", String(license.remainingDays));
+  }
+  return "-";
+}
+
+function formatLicenseMessage(code: string | undefined, t: Record<string, string>) {
+  switch (code) {
+    case "device_sn_missing":
+      return t.licenseErrorDeviceSNMissing;
+    case "license_not_found":
+      return t.licenseErrorNotFound;
+    case "license_expired":
+      return t.licenseErrorExpired;
+    case "license_sn_mismatch":
+      return t.licenseErrorSNMismatch;
+    case "license_invalid_signature":
+      return t.licenseErrorInvalidSignature;
+    case "license_invalid":
+      return t.licenseErrorInvalid;
+    case "license_unavailable":
+      return t.licenseErrorUnavailable;
+    case "license_required":
+      return t.licenseRequired;
+    case "invalid_request":
+      return t.licenseErrorUploadInvalid;
+    case "license_verification_failed":
+    default:
+      return t.licenseErrorVerificationFailed;
+  }
+}
+
+function isLicenseUploadError(error: unknown): error is LicenseUploadError {
+  return error instanceof Error && ("code" in error || "license" in error);
+}
+
 function AboutManagement({
   t,
-  userSettings,
-  settingsLoaded,
+  locale,
+  licenseInfo,
   deviceLocation,
+  onLicenseInfoChange,
 }: {
   t: Record<string, string>;
-  userSettings: UserSettings;
-  settingsLoaded: boolean;
+  locale: Locale;
+  licenseInfo: LicenseInfo | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
+  onLicenseInfoChange: (license: LicenseInfo | null) => void;
 }) {
-  const softwareSN = settingsLoaded ? lingyunDeviceIdentity(resolveLingyunSettings(userSettings.lingyun)) || "-" : t.waiting;
+  const [licenseLoading, setLicenseLoading] = useState(false);
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [licenseFile, setLicenseFile] = useState<File | null>(null);
+  const [licenseFileInputKey, setLicenseFileInputKey] = useState(0);
+  const [licenseMessage, setLicenseMessage] = useState("");
+  const [licenseMessageTone, setLicenseMessageTone] = useState<"valid" | "warning" | "invalid">("invalid");
+  const [copyDone, setCopyDone] = useState(false);
+
+  const refreshLicense = useCallback(async (clearMessage = false) => {
+    setLicenseLoading(true);
+    if (clearMessage) {
+      setLicenseMessage("");
+    }
+    try {
+      const response = await getLicenseStatus();
+      onLicenseInfoChange(response);
+    } catch (error) {
+      onLicenseInfoChange({
+        isPermanent: false,
+        valid: false,
+        code: "license_unavailable",
+      });
+      setLicenseMessageTone("invalid");
+      setLicenseMessage(t.licenseStatusFailed);
+    } finally {
+      setLicenseLoading(false);
+    }
+  }, [onLicenseInfoChange, t.licenseStatusFailed]);
+
+  useEffect(() => {
+    void refreshLicense();
+  }, [refreshLicense]);
+
+  const handleLicenseFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.currentTarget.files?.[0] ?? null;
+    setLicenseFile(selectedFile);
+    setLicenseMessage("");
+  };
+
+  const handleUploadLicense = async () => {
+    if (!licenseFile) {
+      setLicenseMessageTone("invalid");
+      setLicenseMessage(t.licenseNoFile);
+      return;
+    }
+    setLicenseBusy(true);
+    setLicenseMessage("");
+    try {
+      const response = await uploadLicense(licenseFile);
+      onLicenseInfoChange(response.license);
+      setLicenseFile(null);
+      setLicenseFileInputKey((value) => value + 1);
+      setLicenseMessageTone("valid");
+      setLicenseMessage(t.licenseUploaded);
+    } catch (error) {
+      setLicenseMessageTone("invalid");
+      if (isLicenseUploadError(error)) {
+        if (error.license) {
+          onLicenseInfoChange(error.license);
+        }
+        setLicenseMessage(formatLicenseMessage(error.code, t));
+      } else {
+        setLicenseMessage(t.licenseUploadFailed);
+      }
+    } finally {
+      setLicenseBusy(false);
+    }
+  };
+
+  const copyDeviceSN = async () => {
+    const deviceSN = licenseInfo?.deviceSn ?? "";
+    if (!deviceSN) {
+      return;
+    }
+    if (await copyTextToClipboard(deviceSN)) {
+      setCopyDone(true);
+      window.setTimeout(() => setCopyDone(false), 1500);
+    }
+  };
+
+  const softwareSN = licenseLoading && !licenseInfo ? t.waiting : licenseInfo?.deviceSn || t.licenseNoDeviceSN;
+  const statusTone = licenseStatusTone(licenseInfo);
+  const statusText = licenseLoading && !licenseInfo
+    ? t.licenseLoading
+    : licenseInfo?.valid
+      ? t.licenseValid
+      : t.licenseInvalid;
+  const licenseMessageText = licenseMessage || (licenseInfo && !licenseInfo.valid ? formatLicenseMessage(licenseInfo.code, t) : "");
+  const visibleLicenseMessageTone = licenseMessage ? licenseMessageTone : statusTone;
+  const issuedAt = formatFullTime(licenseInfo?.issuedAt, locale);
+  const expiresAt = formatFullTime(licenseInfo?.expiresAt, locale);
+  const remaining = formatLicenseRemaining(licenseInfo, t);
+  const selectedLicenseFile = licenseFile?.name || t.licenseSelectFile;
   const locationText = deviceLocation?.valid && validMapPoint(deviceLocation.point)
     ? formatPoint(deviceLocation.point)
     : t.locationUnavailable;
@@ -3628,14 +4102,78 @@ function AboutManagement({
             <strong>Drone Management</strong>
           </div>
           <div className="screen-info-block">
-            <span>{t.lingyunSoftwareSN}</span>
-            <strong title={softwareSN}>{softwareSN}</strong>
-          </div>
-          <div className="screen-info-block">
             <span>{t.currentDeviceLocation}</span>
             <strong title={locationText}>{locationText}</strong>
           </div>
         </div>
+      </section>
+
+      <section className="screen-settings-section screen-about-section screen-about-license">
+        <header>
+          <span className="screen-settings-section__icon">
+            <ShieldCheck size={15} aria-hidden="true" />
+          </span>
+          <span className="screen-settings-section__heading">
+            <strong>{t.licenseStatus}</strong>
+            <span>{t.softwareIdentityHint}</span>
+          </span>
+        </header>
+
+        <div className="screen-license-toolbar">
+          <span className={`screen-license-status screen-license-status--${statusTone}`}>
+            {licenseInfo?.valid ? <ShieldCheck size={15} aria-hidden="true" /> : <ShieldAlert size={15} aria-hidden="true" />}
+            <strong>{statusText}</strong>
+          </span>
+          <button type="button" onClick={() => void refreshLicense(true)} disabled={licenseLoading || licenseBusy}>
+            {licenseLoading ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+            <span>{t.licenseRefresh}</span>
+          </button>
+        </div>
+
+        <div className="screen-info-grid screen-about-grid screen-about-grid--license">
+          <div className="screen-info-block screen-info-block--wide">
+            <span>{t.licenseDeviceSN}</span>
+            <div className="screen-license-sn">
+              <strong title={softwareSN}>{softwareSN}</strong>
+              {licenseInfo?.deviceSn ? (
+                <button
+                  type="button"
+                  title={copyDone ? t.copied : t.copyLicenseDeviceSN}
+                  aria-label={copyDone ? t.copied : t.copyLicenseDeviceSN}
+                  onClick={() => void copyDeviceSN()}
+                >
+                  {copyDone ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="screen-info-block">
+            <span>{t.licenseRemaining}</span>
+            <strong title={remaining}>{remaining}</strong>
+          </div>
+          <div className="screen-info-block">
+            <span>{t.licenseIssuedAt}</span>
+            <strong title={issuedAt}>{issuedAt}</strong>
+          </div>
+          <div className="screen-info-block">
+            <span>{t.licenseExpiresAt}</span>
+            <strong title={expiresAt}>{expiresAt}</strong>
+          </div>
+        </div>
+
+        <div className="screen-license-upload">
+          <label className={licenseFile ? "screen-license-file screen-license-file--ready" : "screen-license-file"}>
+            <input key={licenseFileInputKey} type="file" accept=".lic" disabled={licenseBusy} onChange={handleLicenseFileChange} />
+            <span>{t.licenseFile}</span>
+            <strong title={selectedLicenseFile}>{selectedLicenseFile}</strong>
+          </label>
+          <button type="button" disabled={licenseBusy || !licenseFile} onClick={() => void handleUploadLicense()}>
+            {licenseBusy ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <HardDriveUpload size={14} aria-hidden="true" />}
+            <span>{t.licenseUpload}</span>
+          </button>
+        </div>
+
+        {licenseMessageText ? <div className={`screen-license-message screen-license-message--${visibleLicenseMessageTone}`}>{licenseMessageText}</div> : null}
       </section>
     </div>
   );
@@ -3644,11 +4182,13 @@ function AboutManagement({
 function IntrusionsManagement({
   t,
   locale,
+  theme,
   userSettings,
   onSaveUserSettings,
 }: {
   t: Record<string, string>;
   locale: Locale;
+  theme: ThemeColorOption;
   userSettings: UserSettings;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
 }) {
@@ -4005,6 +4545,7 @@ function IntrusionsManagement({
         <IntrusionMapModal
           record={mapRecord}
           locale={locale}
+          theme={theme}
           t={t}
           userSettings={userSettings}
           onClose={() => setMapRecord(null)}
@@ -4756,12 +5297,14 @@ function FPVVideoRecordModal({
 function IntrusionMapModal({
   record,
   locale,
+  theme,
   t,
   userSettings,
   onClose,
 }: {
   record: IntrusionRecord;
   locale: Locale;
+  theme: ThemeColorOption;
   t: Record<string, string>;
   userSettings: UserSettings;
   onClose: () => void;
@@ -4782,11 +5325,12 @@ function IntrusionMapModal({
           <p>{record.serial || record.targetId || "-"}</p>
         </header>
         <div className="screen-intrusion-map-modal__map">
-          <ScreenMapLegend t={t} />
+          <ScreenMapLegend t={t} theme={theme} />
           <ScreenMap
             positions={[target]}
             selectedPosition={target}
             deviceLocation={deviceLocation}
+            theme={theme}
             whitelist={userSettings.whitelist}
             onSelectPosition={() => undefined}
             t={t}
@@ -5836,10 +6380,10 @@ function renderWarningZone(layer: L.LayerGroup, zone: WarningZone, locale: Local
   }
   L.circle([zone.center.latitude, zone.center.longitude], {
     radius: zone.radiusMeters,
-    color: "#f97316",
+    color: "#f59e0b",
     weight: 2,
     opacity: 0.96,
-    fillColor: "#f97316",
+    fillColor: "#f59e0b",
     fillOpacity: 0.12,
     dashArray: "7 7",
     pane: "screenTrajectories",
@@ -5902,9 +6446,9 @@ function renderHomeMarker(
 
   L.circleMarker([target.home.latitude, target.home.longitude], {
     radius: selected ? 6 : 4,
-    color: "#7cdb7a",
+    color: "#7dd3a7",
     weight: 2,
-    fillColor: "#06130a",
+    fillColor: "#061013",
     fillOpacity: 0.92,
     pane: selected ? "screenSelectedMarkers" : "screenMarkers",
   })
@@ -5924,13 +6468,14 @@ function renderTrajectory(
   selected: boolean,
   onSelectPosition: (target: ScreenPositionTarget) => void,
   t: Record<string, string>,
+  theme: ThemeColorOption,
 ) {
   const points = toTrackLatLngs(kind === "drone" ? target.droneTrajectory : target.pilotTrajectory);
   if (points.length < 2) {
     return;
   }
 
-  const color = kind === "drone" ? droneTrackColor : pilotTrackColor;
+  const color = kind === "drone" ? theme.trackColor : pilotTrackColor;
   L.polyline(points, {
     color,
     weight: selected ? 4 : 2.5,
@@ -6272,8 +6817,9 @@ function defaultLingyunDevice(type: LingyunDeviceType, deviceIdentity = ""): Lin
     aoa: "Drone Management AOA",
     dcd: "Drone Management 协议破解",
     rid: "Drone Management RemoteID",
+    ifr: "Drone Management 干扰设备",
   };
-  return {
+  const device: LingyunDeviceSettings = {
     type,
     enabled: true,
     deviceId: deviceIdentity,
@@ -6296,6 +6842,16 @@ function defaultLingyunDevice(type: LingyunDeviceType, deviceIdentity = ""): Lin
       instLoc: "",
     },
   };
+  if (type === "ifr") {
+    device.countermeasureRange = defaultLingyunCountermeasureRange();
+    device.verticalCoverageStartAngle = -90;
+    device.verticalCoverageEndAngle = 90;
+    device.bands = defaultLingyunInterferenceBands();
+    device.ifrTypes = [0, 1, 2];
+    device.antennaType = 1;
+    device.activeAntennaType = 1;
+  }
+  return device;
 }
 
 function resolveLingyunSettings(settings?: UserSettings["lingyun"] | null): NonNullable<UserSettings["lingyun"]> {
@@ -6332,9 +6888,26 @@ function resolveLingyunSettingsWithDeviceLocation(
   };
 }
 
+function lingyunSettingsWithRuntimeLocation(
+  settings: NonNullable<UserSettings["lingyun"]>,
+  deviceLocation: ScreenDeviceLocationResponse | null,
+): NonNullable<UserSettings["lingyun"]> {
+  if (!deviceLocation?.valid || !validMapPoint(deviceLocation.point)) {
+    return settings;
+  }
+  return {
+    ...settings,
+    devices: settings.devices?.map((device) => ({
+      ...device,
+      deviceLongitude: deviceLocation.point!.longitude,
+      deviceLatitude: deviceLocation.point!.latitude,
+    })),
+  };
+}
+
 function resolveLingyunDevice(type: LingyunDeviceType, device?: LingyunDeviceSettings, deviceIdentity = ""): LingyunDeviceSettings {
   const defaults = defaultLingyunDevice(type, deviceIdentity);
-  return {
+  const resolved: LingyunDeviceSettings = {
     ...defaults,
     ...device,
     type,
@@ -6353,6 +6926,16 @@ function resolveLingyunDevice(type: LingyunDeviceType, device?: LingyunDeviceSet
       devSN: device?.deviceSpec?.devSN?.trim() || defaults.deviceSpec?.devSN,
     },
   };
+  if (type === "ifr") {
+    resolved.countermeasureRange = resolveLingyunCountermeasureRange(device?.countermeasureRange, defaults.countermeasureRange ?? defaultLingyunCountermeasureRange());
+    resolved.verticalCoverageStartAngle = finiteNumber(device?.verticalCoverageStartAngle, defaults.verticalCoverageStartAngle ?? -90);
+    resolved.verticalCoverageEndAngle = finiteNumber(device?.verticalCoverageEndAngle, defaults.verticalCoverageEndAngle ?? 90);
+    resolved.bands = resolveLingyunBands(device?.bands, defaults.bands ?? defaultLingyunInterferenceBands());
+    resolved.ifrTypes = resolveLingyunInterferenceTypes(device?.ifrTypes, defaults.ifrTypes ?? [0, 1, 2]);
+    resolved.antennaType = lingyunAntennaType(device?.antennaType, defaults.antennaType ?? 1);
+    resolved.activeAntennaType = lingyunActiveAntennaType(device?.activeAntennaType, defaults.activeAntennaType ?? 1);
+  }
+  return resolved;
 }
 
 function lingyunDeviceIdentity(settings?: UserSettings["lingyun"] | null) {
@@ -6391,6 +6974,8 @@ function lingyunDeviceLabel(type: LingyunDeviceType, t: Record<string, string>) 
       return t.lingyunDCD;
     case "rid":
       return t.lingyunRID;
+    case "ifr":
+      return t.lingyunIFR;
   }
 }
 
@@ -6402,6 +6987,8 @@ function lingyunDeviceAbbr(type: LingyunDeviceSettings["type"]) {
       return "dcd";
     case "rid":
       return "rid";
+    case "ifr":
+      return "ifr";
     default:
       return String(type || "{abbr}");
   }
@@ -6416,13 +7003,16 @@ function lingyunDeviceTopics(
   const abbr = lingyunDeviceAbbr(device.type);
   const deviceId = device.deviceId?.trim() || "{deviceId}";
   const topic = (name: string) => `bridge/${providerCode}/${name}/${abbr}/${deviceId}`;
-  return [
+  const topics = [
     { label: t.lingyunRegisterTopic, value: topic("device") },
     { label: t.lingyunStatusTopic, value: topic("device_state") },
-    { label: t.lingyunDataTopic, value: topic("device_data") },
     { label: t.lingyunControlTopic, value: topic("device_control") },
     { label: t.lingyunControlRespTopic, value: topic("device_control_resp") },
   ];
+  if (device.type !== "ifr") {
+    topics.splice(2, 0, { label: t.lingyunDataTopic, value: topic("device_data") });
+  }
+  return topics;
 }
 
 function lingyunStatusLabel(status: ScreenRuntimeStatus["lingyun"] | undefined, t: Record<string, string>) {
@@ -6443,6 +7033,9 @@ function lingyunDeviceStatusLabel(status: NonNullable<ReturnType<typeof lingyunD
   if (!status.enabled) {
     return t.disabled;
   }
+  if (status.type === "ifr") {
+    return status.workState === 1 ? t.lingyunInterfering : t.lingyunIdle;
+  }
   if (!status.reportingEnabled) {
     return t.lingyunReportingStopped;
   }
@@ -6452,6 +7045,18 @@ function lingyunDeviceStatusLabel(status: NonNullable<ReturnType<typeof lingyunD
 function parseNumberInput(value: string) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseOptionalNumberInput(value: string) {
+  if (value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function numberInputValue(value: number | undefined) {
+  return Number.isFinite(value) ? String(value) : "";
 }
 
 function splitCSVInput(value: string) {
@@ -6467,11 +7072,39 @@ function lingyunInstallMode(value: number | undefined, fallback: number) {
 }
 
 function defaultLingyunDetectionFrequency(type: LingyunDeviceType) {
+  if (type === "ifr") {
+    return [];
+  }
   return type === "aoa" ? ["400MHz-8GHz"] : ["2.4GHz", "5.8GHz"];
 }
 
 function defaultLingyunDetectionRange(type: LingyunDeviceType) {
+  if (type === "ifr") {
+    return 1000;
+  }
   return type === "rid" ? 3000 : 5000;
+}
+
+function defaultLingyunCountermeasureRange() {
+  return 3000;
+}
+
+function defaultLingyunInterferenceBands() {
+  return ["433M", "915M", "1.2G", "1.4G", "1.5G", "2.4G", "5.2G", "5.8G"];
+}
+
+function lingyunInterferenceBandsForDisplay(state: ScreenStrikeState | null, settings: UserSettings) {
+  const customLabels = normalizeScreenStrikeChannelLabels(settings.screenStrikeChannelLabels);
+  const channels = state?.channels ?? [];
+  const channelBands = channels
+    .map((channel, index) => channel.reserved ? "" : formatStrikeChannelLabel(channel, index, customLabels))
+    .map((band) => band.trim())
+    .filter(Boolean);
+  if (channelBands.length > 0) {
+    return channelBands;
+  }
+  const configuredLabels = customLabels.map((label) => label.trim()).filter(Boolean);
+  return configuredLabels.length > 0 ? configuredLabels : defaultLingyunInterferenceBands();
 }
 
 function resolveLingyunDetectionRange(value: number | undefined, fallback: number) {
@@ -6487,6 +7120,33 @@ function resolveLingyunDetectionFrequency(type: LingyunDeviceType, values: strin
     return [...fallback];
   }
   return normalized;
+}
+
+function resolveLingyunCountermeasureRange(value: number | undefined, fallback: number) {
+  if (value === 1000 || !Number.isFinite(value) || Number(value) <= 0) {
+    return fallback;
+  }
+  return Number(value);
+}
+
+function resolveLingyunBands(values: string[] | undefined, fallback: string[]) {
+  const normalized = Array.isArray(values) ? values.map((item) => item.trim()).filter(Boolean) : [];
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function resolveLingyunInterferenceTypes(values: number[] | undefined, fallback: number[]) {
+  const normalized = Array.isArray(values)
+    ? values.filter((value) => Number.isInteger(value) && value >= 0 && value <= 2)
+    : [];
+  return normalized.length > 0 ? normalized : [...fallback];
+}
+
+function lingyunAntennaType(value: number | undefined, fallback: number) {
+  return value === 0 || value === 1 || value === 2 ? value : fallback;
+}
+
+function lingyunActiveAntennaType(value: number | undefined, fallback: number) {
+  return value === 0 || value === 1 ? value : fallback;
 }
 
 function legacyLingyunDetectionFrequency(type: LingyunDeviceType, values: string[]) {
@@ -6592,6 +7252,37 @@ function targetInsideWarningZone(target: ScreenPositionTarget, zone: WarningZone
   }
   const point = L.latLng(target.drone.latitude, target.drone.longitude);
   return point.distanceTo(L.latLng(zone.center.latitude, zone.center.longitude)) <= zone.radiusMeters;
+}
+
+function getThemeColorOption(value: ThemeColor) {
+  return themeColorOptions.find((option) => option.id === value) ?? defaultThemeColorOption;
+}
+
+function parseThemeColor(value: string | null): ThemeColor {
+  const option = themeColorOptions.find((item) => item.id === value);
+  return option?.id ?? defaultThemeColorOption.id;
+}
+
+function getStoredThemeColor() {
+  if (typeof window === "undefined") {
+    return defaultThemeColorOption.id;
+  }
+  try {
+    return parseThemeColor(window.localStorage.getItem(screenThemeColorStorageKey));
+  } catch {
+    return defaultThemeColorOption.id;
+  }
+}
+
+function persistThemeColor(value: ThemeColor) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(screenThemeColorStorageKey, value);
+  } catch {
+    // Ignore storage failures; the active in-memory theme still applies.
+  }
 }
 
 function getStoredSoundAlarmEnabled() {
@@ -7156,7 +7847,7 @@ async function createNavigationQRCode(
     margin: 1,
     width: 320,
     color: {
-      dark: "#06131f",
+      dark: "#061013",
       light: "#ffffff",
     },
   });
