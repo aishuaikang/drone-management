@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,7 @@ func (a *App) DeployDroneManagement(req DeployRequest) (DeployResult, error) {
 	if _, err := a.getSSHClient(); err != nil {
 		return DeployResult{}, err
 	}
+	webrtcHost := webRTCHostFromSSHHost(a.connectedSSHHost())
 
 	a.updateConfig(func(cfg *AppConfig) {
 		cfg.InstallDir = req.InstallDir
@@ -74,7 +76,7 @@ func (a *App) DeployDroneManagement(req DeployRequest) (DeployResult, error) {
 	a.emitProgress("deploy-progress", 1, "上传发布包", "上传完成", "success", 100, nil)
 
 	a.emitProgress("deploy-progress", 2, "安装服务", "正在安装并写入开机自启动", "running", 20, nil)
-	script := buildDeployScript(req, remotePackage, taskDir)
+	script := buildDeployScript(req, remotePackage, taskDir, webrtcHost)
 	output, err := a.runCommand(script)
 	if err != nil {
 		wrapped := fmt.Errorf("%w%s", err, commandOutputSuffix(output))
@@ -86,17 +88,35 @@ func (a *App) DeployDroneManagement(req DeployRequest) (DeployResult, error) {
 	return DeployResult{InstallDir: req.InstallDir, Message: "部署完成，服务已设置为开机自启动"}, nil
 }
 
-func buildDeployScript(req DeployRequest, remotePackage, taskDir string) string {
+func buildDeployScript(req DeployRequest, remotePackage, taskDir string, webrtcHost string) string {
 	return fmt.Sprintf(`set -eu
 REMOTE_PACKAGE=%s
 INSTALL_DIR=%s
 TASK_DIR=%s
+PREFERRED_WEBRTC_HOST=%s
 BINARY_NAME=drone-management
 SERVICE_NAME=drone-management.service
 API_PORT=18080
 SUDO=
 if [ "$(id -u)" != "0" ]; then
   SUDO=sudo
+fi
+detect_webrtc_host() {
+  if command -v ip >/dev/null 2>&1; then
+    detected="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')"
+    if [ -n "$detected" ]; then
+      echo "$detected"
+      return
+    fi
+  fi
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+WEBRTC_HOST="$PREFERRED_WEBRTC_HOST"
+if [ -z "$WEBRTC_HOST" ]; then
+  WEBRTC_HOST="$(detect_webrtc_host)"
+fi
+if [ -z "$WEBRTC_HOST" ]; then
+  WEBRTC_HOST=0.0.0.0
 fi
 cleanup() {
   rm -rf "$TASK_DIR"
@@ -196,6 +216,9 @@ Environment=API_LICENSE_PATH=$INSTALL_DIR/license.lic
 Environment=API_OFFLINE_MAP_PATH=$INSTALL_DIR/static/map
 Environment=API_FPV_VIDEO_MEDIAMTX_PATH=$INSTALL_DIR/MediaMTX
 Environment=API_FPV_VIDEO_MEDIAMTX_WORK_DIR=$INSTALL_DIR/tmp/fpv-video
+Environment=API_FPV_VIDEO_WEBRTC_HOST=$WEBRTC_HOST
+Environment=API_FPV_VIDEO_WEBRTC_PORT=18889
+Environment=API_FPV_VIDEO_WEBRTC_UDP_PORT=18189
 Environment=API_FPV_VIDEO_RECORD_DIR=$INSTALL_DIR/data/fpv-videos
 ExecStart=$INSTALL_DIR/drone-management
 Restart=always
@@ -219,7 +242,26 @@ echo "Service status: $(systemctl is-active "$SERVICE_NAME")"
 `, shellQuote(remotePackage),
 		shellQuote(req.InstallDir),
 		shellQuote(taskDir),
+		shellQuote(webrtcHost),
 	)
+}
+
+func (a *App) connectedSSHHost() string {
+	a.sshMu.Lock()
+	defer a.sshMu.Unlock()
+	if a.conn == nil {
+		return ""
+	}
+	return a.conn.config.Host
+}
+
+func webRTCHostFromSSHHost(host string) string {
+	host = strings.TrimSpace(host)
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return host
 }
 
 func validateReleasePackagePath(path string) error {

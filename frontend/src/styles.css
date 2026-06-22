@@ -643,6 +643,7 @@ button {
 
 .screen-info-list__counts {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
 }
@@ -702,13 +703,28 @@ button {
 }
 
 .screen-stream-error {
+  display: inline-flex;
+  max-width: min(260px, 42vw);
   min-width: 24px;
   height: 24px;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
   border-color: rgba(255, 107, 107, 0.42);
   color: #fecdd3;
   background: rgba(255, 107, 107, 0.14);
   font-family: inherit;
   font-weight: 900;
+}
+
+.screen-stream-error strong {
+  min-width: 0;
+  overflow: hidden;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .screen-alarm-banner {
@@ -4744,8 +4760,12 @@ button.screen-position-card__point {
 }
 
 .screen-fpv-video-modal__overlay strong {
+  max-width: min(720px, calc(100% - 40px));
   font-size: 0.82em;
   font-weight: 850;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .screen-fpv-video-modal__overlay--error {

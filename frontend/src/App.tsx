@@ -325,6 +325,7 @@ const labels: Record<Locale, Record<string, string>> = {
     videoUnavailable: "未配置视频",
     videoBusy: "已有客户端正在查看视频",
     videoError: "视频流暂不可用",
+    videoSessionNotFound: "视频会话已失效，请重新打开视频",
     videoUnsupported: "当前浏览器不支持该视频流",
     play: "播放",
     pause: "暂停",
@@ -714,6 +715,7 @@ const labels: Record<Locale, Record<string, string>> = {
     videoUnavailable: "Video not configured",
     videoBusy: "Another client is viewing video",
     videoError: "Video stream unavailable",
+    videoSessionNotFound: "Video session expired. Reopen the video.",
     videoUnsupported: "This browser cannot play the stream",
     play: "Play",
     pause: "Pause",
@@ -1807,7 +1809,12 @@ export function App() {
                   </span>
                 </div>
                 <div className="screen-info-list__counts">
-                  {streamError ? <span className="screen-stream-error" title={streamError}>!</span> : null}
+                  {streamError ? (
+                    <span className="screen-stream-error" title={streamError}>
+                      <Signal size={12} aria-hidden="true" />
+                      <strong>{streamError}</strong>
+                    </span>
+                  ) : null}
                   {alarmTargetCount > 0 ? (
                     <span className="screen-alarm-count" title={`${t.activeAlarmTargets}: ${alarmTargetCount}`}>
                       <BellRing size={12} aria-hidden="true" />
@@ -6264,7 +6271,7 @@ function FPVVideoModal({
           body: localDescription.sdp,
         });
         if (!response.ok) {
-          throw new Error(await readTextOrStatus(response));
+          throw new Error(await readTextOrStatus(response, t.videoSessionNotFound));
         }
         const resourceURL = response.headers.get("Location") ?? "";
         if (cancelled) {
@@ -6302,7 +6309,7 @@ function FPVVideoModal({
         currentVideo.srcObject = null;
       }
     };
-  }, [source, t.videoError, target]);
+  }, [source, t.videoError, t.videoSessionNotFound, target]);
 
   if (!target) {
     return null;
@@ -8071,9 +8078,28 @@ function waitForICEGatheringComplete(peer: RTCPeerConnection, timeoutMs: number)
   });
 }
 
-async function readTextOrStatus(response: Response) {
+async function readTextOrStatus(response: Response, sessionNotFoundMessage: string) {
   const text = await response.text().catch(() => "");
-  return text.trim() || `请求失败: ${response.status}`;
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return `请求失败: ${response.status}`;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as { error?: unknown; message?: unknown };
+      const message = typeof record.message === "string" ? record.message : typeof record.error === "string" ? record.error : "";
+      if (message.trim()) {
+        if (message.trim().toLowerCase() === "session not found") {
+          return sessionNotFoundMessage || message.trim();
+        }
+        return message.trim();
+      }
+    }
+  } catch {
+    // Plain-text WHEP errors are displayed as-is.
+  }
+  return trimmed;
 }
 
 function formatTargetTime(value: string, locale: Locale) {
