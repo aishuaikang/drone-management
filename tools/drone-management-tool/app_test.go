@@ -35,7 +35,7 @@ func TestShellQuote(t *testing.T) {
 		want  string
 	}{
 		{name: "empty", input: "", want: "''"},
-		{name: "simple", input: "/opt/drone-management", want: "'/opt/drone-management'"},
+		{name: "simple", input: "/spbatc/drone-management", want: "'/spbatc/drone-management'"},
 		{name: "single quote", input: "/tmp/ask's/pkg.tar.gz", want: "'/tmp/ask'\\''s/pkg.tar.gz'"},
 	}
 	for _, tt := range tests {

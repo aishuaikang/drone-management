@@ -70,6 +70,7 @@ export interface ScreenRuntimeStatus {
   deviceTargetAddress: string;
   fpvVideo: FPVVideoStatus;
   lingyun: LingyunStatus;
+  serverTime: string;
 }
 
 export type LingyunDeviceType = "aoa" | "dcd" | "rid" | "ifr";

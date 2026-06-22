@@ -646,6 +646,7 @@ type ScreenRuntimeStatus struct {
 	DeviceTargetAddress string            `json:"deviceTargetAddress"`
 	FPVVideo            FPVVideoStatus    `json:"fpvVideo"`
 	Lingyun             LingyunStatus     `json:"lingyun"`
+	ServerTime          time.Time         `json:"serverTime"`
 }
 
 // LingyunStatus describes the Lingyun protocol runtime state.

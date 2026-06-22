@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultInstallDir = "/opt/drone-management"
+	defaultInstallDir = "/spbatc/drone-management"
 	defaultSSHPort    = 22
 )
 

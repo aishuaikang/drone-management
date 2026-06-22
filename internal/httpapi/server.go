@@ -2257,6 +2257,7 @@ func (s *Server) screenRuntimeStatus() model.ScreenRuntimeStatus {
 	status := model.ScreenRuntimeStatus{
 		DeviceTargetAddress: s.cfg.DeviceTargetAddress,
 		FPVVideo:            s.fpvVideoStatus(),
+		ServerTime:          time.Now(),
 	}
 	if s.position != nil {
 		status.Position = s.position.Status()

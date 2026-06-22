@@ -1,8 +1,8 @@
 package license
 
 import (
-	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,8 +12,6 @@ import (
 )
 
 const testDeviceSN = "drone-management-001A2B3C4D5E"
-const testLicensePublicKeyBase64 = "B89i5BRmOubveVj7N+fd5IVMlVBwyivxAIQhJZsKi3Y="
-const testLicensePrivateKeyBase64 = "Fb4+lhNNk2IaAIv0ocXZr/nKjvYnrCjfeG0Ihd/whdMHz2LkFGY65u95WPs3593khUyVUHDKK/EAhCElmwqLdg=="
 
 func TestStatusValidLicense(t *testing.T) {
 	now := time.Now().Add(-time.Hour)
@@ -115,9 +113,9 @@ func TestStatusRejectsExpiredLicense(t *testing.T) {
 		Customer:    "customer",
 		IsPermanent: false,
 	}
-	signature, err := signInfo(&info, testLicensePrivateKey(t))
+	signature, err := svc.signature(&info)
 	if err != nil {
-		t.Fatalf("signInfo() error = %v", err)
+		t.Fatalf("signature() error = %v", err)
 	}
 	info.Signature = signature
 	if err := os.WriteFile(path, encodedTestLicense(t, svc, info), 0o600); err != nil {
@@ -147,6 +145,38 @@ func TestGeneratePermanentLicense(t *testing.T) {
 	}
 	if !status.Valid || !status.IsPermanent || status.RemainingDays != -1 {
 		t.Fatalf("status = %#v, want permanent valid status", status)
+	}
+}
+
+func TestStatusAcceptsPlainBase64License(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "license.lic")
+	svc := newTestService(t, path, testDeviceSN)
+	info := Info{
+		DeviceSN:    testDeviceSN,
+		IssuedAt:    time.Now().Add(-time.Hour),
+		ExpiresAt:   time.Now().Add(time.Hour),
+		Customer:    "customer",
+		IsPermanent: false,
+	}
+	signature, err := svc.signature(&info)
+	if err != nil {
+		t.Fatalf("signature() error = %v", err)
+	}
+	info.Signature = signature
+	raw, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(base64Encode(raw)), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	status, err := svc.Status()
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.Valid || status.DeviceSN != testDeviceSN {
+		t.Fatalf("status = %#v, want valid plain base64 license", status)
 	}
 }
 
@@ -197,67 +227,20 @@ func TestActivateRejectsNilReader(t *testing.T) {
 
 func newTestService(t *testing.T, path string, deviceSN string) *Service {
 	t.Helper()
-	service, err := NewServiceWithPublicKey(path, func() (string, error) { return deviceSN, nil }, testLicensePublicKey(t))
+	service, err := NewServiceWithSecret(path, func() (string, error) { return deviceSN, nil }, defaultSecretKey)
 	if err != nil {
-		t.Fatalf("NewServiceWithPublicKey() error = %v", err)
+		t.Fatalf("NewServiceWithSecret() error = %v", err)
 	}
 	return service
 }
 
 func generateTestLicense(t *testing.T, svc *Service, deviceSN string, duration time.Duration, customer string, now time.Time) []byte {
 	t.Helper()
-	deviceSN = stringsTrim(deviceSN)
-	if deviceSN == "" {
-		t.Fatal("test license device SN is required")
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	info := &Info{
-		DeviceSN:    deviceSN,
-		IssuedAt:    now,
-		Customer:    customer,
-		IsPermanent: duration <= 0,
-	}
-	if info.IsPermanent {
-		info.ExpiresAt = now.AddDate(100, 0, 0)
-	} else {
-		info.ExpiresAt = now.Add(duration)
-	}
-	signature, err := signInfo(info, testLicensePrivateKey(t))
+	raw, err := svc.Generate(deviceSN, duration, customer, now)
 	if err != nil {
-		t.Fatalf("signInfo() error = %v", err)
-	}
-	info.Signature = signature
-	raw, err := svc.encode(info)
-	if err != nil {
-		t.Fatalf("encode() error = %v", err)
+		t.Fatalf("Generate() error = %v", err)
 	}
 	return raw
-}
-
-func testLicensePrivateKey(t *testing.T) ed25519.PrivateKey {
-	t.Helper()
-	raw, err := base64.StdEncoding.DecodeString(testLicensePrivateKeyBase64)
-	if err != nil {
-		t.Fatalf("DecodeString(private key) error = %v", err)
-	}
-	if len(raw) != ed25519.PrivateKeySize {
-		t.Fatalf("private key size = %d, want %d", len(raw), ed25519.PrivateKeySize)
-	}
-	return ed25519.PrivateKey(raw)
-}
-
-func testLicensePublicKey(t *testing.T) ed25519.PublicKey {
-	t.Helper()
-	raw, err := base64.StdEncoding.DecodeString(testLicensePublicKeyBase64)
-	if err != nil {
-		t.Fatalf("DecodeString(public key) error = %v", err)
-	}
-	if len(raw) != ed25519.PublicKeySize {
-		t.Fatalf("public key size = %d, want %d", len(raw), ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(raw)
 }
 
 func encodedTestLicense(t *testing.T, svc *Service, info Info) []byte {
@@ -267,4 +250,8 @@ func encodedTestLicense(t *testing.T, svc *Service, info Info) []byte {
 		t.Fatalf("encode() error = %v", err)
 	}
 	return raw
+}
+
+func base64Encode(raw []byte) string {
+	return base64.StdEncoding.EncodeToString(raw)
 }

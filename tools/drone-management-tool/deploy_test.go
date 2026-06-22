@@ -37,12 +37,15 @@ func TestBuildDeployScript(t *testing.T) {
 	t.Parallel()
 
 	script := buildDeployScript(
-		DeployRequest{InstallDir: "/opt/drone-management"},
+		DeployRequest{InstallDir: "/spbatc/drone-management"},
 		"/tmp/drone-management-tool/pkg.tar.gz",
 		"/tmp/drone-management-tool-1",
 	)
 	required := []string{
 		"drone-management.service",
+		"--warning=no-timestamp",
+		`[ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]`,
+		`mv "$INSTALL_DIR" "$BACKUP_PATH"`,
 		"API_ADDR=0.0.0.0:$API_PORT",
 		"API_LICENSE_PATH=$INSTALL_DIR/license.lic",
 		"API_FPV_VIDEO_MEDIAMTX_PATH=$INSTALL_DIR/MediaMTX",

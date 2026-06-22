@@ -23,7 +23,7 @@ import { api, onProgress } from "./wails";
 type Notice = { tone: "idle" | "success" | "error" | "loading"; message: string };
 type SSHForm = { host: string; port: number; user: string; password: string; rememberPassword: boolean };
 
-const defaultInstallDir = "/opt/drone-management";
+const defaultInstallDir = "/spbatc/drone-management";
 const installDirName = "drone-management";
 
 function messageOf(error: unknown) {

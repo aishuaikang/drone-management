@@ -100,11 +100,18 @@ package_target() {
     zip)
       (
         cd "$(dirname "$package_dir")"
-        zip -qr "$archive_path" "$(basename "$package_dir")"
+        COPYFILE_DISABLE=1 zip -X -qr "$archive_path" "$(basename "$package_dir")" \
+          -x "*/.DS_Store" "*/__MACOSX/*" "*/._*"
       )
       ;;
     tar.gz)
-      tar -C "$(dirname "$package_dir")" -czf "$archive_path" "$(basename "$package_dir")"
+      COPYFILE_DISABLE=1 tar \
+        --exclude ".DS_Store" \
+        --exclude "__MACOSX" \
+        --exclude "._*" \
+        -C "$(dirname "$package_dir")" \
+        -czf "$archive_path" \
+        "$(basename "$package_dir")"
       ;;
     *)
       echo "Unsupported package format: $format" >&2

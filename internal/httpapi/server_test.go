@@ -5,11 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -37,9 +34,6 @@ import (
 	"drone-management/internal/position"
 	"drone-management/internal/store"
 )
-
-const testLicensePublicKeyBase64 = "B89i5BRmOubveVj7N+fd5IVMlVBwyivxAIQhJZsKi3Y="
-const testLicensePrivateKeyBase64 = "Fb4+lhNNk2IaAIv0ocXZr/nKjvYnrCjfeG0Ihd/whdMHz2LkFGY65u95WPs3593khUyVUHDKK/EAhCElmwqLdg=="
 
 func TestScreenRoutes(t *testing.T) {
 	state := store.New(10, 10)
@@ -369,6 +363,9 @@ func TestScreenStatusIncludesFPVVideoPlaybackURL(t *testing.T) {
 	}
 	if !body.FPVVideo.Enabled {
 		t.Fatalf("fpv video should be enabled: %#v", body.FPVVideo)
+	}
+	if body.ServerTime.IsZero() {
+		t.Fatalf("server time should be included: %#v", body)
 	}
 	if body.FPVVideo.PlaybackURL != "/api/v1/screen/fpv-video/whep" || body.FPVVideo.PlaybackType != "whep" {
 		t.Fatalf("playback url = %q", body.FPVVideo.PlaybackURL)
@@ -1841,11 +1838,7 @@ func newTestServer(t *testing.T, state *store.Store) *Server {
 func newTestServerWithLicense(t *testing.T, path string, deviceSN string) *Server {
 	t.Helper()
 	s := newTestServer(t, store.New(10, 10))
-	licenseSvc, err := license.NewServiceWithPublicKey(path, func() (string, error) { return deviceSN, nil }, httpTestLicensePublicKey(t))
-	if err != nil {
-		t.Fatalf("NewServiceWithPublicKey() error = %v", err)
-	}
-	s.license = licenseSvc
+	s.license = license.NewService(path, func() (string, error) { return deviceSN, nil })
 	return s
 }
 
@@ -1880,10 +1873,7 @@ func newTestServerWithOfflineMap(t *testing.T, state *store.Store, mapPath strin
 
 func newValidTestLicenseService(t *testing.T, path string, deviceSN string) *license.Service {
 	t.Helper()
-	service, err := license.NewServiceWithPublicKey(path, func() (string, error) { return deviceSN, nil }, httpTestLicensePublicKey(t))
-	if err != nil {
-		t.Fatalf("NewServiceWithPublicKey() error = %v", err)
-	}
+	service := license.NewService(path, func() (string, error) { return deviceSN, nil })
 	raw := generateHTTPTestLicense(t, deviceSN, 24*time.Hour, "test", time.Now())
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile(license) error = %v", err)
@@ -1893,62 +1883,11 @@ func newValidTestLicenseService(t *testing.T, path string, deviceSN string) *lic
 
 func generateHTTPTestLicense(t *testing.T, deviceSN string, duration time.Duration, customer string, now time.Time) []byte {
 	t.Helper()
-	deviceSN = strings.TrimSpace(deviceSN)
-	if deviceSN == "" {
-		t.Fatal("test license device SN is required")
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	info := license.Info{
-		DeviceSN:    deviceSN,
-		IssuedAt:    now,
-		Customer:    customer,
-		IsPermanent: duration <= 0,
-	}
-	if info.IsPermanent {
-		info.ExpiresAt = now.AddDate(100, 0, 0)
-	} else {
-		info.ExpiresAt = now.Add(duration)
-	}
-	privateKey := httpTestLicensePrivateKey(t)
-	payload := fmt.Sprintf("%s|%d|%d|%t|%s",
-		strings.TrimSpace(info.DeviceSN),
-		info.IssuedAt.Unix(),
-		info.ExpiresAt.Unix(),
-		info.IsPermanent,
-		info.Customer,
-	)
-	info.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload)))
-	raw, err := json.MarshalIndent(info, "", "  ")
+	raw, err := license.NewService("", nil).Generate(deviceSN, duration, customer, now)
 	if err != nil {
-		t.Fatalf("MarshalIndent(license) error = %v", err)
+		t.Fatalf("Generate(license) error = %v", err)
 	}
-	return []byte(base64.StdEncoding.EncodeToString(raw))
-}
-
-func httpTestLicensePrivateKey(t *testing.T) ed25519.PrivateKey {
-	t.Helper()
-	raw, err := base64.StdEncoding.DecodeString(testLicensePrivateKeyBase64)
-	if err != nil {
-		t.Fatalf("DecodeString(private key) error = %v", err)
-	}
-	if len(raw) != ed25519.PrivateKeySize {
-		t.Fatalf("private key size = %d, want %d", len(raw), ed25519.PrivateKeySize)
-	}
-	return ed25519.PrivateKey(raw)
-}
-
-func httpTestLicensePublicKey(t *testing.T) ed25519.PublicKey {
-	t.Helper()
-	raw, err := base64.StdEncoding.DecodeString(testLicensePublicKeyBase64)
-	if err != nil {
-		t.Fatalf("DecodeString(public key) error = %v", err)
-	}
-	if len(raw) != ed25519.PublicKeySize {
-		t.Fatalf("public key size = %d, want %d", len(raw), ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(raw)
+	return raw
 }
 
 func newMultipartRequest(

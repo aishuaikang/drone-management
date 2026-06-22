@@ -2,7 +2,12 @@
 package license
 
 import (
-	"crypto/ed25519"
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -26,20 +31,18 @@ var (
 	ErrDeviceSNMissing  = errors.New("device SN is missing")
 )
 
-const defaultPublicKeyBase64 = "+/+tirfJ7mRgU4uJGhtiDyUS2EP+j4diyuCYhPrFu/s="
-
-var defaultPublicKey = mustDecodePublicKey(defaultPublicKeyBase64)
+const defaultSecretKey = "zkzp_uav_defender_license_secret_key_2024"
 
 // DeviceSNProvider returns the current standardized device SN.
 type DeviceSNProvider func() (string, error)
 
 // Service manages the runtime license state.
 type Service struct {
-	mu        sync.RWMutex
-	filePath  string
-	publicKey ed25519.PublicKey
-	deviceSN  DeviceSNProvider
-	valid     bool
+	mu       sync.RWMutex
+	filePath string
+	secret   string
+	deviceSN DeviceSNProvider
+	valid    bool
 }
 
 // Info stores decoded license file content.
@@ -54,22 +57,22 @@ type Info struct {
 
 // NewService creates a license service for the given file.
 func NewService(filePath string, provider DeviceSNProvider) *Service {
-	service, err := NewServiceWithPublicKey(filePath, provider, defaultPublicKey)
-	if err != nil {
-		panic(err)
+	return &Service{
+		filePath: filePath,
+		secret:   defaultSecretKey,
+		deviceSN: provider,
 	}
-	return service
 }
 
-// NewServiceWithPublicKey creates a license service with an explicit verifier key.
-func NewServiceWithPublicKey(filePath string, provider DeviceSNProvider, publicKey ed25519.PublicKey) (*Service, error) {
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid license public key size: %d", len(publicKey))
+// NewServiceWithSecret creates a license service with an explicit HMAC/AES secret.
+func NewServiceWithSecret(filePath string, provider DeviceSNProvider, secret string) (*Service, error) {
+	if stringsTrim(secret) == "" {
+		return nil, fmt.Errorf("license secret is required")
 	}
 	return &Service{
-		filePath:  filePath,
-		publicKey: append(ed25519.PublicKey(nil), publicKey...),
-		deviceSN:  provider,
+		filePath: filePath,
+		secret:   secret,
+		deviceSN: provider,
 	}, nil
 }
 
@@ -135,6 +138,34 @@ func (s *Service) Activate(src io.Reader) (model.LicenseInfo, error) {
 	}
 	s.setValid(true)
 	return licenseStatus(info, nil, deviceSN), nil
+}
+
+// Generate returns encoded license bytes for tests and local tooling.
+func (s *Service) Generate(deviceSN string, duration time.Duration, customer string, now time.Time) ([]byte, error) {
+	deviceSN = stringsTrim(deviceSN)
+	if deviceSN == "" {
+		return nil, ErrDeviceSNMissing
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	info := &Info{
+		DeviceSN:    deviceSN,
+		IssuedAt:    now,
+		Customer:    customer,
+		IsPermanent: duration <= 0,
+	}
+	if info.IsPermanent {
+		info.ExpiresAt = now.AddDate(100, 0, 0)
+	} else {
+		info.ExpiresAt = now.Add(duration)
+	}
+	signature, err := s.signature(info)
+	if err != nil {
+		return nil, err
+	}
+	info.Signature = signature
+	return s.encode(info)
 }
 
 func (s *Service) currentDeviceSN() (string, error) {
@@ -226,7 +257,14 @@ func (s *Service) decode(data []byte) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidLicense, err)
 	}
-	return parseInfo(decoded)
+	decrypted, err := s.decrypt(decoded)
+	if err == nil {
+		return parseInfo(decrypted)
+	}
+	if info, parseErr := parseInfo(decoded); parseErr == nil {
+		return info, nil
+	}
+	return nil, fmt.Errorf("%w: %v", ErrInvalidLicense, err)
 }
 
 func parseInfo(data []byte) (*Info, error) {
@@ -242,15 +280,27 @@ func (s *Service) encode(info *Info) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []byte(base64.StdEncoding.EncodeToString(data)), nil
+	encrypted, err := s.encrypt(data)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(base64.StdEncoding.EncodeToString(encrypted)), nil
 }
 
 func (s *Service) verifyInfo(info *Info, deviceSN string, now time.Time) error {
 	if info == nil || stringsTrim(info.DeviceSN) == "" {
 		return ErrInvalidLicense
 	}
-	signature, err := base64.StdEncoding.DecodeString(stringsTrim(info.Signature))
-	if err != nil || !ed25519.Verify(s.publicKey, signaturePayload(info), signature) {
+	expectedSignature, err := s.signature(info)
+	if err != nil {
+		return err
+	}
+	expectedSignatureBytes, err := base64.StdEncoding.DecodeString(expectedSignature)
+	if err != nil {
+		return err
+	}
+	signatureBytes, err := base64.StdEncoding.DecodeString(stringsTrim(info.Signature))
+	if err != nil || !hmac.Equal(signatureBytes, expectedSignatureBytes) {
 		return ErrInvalidSignature
 	}
 	if stringsTrim(info.DeviceSN) != deviceSN {
@@ -262,38 +312,74 @@ func (s *Service) verifyInfo(info *Info, deviceSN string, now time.Time) error {
 	return nil
 }
 
-func signaturePayload(info *Info) []byte {
+func (s *Service) signature(info *Info) (string, error) {
 	if info == nil {
-		return nil
+		return "", ErrInvalidLicense
 	}
-	return []byte(fmt.Sprintf("%s|%d|%d|%t|%s",
+	data := fmt.Sprintf("%s|%d|%d|%t",
 		stringsTrim(info.DeviceSN),
 		info.IssuedAt.Unix(),
 		info.ExpiresAt.Unix(),
 		info.IsPermanent,
-		info.Customer,
-	))
+	)
+	h := hmac.New(sha256.New, []byte(s.secret))
+	if _, err := h.Write([]byte(data)); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
-func mustDecodePublicKey(encoded string) ed25519.PublicKey {
-	key, err := base64.StdEncoding.DecodeString(encoded)
+func (s *Service) encrypt(data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(s.key())
 	if err != nil {
-		panic(fmt.Sprintf("decode license public key: %v", err))
+		return nil, err
 	}
-	if len(key) != ed25519.PublicKeySize {
-		panic(fmt.Sprintf("invalid license public key size: %d", len(key)))
+	blockSize := block.BlockSize()
+	padding := blockSize - len(data)%blockSize
+	data = append(data, bytes.Repeat([]byte{byte(padding)}, padding)...)
+	iv := make([]byte, blockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
 	}
-	return ed25519.PublicKey(key)
+	out := make([]byte, blockSize+len(data))
+	copy(out[:blockSize], iv)
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out[blockSize:], data)
+	return out, nil
 }
 
-func signInfo(info *Info, privateKey ed25519.PrivateKey) (string, error) {
-	if info == nil {
-		return "", ErrInvalidLicense
+func (s *Service) decrypt(data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(s.key())
+	if err != nil {
+		return nil, err
 	}
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return "", ErrInvalidSignature
+	blockSize := block.BlockSize()
+	if len(data) < blockSize {
+		return nil, errors.New("ciphertext too short")
 	}
-	return base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, signaturePayload(info))), nil
+	iv := data[:blockSize]
+	ciphertext := append([]byte(nil), data[blockSize:]...)
+	if len(ciphertext)%blockSize != 0 {
+		return nil, errors.New("ciphertext is not a multiple of the block size")
+	}
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(ciphertext, ciphertext)
+	if len(ciphertext) == 0 {
+		return nil, errors.New("empty ciphertext")
+	}
+	padding := int(ciphertext[len(ciphertext)-1])
+	if padding == 0 || padding > blockSize || padding > len(ciphertext) {
+		return nil, fmt.Errorf("invalid padding size: %d", padding)
+	}
+	for i := len(ciphertext) - padding; i < len(ciphertext); i++ {
+		if int(ciphertext[i]) != padding {
+			return nil, ErrInvalidLicense
+		}
+	}
+	return ciphertext[:len(ciphertext)-padding], nil
+}
+
+func (s *Service) key() []byte {
+	hash := sha256.Sum256([]byte(s.secret))
+	return hash[:]
 }
 
 func licenseStatus(info *Info, err error, currentDeviceSN string) model.LicenseInfo {

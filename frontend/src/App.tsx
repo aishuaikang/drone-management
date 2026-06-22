@@ -1077,7 +1077,9 @@ export function App() {
   const [whitelistBusySerial, setWhitelistBusySerial] = useState("");
   const [selectedPositionId, setSelectedPositionId] = useState("");
   const [tab, setTab] = useState<Tab>("positions");
-  const [now, setNow] = useState(() => new Date());
+  const [clockTickMs, setClockTickMs] = useState(() => Date.now());
+  const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
+  const serverClockOffsetRef = useRef(0);
   const [streamError, setStreamError] = useState("");
   const [licenseInfo, setLicenseInfo] = useState<LicenseInfo | null>(null);
   const [licenseChecked, setLicenseChecked] = useState(false);
@@ -1118,11 +1120,24 @@ export function App() {
     themeOption.className,
     licenseValid ? "" : "screen-shell--license-locked",
   ].filter(Boolean).join(" ");
+  const now = useMemo(() => new Date(clockTickMs + serverClockOffsetMs), [clockTickMs, serverClockOffsetMs]);
+
+  const syncRuntimeStatus = useCallback((nextStatus: ScreenRuntimeStatus) => {
+    setStatus(nextStatus);
+    const nextOffset = serverClockOffsetFromStatus(nextStatus);
+    if (nextOffset === null) {
+      return;
+    }
+    serverClockOffsetRef.current = nextOffset;
+    setServerClockOffsetMs(nextOffset);
+  }, []);
+
+  const currentServerTimeMs = useCallback(() => Date.now() + serverClockOffsetRef.current, []);
 
   const syncStrikeState = useCallback((nextState: ScreenStrikeState) => {
     setStrikeState(nextState);
-    setStrikeStateSyncedAt(Date.now());
-  }, []);
+    setStrikeStateSyncedAt(currentServerTimeMs());
+  }, [currentServerTimeMs]);
 
   const syncLicenseStatus = useCallback(async () => {
     try {
@@ -1140,7 +1155,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    const timer = window.setInterval(() => setClockTickMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -1188,7 +1203,7 @@ export function App() {
         }
       };
       const errors = await Promise.all([
-        apply(getScreenStatus(), setStatus),
+        apply(getScreenStatus(), syncRuntimeStatus),
         apply(getScreenPositions(targetLimit), (response) => setPositions(sortPositions(response.items))),
         apply(getScreenFPV(targetLimit), (response) => setFPV(sortFPV(response.items))),
         apply(getScreenDeviceLocation(), setDeviceLocation),
@@ -1210,7 +1225,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [licenseValid, syncStrikeState]);
+  }, [licenseValid, syncRuntimeStatus, syncStrikeState]);
 
   useEffect(() => {
     if (!licenseValid) {
@@ -1897,7 +1912,7 @@ export function App() {
                   <TabStatusDot status={status?.fpv} />
                   <Radio className="screen-tab__icon" aria-hidden="true" />
                   <span>{t.fpv}</span>
-                  <strong>{fpv.length}</strong>
+                  <strong>{visibleFPV.length}</strong>
                 </button>
               </div>
             </div>
@@ -1918,7 +1933,7 @@ export function App() {
           status={status}
           defaultScreenTitle={t.title}
           onOfflineMapStateChange={setOfflineMapState}
-          onStatusChange={setStatus}
+          onStatusChange={syncRuntimeStatus}
           onLicenseInfoChange={setLicenseInfo}
           onSaveUserSettings={saveUserSettings}
         />
@@ -6583,6 +6598,14 @@ function resolveTCPPort(value: number | undefined, fallback: number) {
     return Math.floor(value!);
   }
   return validTCPPort(fallback) ? Math.floor(fallback) : 0;
+}
+
+function serverClockOffsetFromStatus(status: ScreenRuntimeStatus) {
+  const serverTime = Date.parse(status.serverTime);
+  if (!Number.isFinite(serverTime)) {
+    return null;
+  }
+  return serverTime - Date.now();
 }
 
 function filterVisiblePositions(items: ScreenPositionTarget[], now: Date, expireSeconds: number) {

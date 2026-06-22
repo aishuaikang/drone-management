@@ -112,7 +112,7 @@ if ! command -v tar >/dev/null 2>&1; then
 fi
 extract_release_package() {
   if tar --version 2>/dev/null | grep -qi 'gnu tar'; then
-    tar --warning=no-unknown-keyword -xzf "$REMOTE_PACKAGE" -C "$EXTRACT_DIR"
+    tar --warning=no-unknown-keyword --warning=no-timestamp -xzf "$REMOTE_PACKAGE" -C "$EXTRACT_DIR"
   else
     tar -xzf "$REMOTE_PACKAGE" -C "$EXTRACT_DIR"
   fi
@@ -145,6 +145,12 @@ if [ -z "$BINARY" ]; then
 fi
 PACKAGE_ROOT="$(dirname "$BINARY")"
 
+$SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+if [ -e "$INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
+  BACKUP_PATH="${INSTALL_DIR}.backup.$(date +%%Y%%m%%d%%H%%M%%S)"
+  $SUDO mv "$INSTALL_DIR" "$BACKUP_PATH"
+  echo "备份旧安装文件: $BACKUP_PATH"
+fi
 $SUDO mkdir -p "$INSTALL_DIR"
 if [ -d "$INSTALL_DIR" ] && [ "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | head -n 1)" ]; then
   BACKUP_DIR="${INSTALL_DIR}.backup.$(date +%%Y%%m%%d%%H%%M%%S)"
@@ -152,7 +158,6 @@ if [ -d "$INSTALL_DIR" ] && [ "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 2>/
   echo "备份目录: $BACKUP_DIR"
 fi
 
-$SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
 $SUDO rm -f "$INSTALL_DIR/$BINARY_NAME"
 $SUDO rm -rf "$INSTALL_DIR/MediaMTX" "$INSTALL_DIR/README.md" "$INSTALL_DIR/.env.example" "$INSTALL_DIR/协议"
 $SUDO cp -a "$BINARY" "$INSTALL_DIR/$BINARY_NAME"
