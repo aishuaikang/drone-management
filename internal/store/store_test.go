@@ -611,18 +611,19 @@ func TestPositionAddFiltersInvalidCoordinates(t *testing.T) {
 	}
 }
 
-func TestPositionArchiveKeepsFullTrajectoryWhileLiveViewIsCapped(t *testing.T) {
+func TestPositionKeepsFullTrajectoryInLiveViewAndArchive(t *testing.T) {
 	state := New(10, 10)
 	archiver := &memoryPositionArchiver{}
 	state.SetPositionArchiver(archiver)
 	base := recentStoreTestTime()
+	var added model.ScreenPositionTarget
 
 	for index := range 90 {
 		point := &model.ScreenPositionPoint{
 			Latitude:  31.20 + float64(index)*0.0001,
 			Longitude: 121.40 + float64(index)*0.0001,
 		}
-		_, _ = state.AddPosition(model.ScreenPositionTarget{
+		added, _ = state.AddPosition(model.ScreenPositionTarget{
 			Serial:    "long-track",
 			Model:     "Mini 4 Pro",
 			Source:    "RID",
@@ -632,15 +633,15 @@ func TestPositionArchiveKeepsFullTrajectoryWhileLiveViewIsCapped(t *testing.T) {
 		})
 	}
 
+	if len(added.DroneTrajectory) != 90 {
+		t.Fatalf("returned drone trajectory points = %d, want 90", len(added.DroneTrajectory))
+	}
 	items := state.Positions(10)
 	if len(items) != 1 {
 		t.Fatalf("positions count = %d, want 1", len(items))
 	}
-	if len(items[0].DroneTrajectory) != maxDisplayTrajectoryPoints {
-		t.Fatalf("live drone trajectory points = %d, want %d", len(items[0].DroneTrajectory), maxDisplayTrajectoryPoints)
-	}
-	if len(items[0].FullDroneTrajectory) != 90 {
-		t.Fatalf("full drone trajectory points = %d, want 90", len(items[0].FullDroneTrajectory))
+	if len(items[0].DroneTrajectory) != 90 {
+		t.Fatalf("live drone trajectory points = %d, want 90", len(items[0].DroneTrajectory))
 	}
 
 	state.SetPositionTTL(500 * time.Millisecond)
@@ -648,8 +649,8 @@ func TestPositionArchiveKeepsFullTrajectoryWhileLiveViewIsCapped(t *testing.T) {
 	if len(archived) != 1 {
 		t.Fatalf("archived positions = %d, want 1", len(archived))
 	}
-	if len(archived[0].DroneTrajectory) != maxDisplayTrajectoryPoints {
-		t.Fatalf("archived display trajectory points = %d, want %d", len(archived[0].DroneTrajectory), maxDisplayTrajectoryPoints)
+	if len(archived[0].DroneTrajectory) != 0 {
+		t.Fatalf("archived display trajectory points = %d, want 0", len(archived[0].DroneTrajectory))
 	}
 	if len(archived[0].FullDroneTrajectory) != 90 {
 		t.Fatalf("archived full trajectory points = %d, want 90", len(archived[0].FullDroneTrajectory))

@@ -89,7 +89,7 @@ func TestStoreArchivesListsAndIgnoresDuplicatePosition(t *testing.T) {
 	}
 }
 
-func TestStoreArchivesFullTrajectoryWhenDisplayTrajectoryIsCapped(t *testing.T) {
+func TestStoreArchivesFullTrajectoryWhenDisplayTrajectoryIsPartial(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	base := time.Date(2026, 6, 5, 10, 0, 0, 0, time.UTC)

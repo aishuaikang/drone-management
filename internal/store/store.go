@@ -14,11 +14,10 @@ import (
 )
 
 const (
-	defaultPositionTTL         = 5 * time.Second
-	fpvTTL                     = 10 * time.Second
-	maxDisplayTrajectoryPoints = 80
-	screenPositionUpdatedType  = "screen.position.updated"
-	screenPositionRemovedType  = "screen.position.removed"
+	defaultPositionTTL        = 5 * time.Second
+	fpvTTL                    = 10 * time.Second
+	screenPositionUpdatedType = "screen.position.updated"
+	screenPositionRemovedType = "screen.position.removed"
 )
 
 // Store owns runtime records and event subscribers.
@@ -230,8 +229,6 @@ func (s *Store) AddPosition(target model.ScreenPositionTarget) (model.ScreenPosi
 		target.TrajectorySpeed,
 		target.TrajectoryHeight,
 	)
-	target.DroneTrajectory = displayTrajectory(target.FullDroneTrajectory)
-	target.PilotTrajectory = displayTrajectory(target.FullPilotTrajectory)
 
 	s.mu.Lock()
 
@@ -248,7 +245,7 @@ func (s *Store) AddPosition(target model.ScreenPositionTarget) (model.ScreenPosi
 		}
 		s.positions = append(s.positions, target)
 		trimNewestPositions(&s.positions, s.maxPositions)
-		merged := withDeviceRelations(clonePosition(target), s.effectiveDeviceLocationLocked())
+		merged := publicPosition(target, s.effectiveDeviceLocationLocked())
 		archiver := s.positionArchiver
 		s.mu.Unlock()
 		s.archiveExpiredPositions(archiver)
@@ -258,7 +255,7 @@ func (s *Store) AddPosition(target model.ScreenPositionTarget) (model.ScreenPosi
 
 	merged := mergePosition(s.positions[index], target)
 	s.positions[index] = merged
-	result := withDeviceRelations(clonePosition(merged), s.effectiveDeviceLocationLocked())
+	result := publicPosition(merged, s.effectiveDeviceLocationLocked())
 	archiver := s.positionArchiver
 	s.mu.Unlock()
 	s.archiveExpiredPositions(archiver)
@@ -281,7 +278,7 @@ func (s *Store) RemoveUncrackedDIDScreenPositionByCorrelationID(correlationID st
 		return model.ScreenPositionTarget{}, false
 	}
 
-	removed = withDeviceRelations(removed, location)
+	removed = publicPosition(removed, location)
 	s.Publish(model.Event{Type: screenPositionRemovedType, Time: removed.LastSeen, Payload: removed})
 	return removed, true
 }
@@ -320,7 +317,7 @@ func (s *Store) Positions(limit int) []model.ScreenPositionTarget {
 
 	s.archiveExpiredPositions(archiver)
 	for index := range items {
-		items[index] = withDeviceRelations(items[index], location)
+		items[index] = publicPosition(items[index], location)
 	}
 	return items
 }
@@ -556,8 +553,6 @@ func mergePosition(current, incoming model.ScreenPositionTarget) model.ScreenPos
 	current.HitCount += hitIncrement
 	current.FullDroneTrajectory = mergeTrajectories(current.FullDroneTrajectory, incoming.FullDroneTrajectory)
 	current.FullPilotTrajectory = mergeTrajectories(current.FullPilotTrajectory, incoming.FullPilotTrajectory)
-	current.DroneTrajectory = displayTrajectory(current.FullDroneTrajectory)
-	current.PilotTrajectory = displayTrajectory(current.FullPilotTrajectory)
 	if keepDecodedFields {
 		return current
 	}
@@ -656,7 +651,7 @@ func appendTrajectory(
 		Height:    cleanFloat(height),
 		Time:      seenAt,
 	}
-	return mergeTrajectories(current, []model.ScreenPositionTrackPoint{next})
+	return appendTrajectoryPoint(current, next)
 }
 
 func mergeTrajectories(
@@ -665,21 +660,28 @@ func mergeTrajectories(
 ) []model.ScreenPositionTrackPoint {
 	current = cleanTrajectory(current)
 	for _, item := range incoming {
-		if !validPositionCoordinate(item.Latitude, item.Longitude) {
-			continue
-		}
-		item.Speed = cleanFloat(item.Speed)
-		item.Height = cleanFloat(item.Height)
-		if len(current) > 0 {
-			last := current[len(current)-1]
-			samePoint := last.Latitude == item.Latitude && last.Longitude == item.Longitude
-			if samePoint && item.Time.Sub(last.Time) < time.Second {
-				continue
-			}
-		}
-		current = append(current, item)
+		current = appendTrajectoryPoint(current, item)
 	}
 	return current
+}
+
+func appendTrajectoryPoint(
+	current []model.ScreenPositionTrackPoint,
+	item model.ScreenPositionTrackPoint,
+) []model.ScreenPositionTrackPoint {
+	if !validPositionCoordinate(item.Latitude, item.Longitude) {
+		return current
+	}
+	item.Speed = cleanFloat(item.Speed)
+	item.Height = cleanFloat(item.Height)
+	if len(current) > 0 {
+		last := current[len(current)-1]
+		samePoint := last.Latitude == item.Latitude && last.Longitude == item.Longitude
+		if samePoint && item.Time.Sub(last.Time) < time.Second {
+			return current
+		}
+	}
+	return append(current, item)
 }
 
 func sanitizePositionTarget(target model.ScreenPositionTarget) model.ScreenPositionTarget {
@@ -704,8 +706,8 @@ func sanitizePositionTarget(target model.ScreenPositionTarget) model.ScreenPosit
 	if len(target.FullPilotTrajectory) == 0 {
 		target.FullPilotTrajectory = slices.Clone(target.PilotTrajectory)
 	}
-	target.DroneTrajectory = displayTrajectory(target.FullDroneTrajectory)
-	target.PilotTrajectory = displayTrajectory(target.FullPilotTrajectory)
+	target.DroneTrajectory = nil
+	target.PilotTrajectory = nil
 	return target
 }
 
@@ -778,14 +780,6 @@ func cleanTrajectory(points []model.ScreenPositionTrackPoint) []model.ScreenPosi
 		return nil
 	}
 	return cleaned
-}
-
-func displayTrajectory(points []model.ScreenPositionTrackPoint) []model.ScreenPositionTrackPoint {
-	points = cleanTrajectory(points)
-	if len(points) <= maxDisplayTrajectoryPoints {
-		return slices.Clone(points)
-	}
-	return slices.Clone(points[len(points)-maxDisplayTrajectoryPoints:])
 }
 
 func latestByPositionFirstSeen(items []model.ScreenPositionTarget, limit int) []model.ScreenPositionTarget {
@@ -866,6 +860,19 @@ func withDeviceRelations(
 	return target
 }
 
+func publicPosition(
+	target model.ScreenPositionTarget,
+	location model.ScreenDeviceLocationResponse,
+) model.ScreenPositionTarget {
+	target = clonePositionMetadata(target)
+	target.DroneTrajectory = slices.Clone(target.FullDroneTrajectory)
+	target.PilotTrajectory = slices.Clone(target.FullPilotTrajectory)
+	target.FullDroneTrajectory = nil
+	target.FullPilotTrajectory = nil
+	target = withDeviceRelations(target, location)
+	return target
+}
+
 func distanceMeters(a, b model.ScreenPositionPoint) float64 {
 	const earthRadiusM = 6371008.8
 	lat1 := a.Latitude * math.Pi / 180
@@ -892,6 +899,15 @@ func bearingDegrees(a, b model.ScreenPositionPoint) float64 {
 }
 
 func clonePosition(target model.ScreenPositionTarget) model.ScreenPositionTarget {
+	target = clonePositionMetadata(target)
+	target.DroneTrajectory = slices.Clone(target.DroneTrajectory)
+	target.PilotTrajectory = slices.Clone(target.PilotTrajectory)
+	target.FullDroneTrajectory = slices.Clone(target.FullDroneTrajectory)
+	target.FullPilotTrajectory = slices.Clone(target.FullPilotTrajectory)
+	return target
+}
+
+func clonePositionMetadata(target model.ScreenPositionTarget) model.ScreenPositionTarget {
 	target.Drone = clonePoint(target.Drone)
 	target.Pilot = clonePoint(target.Pilot)
 	target.Home = clonePoint(target.Home)
@@ -902,10 +918,6 @@ func clonePosition(target model.ScreenPositionTarget) model.ScreenPositionTarget
 	target.DroneDistanceM = cloneFloat(target.DroneDistanceM)
 	target.DroneDirectionDeg = cloneFloat(target.DroneDirectionDeg)
 	target.Sources = slices.Clone(target.Sources)
-	target.DroneTrajectory = slices.Clone(target.DroneTrajectory)
-	target.PilotTrajectory = slices.Clone(target.PilotTrajectory)
-	target.FullDroneTrajectory = slices.Clone(target.FullDroneTrajectory)
-	target.FullPilotTrajectory = slices.Clone(target.FullPilotTrajectory)
 	return target
 }
 
