@@ -252,6 +252,23 @@ p {
   white-space: nowrap;
 }
 
+.connection-pill.network-pill {
+  max-width: min(230px, 34vw);
+}
+
+.connection-pill > svg {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+
+.connection-pill.ok > svg {
+  color: var(--success);
+}
+
+.spin-icon {
+  animation: spin 1.2s linear infinite;
+}
+
 .dot {
   width: 9px;
   height: 9px;
@@ -582,6 +599,54 @@ p {
   padding: 0 12px;
 }
 
+.ping-log-shell {
+  min-height: 220px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--soft-line);
+  border-radius: 9px;
+  padding: 12px;
+  background: rgba(251, 252, 251, 0.84);
+}
+
+.ping-log-shell.ok {
+  border-color: rgba(23, 114, 69, 0.2);
+  background: #f3fbf6;
+}
+
+.ping-log-shell.ok .status-dot {
+  color: var(--success);
+  background: rgba(23, 114, 69, 0.11);
+}
+
+.ping-log-shell.warn {
+  border-color: rgba(161, 92, 7, 0.24);
+  background: #fff9ed;
+}
+
+.ping-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+}
+
+.ping-log-shell pre {
+  min-height: 160px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--soft-line);
+  border-radius: 7px;
+  padding: 10px;
+  color: #203028;
+  background: rgba(255, 255, 255, 0.72);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .dir-list {
   min-height: 220px;
   display: grid;
@@ -627,6 +692,11 @@ p {
 
   .connection {
     justify-content: flex-start;
+  }
+
+  .connection-pill,
+  .connection-pill.network-pill {
+    max-width: 100%;
   }
 
   .login-grid,

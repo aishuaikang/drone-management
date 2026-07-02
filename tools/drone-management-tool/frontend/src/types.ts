@@ -26,6 +26,19 @@ export interface SSHStatus {
   message: string;
 }
 
+export interface NetworkStatus {
+  connected: boolean;
+  internet: boolean;
+  status: string;
+  message: string;
+}
+
+export interface NetworkPingLog {
+  connected: boolean;
+  output: string;
+  message: string;
+}
+
 export interface RemoteProbe {
   installDir: string;
   serviceActive: boolean;

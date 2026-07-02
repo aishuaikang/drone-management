@@ -51,3 +51,38 @@ func TestNormalizeSSHParams(t *testing.T) {
 		})
 	}
 }
+
+func TestNetworkStatusFromProbeOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		output       string
+		wantStatus   string
+		wantInternet bool
+	}{
+		{name: "online", output: "yes\n", wantStatus: "yes", wantInternet: true},
+		{name: "offline", output: "no\n", wantStatus: "no"},
+		{name: "unknown", output: "unknown\n", wantStatus: "unknown"},
+		{name: "uses last field", output: "noise\nyes\n", wantStatus: "yes", wantInternet: true},
+		{name: "unexpected output", output: "maybe\n", wantStatus: "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := networkStatusFromProbeOutput(tt.output)
+			if !got.Connected {
+				t.Fatalf("networkStatusFromProbeOutput() Connected = false")
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("networkStatusFromProbeOutput() Status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.Internet != tt.wantInternet {
+				t.Fatalf("networkStatusFromProbeOutput() Internet = %v, want %v", got.Internet, tt.wantInternet)
+			}
+			if got.Message == "" {
+				t.Fatalf("networkStatusFromProbeOutput() Message is empty")
+			}
+		})
+	}
+}

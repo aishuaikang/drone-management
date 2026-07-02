@@ -12,6 +12,50 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const internetProbeCommand = `has_probe=no
+if command -v curl >/dev/null 2>&1; then
+  has_probe=yes
+  if curl -fsS --connect-timeout 3 --max-time 5 http://connectivitycheck.gstatic.com/generate_204 >/dev/null 2>&1 \
+    || curl -fsS --connect-timeout 3 --max-time 5 http://www.baidu.com >/dev/null 2>&1; then
+    echo yes
+    exit 0
+  fi
+fi
+if command -v wget >/dev/null 2>&1; then
+  has_probe=yes
+  if wget -q -T 5 -O /dev/null http://connectivitycheck.gstatic.com/generate_204 >/dev/null 2>&1 \
+    || wget -q -T 5 -O /dev/null http://www.baidu.com >/dev/null 2>&1; then
+    echo yes
+    exit 0
+  fi
+fi
+if command -v ping >/dev/null 2>&1; then
+  has_probe=yes
+  if ping -c 1 -W 3 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+    echo yes
+    exit 0
+  fi
+fi
+if [ "$has_probe" = "yes" ]; then
+  echo no
+else
+  echo unknown
+fi`
+
+const networkPingLogCommand = `if ! command -v ping >/dev/null 2>&1; then
+  echo "未检测到 ping，无法获取 ping 日志"
+  exit 1
+fi
+echo '$ ping -c 4 -W 3 223.5.5.5'
+ping -c 4 -W 3 223.5.5.5 2>&1
+first_status=$?
+if [ "$first_status" -ne 0 ]; then
+  echo
+  echo '$ ping -c 4 -W 3 8.8.8.8'
+  ping -c 4 -W 3 8.8.8.8 2>&1
+fi
+exit 0`
+
 type SSHConnectRequest struct {
 	Host             string `json:"host"`
 	Port             int    `json:"port"`
@@ -25,6 +69,19 @@ type SSHStatus struct {
 	Host      string `json:"host,omitempty"`
 	Port      int    `json:"port,omitempty"`
 	User      string `json:"user,omitempty"`
+	Message   string `json:"message"`
+}
+
+type NetworkStatus struct {
+	Connected bool   `json:"connected"`
+	Internet  bool   `json:"internet"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+}
+
+type NetworkPingLog struct {
+	Connected bool   `json:"connected"`
+	Output    string `json:"output"`
 	Message   string `json:"message"`
 }
 
@@ -266,6 +323,90 @@ func (a *App) GetSSHStatus() SSHStatus {
 		Port:      conn.config.Port,
 		User:      conn.config.User,
 		Message:   "SSH 已连接",
+	}
+}
+
+func (a *App) GetNetworkStatus() NetworkStatus {
+	if _, err := a.getSSHClient(); err != nil {
+		return NetworkStatus{
+			Connected: false,
+			Status:    "unknown",
+			Message:   "未连接",
+		}
+	}
+
+	out, err := a.runCommand(internetProbeCommand)
+	if err != nil {
+		return NetworkStatus{
+			Connected: true,
+			Status:    "unknown",
+			Message:   "网络检测失败: " + err.Error(),
+		}
+	}
+	return networkStatusFromProbeOutput(out)
+}
+
+func (a *App) GetNetworkPingLog() NetworkPingLog {
+	if _, err := a.getSSHClient(); err != nil {
+		return NetworkPingLog{
+			Connected: false,
+			Message:   "未连接",
+		}
+	}
+
+	out, err := a.runCommand(networkPingLogCommand)
+	output := strings.TrimSpace(out)
+	if err != nil {
+		if output == "" {
+			output = err.Error()
+		}
+		return NetworkPingLog{
+			Connected: true,
+			Output:    output,
+			Message:   "获取 ping 日志失败",
+		}
+	}
+	if output == "" {
+		output = "ping 未返回输出"
+	}
+	return NetworkPingLog{
+		Connected: true,
+		Output:    output,
+		Message:   "ping 日志已更新",
+	}
+}
+
+func networkStatusFromProbeOutput(output string) NetworkStatus {
+	status := strings.TrimSpace(output)
+	if fields := strings.Fields(status); len(fields) > 0 {
+		status = fields[len(fields)-1]
+	}
+	switch status {
+	case "yes":
+		return NetworkStatus{
+			Connected: true,
+			Internet:  true,
+			Status:    "yes",
+			Message:   "互联网可用",
+		}
+	case "no":
+		return NetworkStatus{
+			Connected: true,
+			Status:    "no",
+			Message:   "无互联网",
+		}
+	case "unknown":
+		return NetworkStatus{
+			Connected: true,
+			Status:    "unknown",
+			Message:   "缺少 curl、wget 或 ping，无法检测互联网",
+		}
+	default:
+		return NetworkStatus{
+			Connected: true,
+			Status:    "unknown",
+			Message:   "无法识别网络检测结果",
+		}
 	}
 }
 

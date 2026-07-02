@@ -1,4 +1,14 @@
-import type { DeployRequest, ProgressEvent, RemoteEntry, RemoteProbe, SavedConfig, SSHConnectRequest, SSHStatus } from "./types";
+import type {
+  DeployRequest,
+  NetworkPingLog,
+  NetworkStatus,
+  ProgressEvent,
+  RemoteEntry,
+  RemoteProbe,
+  SavedConfig,
+  SSHConnectRequest,
+  SSHStatus,
+} from "./types";
 
 type AppBridge = {
   LoadConfig(): Promise<SavedConfig>;
@@ -7,6 +17,8 @@ type AppBridge = {
   ReconnectSSH(): Promise<SSHStatus>;
   DisconnectSSH(): Promise<void>;
   GetSSHStatus(): Promise<SSHStatus>;
+  GetNetworkStatus(): Promise<NetworkStatus>;
+  GetNetworkPingLog(): Promise<NetworkPingLog>;
   ProbeRemote(installDir: string): Promise<RemoteProbe>;
   BrowseRemoteDir(path: string): Promise<RemoteEntry[]>;
   SelectReleasePackage(): Promise<string>;
@@ -42,6 +54,8 @@ export const api = {
   reconnectSSH: () => bridge().ReconnectSSH(),
   disconnectSSH: () => bridge().DisconnectSSH(),
   getSSHStatus: () => bridge().GetSSHStatus(),
+  getNetworkStatus: () => bridge().GetNetworkStatus(),
+  getNetworkPingLog: () => bridge().GetNetworkPingLog(),
   probeRemote: (installDir: string) => bridge().ProbeRemote(installDir),
   browseRemoteDir: (path: string) => bridge().BrowseRemoteDir(path),
   selectReleasePackage: () => bridge().SelectReleasePackage(),

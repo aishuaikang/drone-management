@@ -14,14 +14,17 @@ import {
   ShieldAlert,
   TerminalSquare,
   UploadCloud,
+  Wifi,
+  WifiOff,
   XCircle,
 } from "lucide-react";
 
-import type { ProgressEvent, RemoteEntry, RemoteProbe, SavedConfig, SSHStatus } from "./types";
+import type { NetworkPingLog, NetworkStatus, ProgressEvent, RemoteEntry, RemoteProbe, SavedConfig, SSHStatus } from "./types";
 import { api, onProgress } from "./wails";
 
 type Notice = { tone: "idle" | "success" | "error" | "loading"; message: string };
 type SSHForm = { host: string; port: number; user: string; password: string; rememberPassword: boolean };
+type NetworkPingLogEntry = NetworkPingLog & { checkedAt: number };
 
 const defaultInstallDir = "/spbatc/drone-management";
 const installDirName = "drone-management";
@@ -87,6 +90,26 @@ function healthStatusLabel(value: string, ok: boolean) {
   }
 }
 
+function networkStatusLabel(status: NetworkStatus | null, checking: boolean) {
+  if (checking && !status) {
+    return "检测中";
+  }
+  if (!status) {
+    return "待检测";
+  }
+  if (!status.connected) {
+    return "未连接";
+  }
+  if (status.status === "unknown") {
+    return status.message || "未知";
+  }
+  return status.internet ? "互联网可用" : "无互联网";
+}
+
+function formatPingLogTime(value: number) {
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
 function parentRemoteDir(path: string) {
   const clean = path.trim().replace(/\/+$/, "") || "/";
   if (clean === "/") {
@@ -125,6 +148,9 @@ export default function App() {
   const [ssh, setSSH] = useState<SSHForm>({ host: "", port: 22, user: "root", password: "", rememberPassword: false });
   const [sshStatus, setSSHStatus] = useState<SSHStatus>({ connected: false, message: "未连接" });
   const sshStatusRef = useRef<SSHStatus>(sshStatus);
+  const networkCheckingRef = useRef(false);
+  const networkPingLogRequestRef = useRef(0);
+  const networkStatusRequestRef = useRef(0);
   const [entered, setEntered] = useState(false);
   const [installDir, setInstallDir] = useState(defaultInstallDir);
   const [releasePackage, setReleasePackage] = useState("");
@@ -138,6 +164,11 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>({ tone: "idle", message: "" });
   const [deployProgress, setDeployProgress] = useState<ProgressEvent[]>([]);
   const [busy, setBusy] = useState("");
+  const [networkStatus, setNetworkStatus] = useState<NetworkStatus | null>(null);
+  const [networkChecking, setNetworkChecking] = useState(false);
+  const [networkPingLog, setNetworkPingLog] = useState<NetworkPingLogEntry | null>(null);
+  const [networkPingLogLoading, setNetworkPingLogLoading] = useState(false);
+  const [networkPingLogOpen, setNetworkPingLogOpen] = useState(false);
 
   const updateSSHStatus = useCallback((status: SSHStatus) => {
     sshStatusRef.current = status;
@@ -184,6 +215,88 @@ export default function App() {
   }, []);
 
   const connected = sshStatus.connected;
+
+  const syncNetworkStatus = useCallback(async () => {
+    if (!sshStatusRef.current.connected || networkCheckingRef.current) {
+      return;
+    }
+    const requestId = networkStatusRequestRef.current + 1;
+    networkStatusRequestRef.current = requestId;
+    networkCheckingRef.current = true;
+    setNetworkChecking(true);
+    try {
+      const status = await api.getNetworkStatus();
+      if (networkStatusRequestRef.current === requestId) {
+        setNetworkStatus(status);
+      }
+    } catch (error) {
+      if (networkStatusRequestRef.current === requestId) {
+        setNetworkStatus({
+          connected: false,
+          internet: false,
+          status: "unknown",
+          message: messageOf(error),
+        });
+      }
+    } finally {
+      networkCheckingRef.current = false;
+      if (networkStatusRequestRef.current === requestId) {
+        setNetworkChecking(false);
+      }
+    }
+  }, []);
+
+  const syncNetworkPingLog = useCallback(async () => {
+    const requestId = networkPingLogRequestRef.current + 1;
+    networkPingLogRequestRef.current = requestId;
+    if (!sshStatusRef.current.connected) {
+      setNetworkPingLog({
+        connected: false,
+        output: "未连接",
+        message: "未连接",
+        checkedAt: Date.now(),
+      });
+      return;
+    }
+    setNetworkPingLogLoading(true);
+    try {
+      const log = await api.getNetworkPingLog();
+      if (networkPingLogRequestRef.current === requestId) {
+        setNetworkPingLog({ ...log, checkedAt: Date.now() });
+      }
+    } catch (error) {
+      if (networkPingLogRequestRef.current === requestId) {
+        const message = messageOf(error);
+        setNetworkPingLog({
+          connected: false,
+          output: message,
+          message,
+          checkedAt: Date.now(),
+        });
+      }
+    } finally {
+      if (networkPingLogRequestRef.current === requestId) {
+        setNetworkPingLogLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!connected) {
+      networkStatusRequestRef.current += 1;
+      networkPingLogRequestRef.current += 1;
+      networkCheckingRef.current = false;
+      setNetworkChecking(false);
+      setNetworkStatus(null);
+      setNetworkPingLogOpen(false);
+      setNetworkPingLog(null);
+      setNetworkPingLogLoading(false);
+      return;
+    }
+    void syncNetworkStatus();
+    const timer = window.setInterval(() => void syncNetworkStatus(), 30000);
+    return () => window.clearInterval(timer);
+  }, [connected, syncNetworkStatus]);
 
   const connect = async () => {
     setBusy("ssh");
@@ -329,6 +442,14 @@ export default function App() {
     }
   };
 
+  const networkLabel = networkStatusLabel(networkStatus, networkChecking);
+  const networkTone = networkStatus?.internet ? "ok" : "warn";
+  const networkTitle = networkStatus?.message || networkLabel;
+  const openNetworkPingLog = () => {
+    setNetworkPingLogOpen(true);
+    void syncNetworkPingLog();
+  };
+
   if (!entered) {
     return (
       <main className="login-shell">
@@ -396,6 +517,22 @@ export default function App() {
             <span className="dot" />
             <span>{connected ? `${sshStatus.user}@${sshStatus.host}:${sshStatus.port}` : sshStatus.message}</span>
           </span>
+          <button
+            className={`connection-pill network-pill ${networkTone}`}
+            type="button"
+            title={networkTitle}
+            aria-label="查看 ping 日志"
+            onClick={openNetworkPingLog}
+          >
+            {networkChecking ? (
+              <RefreshCw className="spin-icon" size={14} />
+            ) : networkStatus?.internet ? (
+              <Wifi size={14} />
+            ) : (
+              <WifiOff size={14} />
+            )}
+            <span>网络：{networkLabel}</span>
+          </button>
           <button type="button" disabled={busy === "reconnect"} onClick={() => void reconnect()}>
             <RefreshCw size={16} />
             重连
@@ -509,6 +646,14 @@ export default function App() {
           path={dirPicker.path}
         />
       ) : null}
+      {networkPingLogOpen ? (
+        <NetworkPingLogDialog
+          loading={networkPingLogLoading}
+          log={networkPingLog}
+          onClose={() => setNetworkPingLogOpen(false)}
+          onRefresh={syncNetworkPingLog}
+        />
+      ) : null}
     </main>
   );
 }
@@ -521,6 +666,57 @@ function NoticeBar({ notice }: { notice: Notice }) {
     <div className={`notice ${notice.tone}`}>
       <Info size={15} />
       <span>{notice.message}</span>
+    </div>
+  );
+}
+
+function NetworkPingLogDialog({
+  loading,
+  log,
+  onClose,
+  onRefresh,
+}: {
+  loading: boolean;
+  log: NetworkPingLogEntry | null;
+  onClose: () => void;
+  onRefresh: () => Promise<void>;
+}) {
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <section
+        className="modal ping-log-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="network-ping-log-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <h2 id="network-ping-log-title">Ping 日志</h2>
+            <p>{log ? `更新时间：${formatPingLogTime(log.checkedAt)}` : "尚未获取 ping 输出"}</p>
+          </div>
+          <button type="button" onClick={onClose}>
+            关闭
+          </button>
+        </header>
+        <div className="dir-actions">
+          <button type="button" disabled={loading} onClick={() => void onRefresh()}>
+            <RefreshCw className={loading ? "spin-icon" : undefined} size={16} />
+            {loading ? "Ping 中" : "刷新"}
+          </button>
+        </div>
+        {log ? (
+          <div className={`ping-log-shell ${log.connected ? "ok" : "warn"}`}>
+            <div className="ping-log-meta">
+              <span className="status-dot">{log.connected ? <Check size={12} /> : <Activity size={12} />}</span>
+              <strong>{log.message}</strong>
+            </div>
+            <pre>{log.output || log.message}</pre>
+          </div>
+        ) : (
+          <div className="empty-state compact">{loading ? "正在获取 ping 输出" : "暂无 ping 日志"}</div>
+        )}
+      </section>
     </div>
   );
 }
