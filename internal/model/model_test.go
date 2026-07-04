@@ -79,6 +79,43 @@ func TestLingyunSettingsWithDefaultsAddsLogicalDevices(t *testing.T) {
 	}
 }
 
+func TestLingyunSettingsWithDefaultsAppliesReportedIdentityFields(t *testing.T) {
+	settings := LingyunSettingsWithDefaults(LingyunSettings{
+		Devices: []LingyunDeviceSettings{
+			{
+				Type:       LingyunDeviceAOA,
+				DeviceID:   " AOA01 ",
+				DeviceName: "custom name",
+				DeviceSpec: LingyunDeviceSpec{
+					DevModel: "custom model",
+					DevMfr:   "custom manufacturer",
+				},
+			},
+			{
+				Type:     LingyunDeviceInterference,
+				DeviceID: "IFR01",
+			},
+		},
+	})
+
+	if settings.Devices[0].DeviceName != "aoa-AOA01" ||
+		settings.Devices[0].DeviceSpec.DevModel != "aoa-AOA01型号" ||
+		settings.Devices[0].DeviceSpec.DevMfr != "aoa-AOA01厂商" {
+		t.Fatalf("AOA reported identity = %q/%q/%q",
+			settings.Devices[0].DeviceName,
+			settings.Devices[0].DeviceSpec.DevModel,
+			settings.Devices[0].DeviceSpec.DevMfr)
+	}
+	if settings.Devices[3].DeviceName != "ifr-IFR01" ||
+		settings.Devices[3].DeviceSpec.DevModel != "ifr-IFR01型号" ||
+		settings.Devices[3].DeviceSpec.DevMfr != "ifr-IFR01厂商" {
+		t.Fatalf("IFR reported identity = %q/%q/%q",
+			settings.Devices[3].DeviceName,
+			settings.Devices[3].DeviceSpec.DevModel,
+			settings.Devices[3].DeviceSpec.DevMfr)
+	}
+}
+
 func TestLingyunSettingsWithDefaultsKeepsInterferenceOmnidirectional(t *testing.T) {
 	settings := LingyunSettingsWithDefaults(LingyunSettings{
 		Devices: []LingyunDeviceSettings{
@@ -229,13 +266,17 @@ func TestLingyunSettingsWithDeviceIdentityFillsEmptyDeviceIDAndKeepsCustom(t *te
 
 	for _, device := range settings.Devices {
 		if device.Type == LingyunDeviceAOA {
-			if device.DeviceID != "custom-aoa" || device.DeviceSpec.DevSN != "custom-sn" {
-				t.Fatalf("AOA custom identity = %q/%q", device.DeviceID, device.DeviceSpec.DevSN)
+			if device.DeviceID != "custom-aoa" || device.DeviceSpec.DevSN != "custom-sn" ||
+				device.DeviceName != "aoa-custom-aoa" ||
+				device.DeviceSpec.DevModel != "aoa-custom-aoa型号" ||
+				device.DeviceSpec.DevMfr != "aoa-custom-aoa厂商" {
+				t.Fatalf("AOA custom identity = %#v", device)
 			}
 			continue
 		}
-		if device.DeviceID != identity || device.DeviceSpec.DevSN != identity {
-			t.Fatalf("device %s default identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
+		if device.DeviceID != identity || device.DeviceSpec.DevSN != identity ||
+			device.DeviceName == "" || device.DeviceSpec.DevModel == "" || device.DeviceSpec.DevMfr == "" {
+			t.Fatalf("device %s default identity = %#v, want identity %q", device.Type, device, identity)
 		}
 	}
 }

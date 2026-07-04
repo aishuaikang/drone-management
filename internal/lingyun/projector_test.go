@@ -94,14 +94,34 @@ func TestProjectDCDUsesCommonDroneFields(t *testing.T) {
 	}
 }
 
-func TestProjectPositionSkipsWrongSourceAndMissingDrone(t *testing.T) {
+func TestProjectPositionRoutesRIDAndDJIOSourcesToRIDAndDCD(t *testing.T) {
 	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	ridDevice := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{Type: model.LingyunDeviceRemoteID})
 	dcdDevice := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{Type: model.LingyunDeviceDCD})
 
-	if _, ok := projectPosition(model.ScreenPositionTarget{Source: "dji_O:4"}, ridDevice, now); ok {
-		t.Fatal("RID device accepted dji_O source")
+	for _, tt := range []struct {
+		name   string
+		source string
+		device model.LingyunDeviceSettings
+	}{
+		{name: "rid accepts rid", source: "RID", device: ridDevice},
+		{name: "rid accepts dji", source: "dji_O:4", device: ridDevice},
+		{name: "dcd accepts rid", source: "RID", device: dcdDevice},
+		{name: "dcd accepts dji", source: "dji_O:2/3", device: dcdDevice},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := projectPosition(model.ScreenPositionTarget{
+				Source: tt.source,
+				Serial: "SN",
+				Model:  "DJI",
+				Drone:  &model.ScreenPositionPoint{Latitude: 22.1, Longitude: 113.9},
+			}, tt.device, now)
+			if !ok {
+				t.Fatalf("%s rejected source %q", tt.device.Type, tt.source)
+			}
+		})
 	}
+
 	if _, ok := projectPosition(model.ScreenPositionTarget{Source: "dji_O:4", Serial: "SN"}, dcdDevice, now); ok {
 		t.Fatal("DCD device accepted missing drone point")
 	}

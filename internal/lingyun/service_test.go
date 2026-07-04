@@ -91,6 +91,7 @@ func (c *cachedActiveInterferenceController) ListChannels() []model.Interference
 
 func (c *cachedActiveInterferenceController) ScreenStrikeState() model.ScreenStrikeState {
 	c.stateCalls++
+	c.active = c.state.Active
 	return c.state
 }
 
@@ -351,8 +352,11 @@ func TestServiceStatusIncludesPublishLogs(t *testing.T) {
 	}
 }
 
-func TestServiceStatusRefreshesInterferenceState(t *testing.T) {
-	controller := &cachedActiveInterferenceController{active: true}
+func TestServiceStatusRefreshesInterferenceStateBeforeUsingCachedActive(t *testing.T) {
+	controller := &cachedActiveInterferenceController{
+		active: true,
+		state:  model.ScreenStrikeState{Active: false},
+	}
 	service := NewService(
 		store.New(10, 10),
 		model.UserSettings{Lingyun: testSettings()},
@@ -905,6 +909,72 @@ func TestServiceDoesNotPublishInterferenceData(t *testing.T) {
 	}
 	if _, ok := findMessage(transport.messages(), deviceTopic(settings, def, device, "device_data")); ok {
 		t.Fatal("IFR device_data must not be published in common protocol")
+	}
+}
+
+func TestServiceRoutesRIDAndDJIOPositionDataToRIDAndDCD(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	transport := newFakeTransport()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+		WithNow(func() time.Time { return now }),
+	)
+	settings := service.settingsSnapshot()
+	ridDevice, ok := lingyunDevice(settings, model.LingyunDeviceRemoteID)
+	if !ok {
+		t.Fatal("RID device missing")
+	}
+	dcdDevice, ok := lingyunDevice(settings, model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("DCD device missing")
+	}
+	ridDef, _ := definitionByType(model.LingyunDeviceRemoteID)
+	dcdDef, _ := definitionByType(model.LingyunDeviceDCD)
+	targets := []model.ScreenPositionTarget{
+		{
+			Source: "RID",
+			Serial: "RID-SN",
+			Model:  "RID",
+			Drone:  &model.ScreenPositionPoint{Latitude: 22.1, Longitude: 113.9},
+		},
+		{
+			Source: "dji_O:4",
+			Serial: "DJI-SN",
+			Model:  "DJI Mini 4 Pro",
+			Drone:  &model.ScreenPositionPoint{Latitude: 22.2, Longitude: 114.1},
+		},
+	}
+
+	for _, target := range targets {
+		service.handleEvent(model.Event{Type: eventPositionUpdated, Payload: target})
+	}
+	if err := service.flushDevice(context.Background(), settings, service.settingsKeySnapshot(), ridDef, ridDevice); err != nil {
+		t.Fatalf("flushDevice(RID) error = %v", err)
+	}
+	if err := service.flushDevice(context.Background(), settings, service.settingsKeySnapshot(), dcdDef, dcdDevice); err != nil {
+		t.Fatalf("flushDevice(DCD) error = %v", err)
+	}
+
+	ridTopic := deviceTopic(settings, ridDef, ridDevice, "device_data")
+	dcdTopic := deviceTopic(settings, dcdDef, dcdDevice, "device_data")
+	ridMessage, ok := findMessage(transport.messages(), ridTopic)
+	if !ok {
+		t.Fatalf("RID device_data not published; topics = %#v", messageTopics(transport.messages()))
+	}
+	dcdMessage, ok := findMessage(transport.messages(), dcdTopic)
+	if !ok {
+		t.Fatalf("DCD device_data not published; topics = %#v", messageTopics(transport.messages()))
+	}
+	for topic, message := range map[string]publishedMessage{ridTopic: ridMessage, dcdTopic: dcdMessage} {
+		var payload dataPayload
+		if err := json.Unmarshal(message.payload, &payload); err != nil {
+			t.Fatalf("decode %s payload: %v", topic, err)
+		}
+		if len(payload.Objects) != 2 {
+			t.Fatalf("%s objects = %#v, want RID and dji_O targets", topic, payload.Objects)
+		}
 	}
 }
 

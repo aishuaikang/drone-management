@@ -213,7 +213,7 @@ func buildDevicePayload(settings model.LingyunSettings, def deviceDefinition, de
 	return devicePayload{
 		ProviderCode:    strings.TrimSpace(settings.ProviderCode),
 		DeviceID:        strings.TrimSpace(device.DeviceID),
-		DeviceName:      strings.TrimSpace(device.DeviceName),
+		DeviceName:      reportedDeviceName(def, device),
 		DeviceLongitude: device.DeviceLongitude,
 		DeviceLatitude:  device.DeviceLatitude,
 		DeviceAltitude:  device.DeviceAltitude,
@@ -222,9 +222,34 @@ func buildDevicePayload(settings model.LingyunSettings, def deviceDefinition, de
 		WorkState:       state,
 		Extension:       buildDeviceExtension(device),
 		SupFun:          def.operationCmds(),
-		DeviceSpec:      device.DeviceSpec,
+		DeviceSpec:      reportedDeviceSpec(def, device),
 		ProtocolVersion: strings.TrimSpace(settings.ProtocolVersion),
 	}
+}
+
+func reportedDeviceName(def deviceDefinition, device model.LingyunDeviceSettings) string {
+	if base := reportedDeviceBase(def, device); base != "" {
+		return base
+	}
+	return strings.TrimSpace(device.DeviceName)
+}
+
+func reportedDeviceSpec(def deviceDefinition, device model.LingyunDeviceSettings) model.LingyunDeviceSpec {
+	spec := device.DeviceSpec
+	if base := reportedDeviceBase(def, device); base != "" {
+		spec.DevModel = base + "型号"
+		spec.DevMfr = base + "厂商"
+	}
+	return spec
+}
+
+func reportedDeviceBase(def deviceDefinition, device model.LingyunDeviceSettings) string {
+	abbr := strings.TrimSpace(def.Abbr)
+	deviceID := strings.TrimSpace(device.DeviceID)
+	if abbr == "" || deviceID == "" {
+		return ""
+	}
+	return abbr + "-" + deviceID
 }
 
 func buildDeviceExtension(device model.LingyunDeviceSettings) any {

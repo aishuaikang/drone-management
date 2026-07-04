@@ -337,7 +337,7 @@ function isOfflineMapUploadLog(value: unknown): value is OfflineMapUploadLog {
 }
 
 export function getUserSettings() {
-  return requestJson<UserSettings>("/user/settings");
+  return requestJson<UserSettings>("/user/settings", { timeoutMs: 5000 });
 }
 
 export function updateUserSettings(payload: UserSettings) {

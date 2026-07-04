@@ -43,6 +43,10 @@ type interferenceCachedChannelProvider interface {
 	ListChannelsCached() []model.InterferenceChannel
 }
 
+type interferenceCachedActiveProvider interface {
+	ScreenStrikeActive() bool
+}
+
 // WithTransport replaces MQTT transport, primarily for tests.
 func WithTransport(transport transport) Option {
 	return func(s *Service) {
@@ -1159,7 +1163,11 @@ func (s *Service) interferenceActive() bool {
 	if s.interference == nil {
 		return false
 	}
-	return s.interference.ScreenStrikeState().Active
+	state := s.interference.ScreenStrikeState()
+	if provider, ok := s.interference.(interferenceCachedActiveProvider); ok {
+		return provider.ScreenStrikeActive()
+	}
+	return state.Active
 }
 
 func lingyunConfigured(settings model.LingyunSettings) bool {

@@ -99,10 +99,8 @@ func projectAOA(
 func isLingyunPositionSource(source string, deviceType string) bool {
 	source = strings.TrimSpace(source)
 	switch deviceType {
-	case model.LingyunDeviceRemoteID:
-		return strings.EqualFold(source, "RID")
-	case model.LingyunDeviceDCD:
-		return strings.HasPrefix(strings.ToLower(source), "dji_o")
+	case model.LingyunDeviceRemoteID, model.LingyunDeviceDCD:
+		return strings.EqualFold(source, "RID") || strings.HasPrefix(strings.ToLower(source), "dji_o")
 	default:
 		return false
 	}

@@ -262,6 +262,9 @@ func LingyunSettingsWithDefaults(settings LingyunSettings) LingyunSettings {
 		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceRemoteID), byType[LingyunDeviceRemoteID]),
 		lingyunDeviceWithOverride(defaultLingyunDevice(LingyunDeviceInterference), byType[LingyunDeviceInterference]),
 	}
+	for index := range settings.Devices {
+		settings.Devices[index] = LingyunDeviceSettingsWithReportedIdentity(settings.Devices[index])
+	}
 	return settings
 }
 
@@ -302,6 +305,7 @@ func LingyunSettingsWithDeviceIdentity(settings LingyunSettings, identity string
 		if strings.TrimSpace(settings.Devices[index].DeviceSpec.DevSN) == "" {
 			settings.Devices[index].DeviceSpec.DevSN = identity
 		}
+		settings.Devices[index] = LingyunDeviceSettingsWithReportedIdentity(settings.Devices[index])
 	}
 	return settings
 }
@@ -445,6 +449,42 @@ func LingyunDeviceSettingsWithDefaults(device LingyunDeviceSettings) LingyunDevi
 		device.ActiveAntennaType = 1
 	}
 	return device
+}
+
+// LingyunDeviceSettingsWithReportedIdentity applies the Lingyun recommended public name/model/manufacturer.
+func LingyunDeviceSettingsWithReportedIdentity(device LingyunDeviceSettings) LingyunDeviceSettings {
+	base := lingyunReportedDeviceBase(device.Type, device.DeviceID)
+	if base == "" {
+		return device
+	}
+	device.DeviceName = base
+	device.DeviceSpec.DevModel = base + "型号"
+	device.DeviceSpec.DevMfr = base + "厂商"
+	return device
+}
+
+func lingyunReportedDeviceBase(deviceType string, deviceID string) string {
+	abbr := lingyunDeviceTypeAbbr(deviceType)
+	deviceID = strings.TrimSpace(deviceID)
+	if abbr == "" || deviceID == "" {
+		return ""
+	}
+	return abbr + "-" + deviceID
+}
+
+func lingyunDeviceTypeAbbr(deviceType string) string {
+	switch deviceType {
+	case LingyunDeviceAOA:
+		return "aoa"
+	case LingyunDeviceDCD:
+		return "dcd"
+	case LingyunDeviceRemoteID:
+		return "rid"
+	case LingyunDeviceInterference:
+		return "ifr"
+	default:
+		return ""
+	}
 }
 
 func defaultLingyunDevice(deviceType string) LingyunDeviceSettings {

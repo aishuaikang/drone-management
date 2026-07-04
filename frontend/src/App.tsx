@@ -431,6 +431,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunCountermeasureRange: "干扰范围",
     lingyunInterferenceBands: "干扰频段",
     lingyunDevModel: "设备型号",
+    lingyunDevMfr: "生产厂商",
     lingyunDevSN: "设备序列号",
     lingyunInstallLocation: "安装位置",
     lingyunTopics: "MQTT Topic",
@@ -831,6 +832,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunCountermeasureRange: "Countermeasure range",
     lingyunInterferenceBands: "Interference bands",
     lingyunDevModel: "Device model",
+    lingyunDevMfr: "Manufacturer",
     lingyunDevSN: "Device serial",
     lingyunInstallLocation: "Install location",
     lingyunTopics: "MQTT Topics",
@@ -1274,36 +1276,6 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [licenseValid, syncRuntimeStatus, syncStrikeState, syncUserSettings]);
-
-  useEffect(() => {
-    if (!licenseValid || effectiveView !== "lingyun") {
-      return;
-    }
-    let cancelled = false;
-    let syncing = false;
-    const syncLingyunStatus = async () => {
-      if (syncing) {
-        return;
-      }
-      syncing = true;
-      try {
-        const nextStatus = await getScreenStatus();
-        if (!cancelled) {
-          syncRuntimeStatus(nextStatus);
-        }
-      } catch {
-        // The main status poll owns the visible connection error message.
-      } finally {
-        syncing = false;
-      }
-    };
-    void syncLingyunStatus();
-    const timer = window.setInterval(() => void syncLingyunStatus(), 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [effectiveView, licenseValid, syncRuntimeStatus]);
 
   useEffect(() => {
     if (!licenseValid) {
@@ -3842,11 +3814,7 @@ function LingyunSettingsManagement({
                     </label>
                     <label>
                       <span>{t.lingyunDeviceName}</span>
-                      <input
-                        value={device.deviceName ?? ""}
-                        maxLength={50}
-                        onChange={(event) => updateLingyunDevice(type, { deviceName: event.target.value })}
-                      />
+                      <LingyunStaticValue value={lingyunReportedDeviceName(device, draftLingyunWithRuntimeLocation)} />
                     </label>
                     <label>
                       <span>{t.longitude}</span>
@@ -3918,11 +3886,11 @@ function LingyunSettingsManagement({
                     )}
                     <label>
                       <span>{t.lingyunDevModel}</span>
-                      <input
-                        value={device.deviceSpec?.devModel ?? ""}
-                        maxLength={32}
-                        onChange={(event) => updateLingyunDevice(type, { deviceSpec: { ...device.deviceSpec, devModel: event.target.value } })}
-                      />
+                      <LingyunStaticValue value={lingyunReportedDevModel(device, draftLingyunWithRuntimeLocation)} />
+                    </label>
+                    <label>
+                      <span>{t.lingyunDevMfr}</span>
+                      <LingyunStaticValue value={lingyunReportedDevMfr(device, draftLingyunWithRuntimeLocation)} />
                     </label>
                     <label>
                       <span>{t.lingyunInstallLocation}</span>
@@ -4042,6 +4010,7 @@ function LingyunSettingsSkeleton({
     t.lingyunInstallMode,
     t.lingyunDetectionRange,
     t.lingyunDevModel,
+    t.lingyunDevMfr,
     t.lingyunInstallLocation,
   ];
 
@@ -7104,17 +7073,12 @@ function defaultLingyunSettings(clientId = defaultLingyunClientID, deviceIdentit
 }
 
 function defaultLingyunDevice(type: LingyunDeviceType, deviceIdentity = ""): LingyunDeviceSettings {
-  const names: Record<LingyunDeviceType, string> = {
-    aoa: "Drone Management AOA",
-    dcd: "Drone Management 协议破解",
-    rid: "Drone Management RemoteID",
-    ifr: "Drone Management 干扰设备",
-  };
+  const base = lingyunReportedDeviceBase(type, deviceIdentity);
   const device: LingyunDeviceSettings = {
     type,
     enabled: true,
     deviceId: deviceIdentity,
-    deviceName: names[type],
+    deviceName: base,
     deviceLongitude: 0,
     deviceLatitude: 0,
     deviceAltitude: 0,
@@ -7125,8 +7089,8 @@ function defaultLingyunDevice(type: LingyunDeviceType, deviceIdentity = ""): Lin
     detectionFrequency: defaultLingyunDetectionFrequency(type),
     bandWidth: defaultLingyunBandWidth,
     deviceSpec: {
-      devModel: "Drone Management",
-      devMfr: "",
+      devModel: lingyunReportedDevModelBase(base),
+      devMfr: lingyunReportedDevMfrBase(base),
       devSN: deviceIdentity,
       devHWVer: "unknown",
       devSoftVer: "unknown",
@@ -7198,13 +7162,15 @@ function lingyunSettingsWithRuntimeLocation(
 
 function resolveLingyunDevice(type: LingyunDeviceType, device?: LingyunDeviceSettings, deviceIdentity = ""): LingyunDeviceSettings {
   const defaults = defaultLingyunDevice(type, deviceIdentity);
+  const deviceId = device?.deviceId?.trim() || defaults.deviceId;
+  const reportedBase = lingyunReportedDeviceBase(type, deviceId);
   const resolved: LingyunDeviceSettings = {
     ...defaults,
     ...device,
     type,
     enabled: device?.enabled ?? defaults.enabled,
-    deviceId: device?.deviceId?.trim() || defaults.deviceId,
-    deviceName: device?.deviceName?.trim() || defaults.deviceName,
+    deviceId,
+    deviceName: reportedBase || device?.deviceName?.trim() || defaults.deviceName,
     installMode: lingyunInstallMode(device?.installMode, defaults.installMode ?? 0),
     detectionRange: resolveLingyunDetectionRange(device?.detectionRange, defaults.detectionRange ?? defaultLingyunDetectionRange(type)),
     horizontalCoverageStartAngle: finiteNumber(device?.horizontalCoverageStartAngle, defaults.horizontalCoverageStartAngle ?? 0),
@@ -7214,6 +7180,8 @@ function resolveLingyunDevice(type: LingyunDeviceType, device?: LingyunDeviceSet
     deviceSpec: {
       ...defaults.deviceSpec,
       ...device?.deviceSpec,
+      devModel: lingyunReportedDevModelBase(reportedBase) || device?.deviceSpec?.devModel?.trim() || defaults.deviceSpec?.devModel,
+      devMfr: lingyunReportedDevMfrBase(reportedBase) || device?.deviceSpec?.devMfr?.trim() || defaults.deviceSpec?.devMfr,
       devSN: device?.deviceSpec?.devSN?.trim() || defaults.deviceSpec?.devSN,
     },
   };
@@ -7283,6 +7251,52 @@ function lingyunDeviceAbbr(type: LingyunDeviceSettings["type"]) {
     default:
       return String(type || "{abbr}");
   }
+}
+
+function lingyunReportedDeviceBase(type: LingyunDeviceSettings["type"], deviceId?: string) {
+  const id = deviceId?.trim();
+  if (!id) {
+    return "";
+  }
+  return `${lingyunDeviceAbbr(type)}-${id}`;
+}
+
+function lingyunReportedDeviceBaseForSettings(
+  device: LingyunDeviceSettings,
+  settings: NonNullable<UserSettings["lingyun"]>,
+) {
+  return lingyunReportedDeviceBase(device.type, device.deviceId?.trim() || lingyunDeviceIdentity(settings));
+}
+
+function lingyunReportedDevModelBase(base: string) {
+  return base ? `${base}型号` : "";
+}
+
+function lingyunReportedDevMfrBase(base: string) {
+  return base ? `${base}厂商` : "";
+}
+
+function lingyunReportedDeviceName(
+  device: LingyunDeviceSettings,
+  settings: NonNullable<UserSettings["lingyun"]>,
+) {
+  return lingyunReportedDeviceBaseForSettings(device, settings) || device.deviceName?.trim() || "-";
+}
+
+function lingyunReportedDevModel(
+  device: LingyunDeviceSettings,
+  settings: NonNullable<UserSettings["lingyun"]>,
+) {
+  const base = lingyunReportedDeviceBaseForSettings(device, settings);
+  return lingyunReportedDevModelBase(base) || device.deviceSpec?.devModel?.trim() || "-";
+}
+
+function lingyunReportedDevMfr(
+  device: LingyunDeviceSettings,
+  settings: NonNullable<UserSettings["lingyun"]>,
+) {
+  const base = lingyunReportedDeviceBaseForSettings(device, settings);
+  return lingyunReportedDevMfrBase(base) || device.deviceSpec?.devMfr?.trim() || "-";
 }
 
 function lingyunDeviceTopics(

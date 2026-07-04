@@ -133,10 +133,13 @@ func TestBuildCommonV13RegistrationPayloads(t *testing.T) {
 		expected := want[device.Type]
 		if payload.ProviderCode != "DPTEST" ||
 			payload.DeviceID != device.DeviceID ||
+			payload.DeviceName != def.Abbr+"-"+device.DeviceID ||
+			payload.DeviceSpec.DevModel != def.Abbr+"-"+device.DeviceID+"型号" ||
+			payload.DeviceSpec.DevMfr != def.Abbr+"-"+device.DeviceID+"厂商" ||
 			payload.DeviceType != expected.deviceType ||
 			payload.ProtocolVersion != model.DefaultLingyunProtocolVersion ||
 			!slices.Equal(payload.SupFun, expected.commands) {
-			t.Fatalf("registration payload for %s = %#v, want type=%d commands=%v",
+			t.Fatalf("registration payload for %s = %#v, want generated name/spec, type=%d commands=%v",
 				device.Type, payload, expected.deviceType, expected.commands)
 		}
 		if device.Type == model.LingyunDeviceInterference {
@@ -162,6 +165,52 @@ func TestBuildCommonV13RegistrationPayloads(t *testing.T) {
 			extension.HorizontalCoverageEndAngle != 360 {
 			t.Fatalf("%s detection extension = %#v", device.Type, extension)
 		}
+	}
+}
+
+func TestBuildRegistrationPayloadOverridesReportedIdentityFields(t *testing.T) {
+	settings := model.LingyunSettingsWithDefaults(model.LingyunSettings{
+		ProviderCode: "DPTEST",
+		Devices: []model.LingyunDeviceSettings{
+			{
+				Type:       model.LingyunDeviceDCD,
+				Enabled:    true,
+				DeviceID:   " DCD01 ",
+				DeviceName: "legacy name",
+				DeviceSpec: model.LingyunDeviceSpec{
+					DevModel:   "legacy model",
+					DevMfr:     "legacy manufacturer",
+					DevSN:      "legacy-sn",
+					DevHWVer:   "hw-1",
+					DevSoftVer: "soft-1",
+					InstLoc:    "roof",
+				},
+			},
+		},
+	})
+	def, ok := definitionByType(model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("missing DCD definition")
+	}
+	device, ok := lingyunDevice(settings, model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("missing DCD device")
+	}
+
+	payload := buildDevicePayload(settings, def, device, 1)
+	if payload.DeviceName != "dcd-DCD01" ||
+		payload.DeviceSpec.DevModel != "dcd-DCD01型号" ||
+		payload.DeviceSpec.DevMfr != "dcd-DCD01厂商" {
+		t.Fatalf("reported identity = %q/%q/%q",
+			payload.DeviceName,
+			payload.DeviceSpec.DevModel,
+			payload.DeviceSpec.DevMfr)
+	}
+	if payload.DeviceSpec.DevSN != "legacy-sn" ||
+		payload.DeviceSpec.DevHWVer != "hw-1" ||
+		payload.DeviceSpec.DevSoftVer != "soft-1" ||
+		payload.DeviceSpec.InstLoc != "roof" {
+		t.Fatalf("non-identity spec fields were not preserved: %#v", payload.DeviceSpec)
 	}
 }
 
