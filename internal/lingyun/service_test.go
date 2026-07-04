@@ -945,6 +945,12 @@ func TestServiceRoutesRIDAndDJIOPositionDataToRIDAndDCD(t *testing.T) {
 			Model:  "DJI Mini 4 Pro",
 			Drone:  &model.ScreenPositionPoint{Latitude: 22.2, Longitude: 114.1},
 		},
+		{
+			Source: "dji_O:4",
+			Serial: "PLACEHOLDER-SN",
+			Model:  "DJI-Drone",
+			Drone:  &model.ScreenPositionPoint{Latitude: 22.3, Longitude: 114.2},
+		},
 	}
 
 	for _, target := range targets {
@@ -973,7 +979,12 @@ func TestServiceRoutesRIDAndDJIOPositionDataToRIDAndDCD(t *testing.T) {
 			t.Fatalf("decode %s payload: %v", topic, err)
 		}
 		if len(payload.Objects) != 2 {
-			t.Fatalf("%s objects = %#v, want RID and dji_O targets", topic, payload.Objects)
+			t.Fatalf("%s objects = %#v, want RID and decoded dji_O targets only", topic, payload.Objects)
+		}
+		for _, object := range payload.Objects {
+			if object.Extension.UAVModel == "DJI-Drone" || object.Extension.UAVSN == "PLACEHOLDER-SN" {
+				t.Fatalf("%s included DJI-Drone placeholder object: %#v", topic, object)
+			}
 		}
 	}
 }

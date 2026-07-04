@@ -125,6 +125,14 @@ func TestProjectPositionRoutesRIDAndDJIOSourcesToRIDAndDCD(t *testing.T) {
 	if _, ok := projectPosition(model.ScreenPositionTarget{Source: "dji_O:4", Serial: "SN"}, dcdDevice, now); ok {
 		t.Fatal("DCD device accepted missing drone point")
 	}
+	if _, ok := projectPosition(model.ScreenPositionTarget{
+		Source: "dji_O:4",
+		Serial: "PLACEHOLDER-SN",
+		Model:  "DJI-Drone",
+		Drone:  &model.ScreenPositionPoint{Latitude: 22.1, Longitude: 113.9},
+	}, ridDevice, now); ok {
+		t.Fatal("RID device accepted DJI-Drone placeholder")
+	}
 }
 
 func TestProjectAOAUsesPlaceholders(t *testing.T) {

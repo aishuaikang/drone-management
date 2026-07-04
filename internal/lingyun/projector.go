@@ -20,6 +20,9 @@ func projectPosition(
 	if !isLingyunPositionSource(target.Source, device.Type) {
 		return senseDataObject{}, false
 	}
+	if isDJIDronePlaceholderModel(target.Model) {
+		return senseDataObject{}, false
+	}
 	if target.Drone == nil || !validCoordinate(target.Drone.Latitude, target.Drone.Longitude) {
 		return senseDataObject{}, false
 	}
@@ -104,6 +107,10 @@ func isLingyunPositionSource(source string, deviceType string) bool {
 	default:
 		return false
 	}
+}
+
+func isDJIDronePlaceholderModel(modelName string) bool {
+	return strings.EqualFold(strings.TrimSpace(modelName), "DJI-Drone")
 }
 
 func channelFromFrequency(frequency float64) string {
