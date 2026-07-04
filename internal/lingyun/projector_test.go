@@ -42,6 +42,56 @@ func TestProjectPositionRoutesAndFillsRequiredTelemetry(t *testing.T) {
 		*object.Extension.PilotLon != 114.2037 {
 		t.Fatalf("extension = %#v", object.Extension)
 	}
+	if object.Extension.Direction != nil ||
+		object.Extension.PilotAlt != nil ||
+		object.Extension.Angle != nil ||
+		object.Extension.VSpeed != nil ||
+		object.Extension.BaroAlt != nil ||
+		object.Extension.UAVType != nil ||
+		object.Extension.Status != nil {
+		t.Fatalf("RID optional-only fields must not be fabricated: %#v", object.Extension)
+	}
+}
+
+func TestProjectDCDUsesCommonDroneFields(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	device := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{
+		Type:      model.LingyunDeviceDCD,
+		BandWidth: "10MHz",
+	})
+	target := model.ScreenPositionTarget{
+		ID:        "dcd-1",
+		Serial:    "DCD-SN",
+		Model:     "DJI Air 3",
+		Source:    "dji_O4",
+		Frequency: 5796.5,
+		Drone:     &model.ScreenPositionPoint{Latitude: 31.821698, Longitude: 117.2391},
+		Pilot:     &model.ScreenPositionPoint{Latitude: 31.821778, Longitude: 117.239375},
+		LastSeen:  now,
+	}
+
+	object, ok := projectPosition(target, device, now)
+	if !ok {
+		t.Fatal("projectPosition() ok = false")
+	}
+	if object.ObjectID != "DCD-SN" ||
+		object.Longitude == nil ||
+		*object.Longitude != 117.2391 ||
+		object.Latitude == nil ||
+		*object.Latitude != 31.821698 {
+		t.Fatalf("DCD object = %#v", object)
+	}
+	if object.Extension.ObjectType != uavObjectType ||
+		object.Extension.Channel != "5.796GHz" ||
+		object.Extension.BandWidth != "10MHz" ||
+		object.Extension.UAVModel != "DJI Air 3" ||
+		object.Extension.UAVSN != "DCD-SN" ||
+		object.Extension.PilotLon == nil ||
+		*object.Extension.PilotLon != 117.239375 ||
+		object.Extension.PilotLat == nil ||
+		*object.Extension.PilotLat != 31.821778 {
+		t.Fatalf("DCD extension = %#v", object.Extension)
+	}
 }
 
 func TestProjectPositionSkipsWrongSourceAndMissingDrone(t *testing.T) {

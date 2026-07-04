@@ -72,8 +72,25 @@ func TestLingyunSettingsWithDefaultsAddsLogicalDevices(t *testing.T) {
 	}
 	if settings.Devices[3].CountermeasureRange != 3000 ||
 		!slices.Equal(settings.Devices[3].Bands, []string{"433M", "915M", "1.2G", "1.4G", "1.5G", "2.4G", "5.2G", "5.8G"}) ||
-		!slices.Equal(settings.Devices[3].InterferenceTypes, []int{0, 1, 2}) {
+		!slices.Equal(settings.Devices[3].InterferenceTypes, []int{0, 1, 2}) ||
+		settings.Devices[3].AntennaType != 1 ||
+		settings.Devices[3].ActiveAntennaType != 1 {
 		t.Fatalf("IFR defaults = %#v", settings.Devices[3])
+	}
+}
+
+func TestLingyunSettingsWithDefaultsKeepsInterferenceOmnidirectional(t *testing.T) {
+	settings := LingyunSettingsWithDefaults(LingyunSettings{
+		Devices: []LingyunDeviceSettings{
+			{
+				Type:              LingyunDeviceInterference,
+				AntennaType:       0,
+				ActiveAntennaType: 0,
+			},
+		},
+	})
+	if settings.Devices[3].AntennaType != 1 || settings.Devices[3].ActiveAntennaType != 1 {
+		t.Fatalf("IFR antenna defaults = %d/%d, want omnidirectional 1/1", settings.Devices[3].AntennaType, settings.Devices[3].ActiveAntennaType)
 	}
 }
 

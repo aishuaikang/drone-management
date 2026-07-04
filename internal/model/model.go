@@ -437,16 +437,8 @@ func LingyunDeviceSettingsWithDefaults(device LingyunDeviceSettings) LingyunDevi
 		if len(device.InterferenceTypes) == 0 {
 			device.InterferenceTypes = []int{0, 1, 2}
 		}
-		switch device.AntennaType {
-		case 0, 1, 2:
-		default:
-			device.AntennaType = 1
-		}
-		switch device.ActiveAntennaType {
-		case 0, 1:
-		default:
-			device.ActiveAntennaType = 1
-		}
+		device.AntennaType = 1
+		device.ActiveAntennaType = 1
 	}
 	return device
 }
@@ -662,18 +654,28 @@ type LingyunStatus struct {
 
 // LingyunDeviceStatus describes one logical Lingyun device runtime state.
 type LingyunDeviceStatus struct {
-	Type              string     `json:"type"`
-	Abbr              string     `json:"abbr"`
-	DeviceID          string     `json:"deviceId,omitempty"`
-	Enabled           bool       `json:"enabled"`
-	ReportingEnabled  bool       `json:"reportingEnabled"`
-	WorkState         int        `json:"workState"`
-	LastRegisterAt    *time.Time `json:"lastRegisterAt,omitempty"`
-	LastStatusAt      *time.Time `json:"lastStatusAt,omitempty"`
-	LastDataAt        *time.Time `json:"lastDataAt,omitempty"`
-	LastControlAt     *time.Time `json:"lastControlAt,omitempty"`
-	LastControlResult string     `json:"lastControlResult,omitempty"`
-	LastError         string     `json:"lastError,omitempty"`
+	Type              string              `json:"type"`
+	Abbr              string              `json:"abbr"`
+	DeviceID          string              `json:"deviceId,omitempty"`
+	Enabled           bool                `json:"enabled"`
+	ReportingEnabled  bool                `json:"reportingEnabled"`
+	WorkState         int                 `json:"workState"`
+	LastRegisterAt    *time.Time          `json:"lastRegisterAt,omitempty"`
+	LastStatusAt      *time.Time          `json:"lastStatusAt,omitempty"`
+	LastDataAt        *time.Time          `json:"lastDataAt,omitempty"`
+	LastControlAt     *time.Time          `json:"lastControlAt,omitempty"`
+	LastControlResult string              `json:"lastControlResult,omitempty"`
+	LastError         string              `json:"lastError,omitempty"`
+	PublishLogs       []LingyunPublishLog `json:"publishLogs,omitempty"`
+}
+
+// LingyunPublishLog describes one recent MQTT publish attempt for a logical Lingyun device.
+type LingyunPublishLog struct {
+	Kind    string    `json:"kind"`
+	Topic   string    `json:"topic"`
+	Success bool      `json:"success"`
+	At      time.Time `json:"at"`
+	Error   string    `json:"error,omitempty"`
 }
 
 // FPVVideoStatus describes the configured FPV video playback endpoint.

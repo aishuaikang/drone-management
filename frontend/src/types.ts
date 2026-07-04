@@ -98,6 +98,15 @@ export interface LingyunDeviceStatus {
   lastControlAt?: string;
   lastControlResult?: string;
   lastError?: string;
+  publishLogs?: LingyunPublishLog[];
+}
+
+export interface LingyunPublishLog {
+  kind: string;
+  topic: string;
+  success: boolean;
+  at: string;
+  error?: string;
 }
 
 export interface ScreenTCPPortRequest {

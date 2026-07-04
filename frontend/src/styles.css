@@ -5855,6 +5855,100 @@ button.screen-position-card__point {
   min-height: 2.2em;
 }
 
+.screen-lingyun-publish-log {
+  display: grid;
+  min-width: 0;
+  gap: 0.34em;
+  border-top: 1px solid rgba(168, 185, 183, 0.14);
+  padding-top: 0.48em;
+}
+
+.screen-lingyun-publish-log__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+
+.screen-lingyun-publish-log__header span {
+  color: rgba(247, 251, 250, 0.82);
+  font-size: 0.54em;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.screen-lingyun-publish-log p {
+  margin: 0;
+  color: rgba(204, 226, 224, 0.52);
+  font-size: 0.5em;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.screen-lingyun-publish-log__rows {
+  display: grid;
+  min-width: 0;
+  gap: 0.26em;
+}
+
+.screen-lingyun-publish-log-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(5.7em, auto) minmax(3.2em, auto) minmax(2.8em, auto) minmax(0, 1fr);
+  gap: 0.36em;
+  align-items: center;
+  border-left: 2px solid rgba(125, 211, 167, 0.62);
+  padding: 0.24em 0.34em;
+  background: rgba(4, 8, 10, 0.2);
+}
+
+.screen-lingyun-publish-log-row time,
+.screen-lingyun-publish-log-row span,
+.screen-lingyun-publish-log-row strong {
+  min-width: 0;
+  color: rgba(204, 226, 224, 0.72);
+  font-size: 0.48em;
+  font-weight: 820;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.screen-lingyun-publish-log-row strong {
+  color: #dcfce7;
+  font-weight: 900;
+}
+
+.screen-lingyun-publish-log-row code {
+  min-width: 0;
+  color: #e7fffb;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.46em;
+  font-weight: 740;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.screen-lingyun-publish-log-row em {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: #fecaca;
+  font-size: 0.46em;
+  font-style: normal;
+  font-weight: 780;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.screen-lingyun-publish-log-row--error {
+  border-left-color: rgba(251, 113, 133, 0.72);
+  background: rgba(127, 29, 29, 0.16);
+}
+
+.screen-lingyun-publish-log-row--error strong {
+  color: #fecaca;
+}
+
 .screen-lingyun-topic-list {
   display: grid;
   min-width: 0;
@@ -6494,6 +6588,14 @@ button.screen-position-card__point {
   .screen-lingyun-topic-row {
     grid-template-columns: 1fr;
     gap: 0.18em;
+  }
+
+  .screen-lingyun-publish-log-row {
+    grid-template-columns: minmax(5.7em, auto) minmax(3.2em, auto) minmax(2.8em, auto);
+  }
+
+  .screen-lingyun-publish-log-row code {
+    grid-column: 1 / -1;
   }
 
   .screen-settings-section--warning .screen-settings-form-grid,

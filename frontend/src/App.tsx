@@ -440,6 +440,14 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunControlRespTopic: "控制响应",
     lingyunShowTopics: "查看 Topic",
     lingyunHideTopics: "收起 Topic",
+    lingyunPublishLogs: "最近发送",
+    lingyunPublishLogEmpty: "暂无发送记录",
+    lingyunPublishSuccess: "成功",
+    lingyunPublishFailed: "失败",
+    lingyunPublishKindDevice: "注册",
+    lingyunPublishKindDeviceState: "状态",
+    lingyunPublishKindDeviceData: "数据",
+    lingyunPublishKindControlResp: "控制响应",
     aboutTitle: "关于软件",
     productName: "软件名称",
     softwareIdentityHint: "软件唯一 SN 由本机 MAC 地址生成，后续授权校验使用同一个 SN。",
@@ -830,6 +838,14 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunControlRespTopic: "Control response",
     lingyunShowTopics: "Show topics",
     lingyunHideTopics: "Hide topics",
+    lingyunPublishLogs: "Recent sends",
+    lingyunPublishLogEmpty: "No sends yet",
+    lingyunPublishSuccess: "Sent",
+    lingyunPublishFailed: "Failed",
+    lingyunPublishKindDevice: "Register",
+    lingyunPublishKindDeviceState: "Status",
+    lingyunPublishKindDeviceData: "Data",
+    lingyunPublishKindControlResp: "Control response",
     aboutTitle: "About",
     productName: "Product",
     softwareIdentityHint: "The software SN is generated from this machine's MAC address and will be reused for license checks.",
@@ -2839,6 +2855,7 @@ function ManagementView({
       ) : view === "lingyun" ? (
         <LingyunSettingsManagement
           t={t}
+          locale={locale}
           userSettings={userSettings}
           settingsLoaded={userSettingsLoaded}
           strikeState={strikeState}
@@ -3497,6 +3514,7 @@ function ScreenSettingsManagement({
 
 function LingyunSettingsManagement({
   t,
+  locale,
   userSettings,
   settingsLoaded,
   strikeState,
@@ -3505,6 +3523,7 @@ function LingyunSettingsManagement({
   onSaveUserSettings,
 }: {
   t: Record<string, string>;
+  locale: Locale;
   userSettings: UserSettings;
   settingsLoaded: boolean;
   strikeState: ScreenStrikeState | null;
@@ -3729,6 +3748,7 @@ function LingyunSettingsManagement({
               const device = draftLingyunWithRuntimeLocation.devices?.find((item) => item.type === type) ?? defaultLingyunDevice(type);
               const runtime = lingyunDeviceRuntime(status?.lingyun, type);
               const topics = lingyunDeviceTopics(draftLingyunWithRuntimeLocation, device, t);
+              const publishLogs = runtime?.publishLogs ?? [];
               const isInterference = type === "ifr";
               const topicsExpanded = Boolean(expandedTopicTypes[type]);
               const topicsId = `lingyun-topics-${type}`;
@@ -3839,6 +3859,30 @@ function LingyunSettingsManagement({
                         onChange={(event) => updateLingyunDevice(type, { deviceSpec: { ...device.deviceSpec, instLoc: event.target.value } })}
                       />
                     </label>
+                  </div>
+                  <div className="screen-lingyun-publish-log" aria-label={t.lingyunPublishLogs}>
+                    <div className="screen-lingyun-publish-log__header">
+                      <span>{t.lingyunPublishLogs}</span>
+                    </div>
+                    {publishLogs.length > 0 ? (
+                      <div className="screen-lingyun-publish-log__rows">
+                        {publishLogs.map((log, index) => (
+                          <div
+                            key={`${log.at}-${log.kind}-${index}`}
+                            className={log.success ? "screen-lingyun-publish-log-row" : "screen-lingyun-publish-log-row screen-lingyun-publish-log-row--error"}
+                            title={log.error || log.topic}
+                          >
+                            <time dateTime={log.at}>{formatLingyunPublishTime(log.at, locale)}</time>
+                            <span>{lingyunPublishKindLabel(log.kind, t)}</span>
+                            <strong>{log.success ? t.lingyunPublishSuccess : t.lingyunPublishFailed}</strong>
+                            <code>{log.topic}</code>
+                            {log.error ? <em>{log.error}</em> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p>{t.lingyunPublishLogEmpty}</p>
+                    )}
                   </div>
                   <div className="screen-lingyun-topic-summary">
                     <span>{t.lingyunTopics}</span>
@@ -7072,6 +7116,21 @@ function lingyunDeviceStatusLabel(status: NonNullable<ReturnType<typeof lingyunD
   return status.workState === 1 ? t.lingyunReporting : t.waiting;
 }
 
+function lingyunPublishKindLabel(kind: string, t: Record<string, string>) {
+  switch (kind) {
+    case "device":
+      return t.lingyunPublishKindDevice;
+    case "device_state":
+      return t.lingyunPublishKindDeviceState;
+    case "device_data":
+      return t.lingyunPublishKindDeviceData;
+    case "device_control_resp":
+      return t.lingyunPublishKindControlResp;
+    default:
+      return kind || "-";
+  }
+}
+
 function parseNumberInput(value: string) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -8108,6 +8167,20 @@ function formatTargetTime(value: string, locale: Locale) {
     return "-";
   }
   return new Date(time).toLocaleTimeString(locale, { hour12: false });
+}
+
+function formatLingyunPublishTime(value: string, locale: Locale) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) {
+    return "-";
+  }
+  return new Date(time).toLocaleTimeString(locale, {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+  });
 }
 
 function formatFullTime(value: string | undefined, locale: Locale) {
