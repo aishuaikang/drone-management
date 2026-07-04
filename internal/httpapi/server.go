@@ -2290,6 +2290,11 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 			settings.Lingyun = model.LingyunSettingsWithDeviceLocation(settings.Lingyun, location.Point)
 		}
 	}
+	if s != nil && s.lingyun != nil {
+		if clientID := strings.TrimSpace(s.lingyun.Status().ClientID); clientID != "" {
+			settings.Lingyun.ClientID = clientID
+		}
+	}
 	return model.UserSettingsWithDefaults(settings)
 }
 
@@ -2336,8 +2341,27 @@ func respondJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
+		if isClientDisconnectError(err) {
+			return
+		}
 		slog.Warn("写入 JSON 响应失败", "error", err)
 	}
+}
+
+func isClientDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, http.ErrAbortHandler) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "connection aborted") ||
+		strings.Contains(message, "forcibly closed") ||
+		strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "wsasend")
 }
 
 func respondError(w http.ResponseWriter, status int, message string) {

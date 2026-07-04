@@ -91,6 +91,31 @@ func TestScreenRoutes(t *testing.T) {
 	}
 }
 
+func TestClientDisconnectErrorDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "windows wsasend abort",
+			err:  errors.New("write tcp 127.0.0.1:18080->127.0.0.1:58495: wsasend: An established connection was aborted by the software in your host machine."),
+			want: true,
+		},
+		{name: "broken pipe", err: errors.New("write: broken pipe"), want: true},
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "real write error", err: errors.New("json encode failed"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isClientDisconnectError(tt.err); got != tt.want {
+				t.Fatalf("isClientDisconnectError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLicenseStatusReturnsCurrentDeviceSNWhenMissing(t *testing.T) {
 	deviceSN := "drone-management-001A2B3C4D5E"
 	s := newTestServerWithLicense(t, filepath.Join(t.TempDir(), "license.lic"), deviceSN)
@@ -676,7 +701,7 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	}
 }
 
-func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T) {
+func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomDeviceID(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
 	s := newTestServer(t, state)
@@ -700,6 +725,9 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T)
 			},
 		},
 	}
+	s.lingyun = &memoryLingyunService{
+		status: model.LingyunStatus{ClientID: "runtime-client"},
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/user/settings", nil)
 	rec := httptest.NewRecorder()
@@ -714,6 +742,9 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T)
 	if len(body.Lingyun.Devices) != 4 {
 		t.Fatalf("devices = %#v, want 4", body.Lingyun.Devices)
 	}
+	if body.Lingyun.ClientID != "runtime-client" {
+		t.Fatalf("clientId = %q, want runtime-client", body.Lingyun.ClientID)
+	}
 	for _, device := range body.Lingyun.Devices {
 		if device.DeviceLongitude != 116.5678 || device.DeviceLatitude != 39.1234 {
 			t.Fatalf("device %s location = %.4f/%.4f, want 116.5678/39.1234", device.Type, device.DeviceLongitude, device.DeviceLatitude)
@@ -721,6 +752,12 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocation(t *testing.T)
 	}
 	if identity := model.NewLingyunDeviceSN(); identity != "" {
 		for _, device := range body.Lingyun.Devices {
+			if device.Type == model.LingyunDeviceAOA {
+				if device.DeviceID != "old-device" || device.DeviceSpec.DevSN != "old-sn" {
+					t.Fatalf("AOA custom identity = %q/%q", device.DeviceID, device.DeviceSpec.DevSN)
+				}
+				continue
+			}
 			if device.DeviceID != identity || device.DeviceSpec.DevSN != identity {
 				t.Fatalf("device %s identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
 			}

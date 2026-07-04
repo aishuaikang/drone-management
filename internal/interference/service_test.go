@@ -19,6 +19,7 @@ type fakeOutput struct {
 	lowErr         error
 	stateErr       error
 	cleaned        bool
+	readCount      int
 	timedDurations []time.Duration
 }
 
@@ -68,12 +69,14 @@ func (o *fakeOutput) SetLow() error {
 func (o *fakeOutput) GetValue() (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.readCount++
 	return o.value, nil
 }
 
 func (o *fakeOutput) GetState() (OutputState, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.readCount++
 	if o.stateErr != nil {
 		return OutputState{}, o.stateErr
 	}
@@ -96,6 +99,7 @@ func (o *fakeOutput) snapshot() fakeOutputSnapshot {
 		value:          o.value,
 		remaining:      o.remaining,
 		cleaned:        o.cleaned,
+		readCount:      o.readCount,
 		timedDurations: append([]time.Duration{}, o.timedDurations...),
 	}
 }
@@ -117,6 +121,7 @@ type fakeOutputSnapshot struct {
 	value          int
 	remaining      time.Duration
 	cleaned        bool
+	readCount      int
 	timedDurations []time.Duration
 }
 
@@ -302,6 +307,22 @@ func TestSetStateRejectsTimedChannels(t *testing.T) {
 	}
 }
 
+func TestListChannelsCachedDoesNotReadOutputs(t *testing.T) {
+	outputCreated := false
+	service := NewService(store.New(10, 10), DefaultChannels(), func(_ int) Output {
+		outputCreated = true
+		return &fakeOutput{}
+	})
+
+	channels := service.ListChannelsCached()
+	if len(channels) != len(DefaultChannels()) {
+		t.Fatalf("channels = %d, want %d", len(channels), len(DefaultChannels()))
+	}
+	if outputCreated {
+		t.Fatal("ListChannelsCached() should not create or read relay outputs")
+	}
+}
+
 func TestScreenStrikeCreatesFailedReportOnPinError(t *testing.T) {
 	cause := errors.New("relay failed")
 	service := NewService(store.New(10, 10), DefaultChannels(), func(_ int) Output {
@@ -399,6 +420,33 @@ func TestScreenStrikeReadFailureDoesNotUseStaleActiveState(t *testing.T) {
 	}
 	if updatedReports := reports.updatedReports(); len(updatedReports) != 1 || updatedReports[0].Status != model.InterferenceReportStatusCompleted {
 		t.Fatalf("report should complete after confirmed inactive state: %#v", updatedReports)
+	}
+}
+
+func TestScreenStrikeActiveUsesCachedState(t *testing.T) {
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
+
+	state, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("SetScreenStrike(start) error = %v", err)
+	}
+	if !state.Active {
+		t.Fatalf("started state should be active: %#v", state)
+	}
+
+	before := outputs[1].snapshot().readCount
+	outputs[1].setStateErr(errors.New("relay read should not be needed"))
+	if !service.ScreenStrikeActive() {
+		t.Fatal("ScreenStrikeActive() = false, want cached active state")
+	}
+	after := outputs[1].snapshot().readCount
+	if after != before {
+		t.Fatalf("relay read count = %d, want unchanged %d", after, before)
 	}
 }
 

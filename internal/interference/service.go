@@ -239,6 +239,22 @@ func (s *Service) ListChannels() []model.InterferenceChannel {
 	return result
 }
 
+// ListChannelsCached returns channel metadata and last observed state without reading relay outputs.
+func (s *Service) ListChannelsCached() []model.InterferenceChannel {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]model.InterferenceChannel, 0, len(s.order))
+	for _, id := range s.order {
+		state := s.channels[id]
+		if state == nil {
+			continue
+		}
+		result = append(result, state.dto())
+	}
+	return result
+}
+
 // SetState sets one channel high or low.
 func (s *Service) SetState(id string, enabled bool) (model.InterferenceChannel, error) {
 	id = strings.TrimSpace(id)
@@ -273,6 +289,23 @@ func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
 		s.publishScreenStrikeLocked(snapshot.state)
 	}
 	return snapshot.state
+}
+
+// ScreenStrikeActive returns the last observed strike activity without reading relay outputs.
+func (s *Service) ScreenStrikeActive() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, id := range s.order {
+		state := s.channels[id]
+		if state == nil || state.def.Reserved {
+			continue
+		}
+		if state.enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // SetScreenStrike starts or stops screen interference operation.

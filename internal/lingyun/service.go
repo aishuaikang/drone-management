@@ -39,6 +39,10 @@ type interferenceController interface {
 	SetScreenStrike(model.ScreenStrikeRequest) (model.ScreenStrikeState, error)
 }
 
+type interferenceCachedChannelProvider interface {
+	ListChannelsCached() []model.InterferenceChannel
+}
+
 // WithTransport replaces MQTT transport, primarily for tests.
 func WithTransport(transport transport) Option {
 	return func(s *Service) {
@@ -100,6 +104,7 @@ type Service struct {
 	pending     map[string]map[string]senseDataObject
 	status      model.LingyunStatus
 	settingsKey string
+	clientID    string
 	subscribed  bool
 	seeded      bool
 	wake        chan struct{}
@@ -113,6 +118,7 @@ func NewService(state *store.Store, settings model.UserSettings, opts ...Option)
 		now:       time.Now,
 		states:    map[string]*deviceRuntimeState{},
 		pending:   map[string]map[string]senseDataObject{},
+		clientID:  model.NewLingyunClientID(),
 		wake:      make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
@@ -133,13 +139,10 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 	now := s.now()
 
 	s.mu.Lock()
-	if strings.TrimSpace(next.ClientID) == "" {
-		if current := strings.TrimSpace(s.settings.ClientID); current != "" {
-			next.ClientID = current
-		} else {
-			next.ClientID = model.NewLingyunClientID()
-		}
+	if strings.TrimSpace(s.clientID) == "" {
+		s.clientID = model.NewLingyunClientID()
 	}
+	next.ClientID = s.clientID
 	key := settingsFingerprint(next)
 	changed := s.settingsKey != key
 	s.settings = next
@@ -154,6 +157,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 	}
 	s.status.Enabled = next.Enabled
 	s.status.Configured = lingyunConfigured(next)
+	s.status.ClientID = strings.TrimSpace(next.ClientID)
 	s.status.Broker = strings.TrimSpace(next.Broker)
 	s.status.UpdatedAt = cloneTime(now)
 	if changed {
@@ -171,6 +175,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 			state.PublishLogs = nil
 		}
 		s.status.Connected = false
+		s.status.Connecting = next.Enabled && lingyunConfigured(next)
 	}
 	s.mu.Unlock()
 
@@ -227,6 +232,7 @@ func (s *Service) tick(ctx context.Context) {
 		s.setConnected(false, "Lingyun MQTT/provider/device config is incomplete")
 		return
 	}
+	s.setConnecting(true, "")
 	if err := s.connect(ctx, settings); err != nil {
 		s.setConnected(false, err.Error())
 		return
@@ -280,7 +286,7 @@ func (s *Service) publishDeviceJob(ctx context.Context, settings model.LingyunSe
 		if !s.settingsKeyMatches(job.settingsKey) {
 			return
 		}
-		if err := s.publishRegistration(ctx, settings, job.def, job.device); err != nil {
+		if err := s.publishRegistration(ctx, settings, job.settingsKey, job.def, job.device); err != nil {
 			if s.settingsKeyMatches(job.settingsKey) {
 				s.setDeviceError(job.device.Type, err.Error())
 			}
@@ -290,7 +296,7 @@ func (s *Service) publishDeviceJob(ctx context.Context, settings model.LingyunSe
 		if !s.settingsKeyMatches(job.settingsKey) {
 			return
 		}
-		if err := s.publishStatus(ctx, settings, job.def, job.device); err != nil {
+		if err := s.publishStatus(ctx, settings, job.settingsKey, job.def, job.device); err != nil {
 			if s.settingsKeyMatches(job.settingsKey) {
 				s.setDeviceError(job.device.Type, err.Error())
 			}
@@ -300,7 +306,7 @@ func (s *Service) publishDeviceJob(ctx context.Context, settings model.LingyunSe
 		if !s.settingsKeyMatches(job.settingsKey) {
 			return
 		}
-		if err := s.flushDevice(ctx, settings, job.def, job.device); err != nil {
+		if err := s.flushDevice(ctx, settings, job.settingsKey, job.def, job.device); err != nil {
 			if s.settingsKeyMatches(job.settingsKey) {
 				s.setDeviceError(job.device.Type, err.Error())
 			}
@@ -321,57 +327,82 @@ func (s *Service) connect(ctx context.Context, settings model.LingyunSettings) e
 	}); err != nil {
 		return err
 	}
-	for _, device := range settings.Devices {
-		def, ok := definitionByType(device.Type)
-		if !ok || !device.Enabled || strings.TrimSpace(device.DeviceID) == "" {
-			continue
-		}
-		topic := controlTopic(settings, def, device)
-		if err := s.transport.Subscribe(ctx, topic, s.handleControlMessage); err != nil {
-			return err
-		}
+	if err := s.subscribeControls(ctx, settings); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	s.subscribed = true
 	s.status.Connected = true
+	s.status.Connecting = false
 	s.status.LastError = ""
 	s.status.UpdatedAt = cloneTime(s.now())
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *Service) publishRegistration(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
+func (s *Service) subscribeControls(ctx context.Context, settings model.LingyunSettings) error {
+	topics := make([]string, 0, len(settings.Devices))
+	for _, device := range settings.Devices {
+		def, ok := definitionByType(device.Type)
+		if !ok || !device.Enabled || strings.TrimSpace(device.DeviceID) == "" {
+			continue
+		}
+		topics = append(topics, controlTopic(settings, def, device))
+	}
+	errCh := make(chan error, len(topics))
+	for _, topic := range topics {
+		topic := topic
+		go func() {
+			errCh <- s.transport.Subscribe(ctx, topic, s.handleControlMessage)
+		}()
+	}
+	var firstErr error
+	for range topics {
+		if err := <-errCh; err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (s *Service) publishRegistration(ctx context.Context, settings model.LingyunSettings, settingsKey string, def deviceDefinition, device model.LingyunDeviceSettings) error {
 	device = s.deviceWithCurrentLocation(device)
 	device = s.deviceWithCurrentInterferenceBands(device)
 	payload := buildDevicePayload(settings, def, device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device")
-	err := s.publishJSON(ctx, topic, payload)
-	s.recordDevicePublish(device.Type, "device", topic, err)
+	payloadText, err := s.publishJSON(ctx, topic, payload)
+	if s.settingsKeyMatches(settingsKey) {
+		s.recordDevicePublish(device.Type, "device", topic, payloadText, err)
+	}
 	if err != nil {
 		return err
 	}
-	if s.settingsKeyMatches(settingsFingerprint(settings)) {
+	if s.settingsKeyMatches(settingsKey) {
 		s.markDevicePublished(device.Type, "register")
 	}
 	return nil
 }
 
-func (s *Service) publishStatus(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
+func (s *Service) publishStatus(ctx context.Context, settings model.LingyunSettings, settingsKey string, def deviceDefinition, device model.LingyunDeviceSettings) error {
 	device = s.deviceWithCurrentLocation(device)
 	payload := buildStatusPayload(device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device_state")
-	err := s.publishJSON(ctx, topic, payload)
-	s.recordDevicePublish(device.Type, "device_state", topic, err)
+	payloadText, err := s.publishJSON(ctx, topic, payload)
+	if s.settingsKeyMatches(settingsKey) {
+		s.recordDevicePublish(device.Type, "device_state", topic, payloadText, err)
+	}
 	if err != nil {
 		return err
 	}
-	if s.settingsKeyMatches(settingsFingerprint(settings)) {
+	if s.settingsKeyMatches(settingsKey) {
 		s.markDevicePublished(device.Type, "status")
 	}
 	return nil
 }
 
-func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings) error {
+func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSettings, settingsKey string, def deviceDefinition, device model.LingyunDeviceSettings) error {
 	if device.Type == model.LingyunDeviceInterference {
 		return nil
 	}
@@ -391,29 +422,31 @@ func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSetting
 		Objects:         objects,
 	}
 	topic := deviceTopic(settings, def, device, "device_data")
-	err := s.publishJSON(ctx, topic, payload)
-	s.recordDevicePublish(device.Type, "device_data", topic, err)
+	payloadText, err := s.publishJSON(ctx, topic, payload)
+	if s.settingsKeyMatches(settingsKey) {
+		s.recordDevicePublish(device.Type, "device_data", topic, payloadText, err)
+	}
 	if err != nil {
 		s.restorePending(device.Type, objects)
 		return err
 	}
-	if s.settingsKeyMatches(settingsFingerprint(settings)) {
+	if s.settingsKeyMatches(settingsKey) {
 		s.markDevicePublished(device.Type, "data")
 	}
 	return nil
 }
 
-func (s *Service) publishJSON(ctx context.Context, topic string, payload any) error {
+func (s *Service) publishJSON(ctx context.Context, topic string, payload any) (string, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("marshal Lingyun payload: %w", err)
+		return "", fmt.Errorf("marshal Lingyun payload: %w", err)
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
 	defer cancel()
 	if err := s.transport.Publish(publishCtx, topic, data); err != nil {
-		return err
+		return string(data), err
 	}
-	return nil
+	return string(data), nil
 }
 
 func (s *Service) deviceWithCurrentLocation(device model.LingyunDeviceSettings) model.LingyunDeviceSettings {
@@ -434,7 +467,13 @@ func (s *Service) deviceWithCurrentInterferenceBands(device model.LingyunDeviceS
 	if device.Type != model.LingyunDeviceInterference || s.interference == nil {
 		return device
 	}
-	if bands := lingyunInterferenceBandsFromChannels(s.interference.ListChannels()); len(bands) > 0 {
+	var channels []model.InterferenceChannel
+	if provider, ok := s.interference.(interferenceCachedChannelProvider); ok {
+		channels = provider.ListChannelsCached()
+	} else {
+		channels = s.interference.ListChannels()
+	}
+	if bands := lingyunInterferenceBandsFromChannels(channels); len(bands) > 0 {
 		device.Bands = bands
 	}
 	return device
@@ -769,8 +808,8 @@ func normalizeInterferenceDuration(seconds int) int {
 func (s *Service) publishControlResponse(settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings, req controlEnvelope, code int, message string) {
 	resp := buildControlResponse(req, code, message, s.now())
 	topic := controlResponseTopic(settings, def, device)
-	err := s.publishJSON(context.Background(), topic, resp)
-	s.recordDevicePublish(device.Type, "device_control_resp", topic, err)
+	payloadText, err := s.publishJSON(context.Background(), topic, resp)
+	s.recordDevicePublish(device.Type, "device_control_resp", topic, payloadText, err)
 	if err != nil {
 		s.setDeviceError(device.Type, err.Error())
 	}
@@ -911,7 +950,7 @@ func (s *Service) markDevicePublished(deviceType string, kind string) {
 	s.status.UpdatedAt = cloneTime(now)
 }
 
-func (s *Service) recordDevicePublish(deviceType string, kind string, topic string, err error) {
+func (s *Service) recordDevicePublish(deviceType string, kind string, topic string, payload string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state := s.deviceStateLocked(deviceType)
@@ -919,6 +958,7 @@ func (s *Service) recordDevicePublish(deviceType string, kind string, topic stri
 	entry := model.LingyunPublishLog{
 		Kind:    kind,
 		Topic:   topic,
+		Payload: payload,
 		Success: err == nil,
 		At:      now,
 	}
@@ -963,8 +1003,25 @@ func (s *Service) setConnected(connected bool, message string) {
 	defer s.mu.Unlock()
 	s.status.Enabled = s.settings.Enabled
 	s.status.Configured = lingyunConfigured(s.settings)
+	s.status.ClientID = strings.TrimSpace(s.settings.ClientID)
 	s.status.Broker = strings.TrimSpace(s.settings.Broker)
 	s.status.Connected = connected
+	s.status.Connecting = false
+	s.status.LastError = message
+	s.status.UpdatedAt = cloneTime(s.now())
+}
+
+func (s *Service) setConnecting(connecting bool, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status.Enabled = s.settings.Enabled
+	s.status.Configured = lingyunConfigured(s.settings)
+	s.status.ClientID = strings.TrimSpace(s.settings.ClientID)
+	s.status.Broker = strings.TrimSpace(s.settings.Broker)
+	s.status.Connecting = connecting
+	if connecting {
+		s.status.Connected = false
+	}
 	s.status.LastError = message
 	s.status.UpdatedAt = cloneTime(s.now())
 }
@@ -975,6 +1032,7 @@ func (s *Service) markDisconnected() {
 	s.subscribed = false
 	s.seeded = false
 	s.status.Connected = false
+	s.status.Connecting = false
 	s.status.UpdatedAt = cloneTime(s.now())
 }
 

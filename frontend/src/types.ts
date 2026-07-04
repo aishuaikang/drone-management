@@ -79,6 +79,8 @@ export interface LingyunStatus {
   enabled: boolean;
   configured: boolean;
   connected: boolean;
+  connecting?: boolean;
+  clientId?: string;
   broker?: string;
   lastError?: string;
   updatedAt?: string;
@@ -104,6 +106,7 @@ export interface LingyunDeviceStatus {
 export interface LingyunPublishLog {
   kind: string;
   topic: string;
+  payload?: string;
   success: boolean;
   at: string;
   error?: string;

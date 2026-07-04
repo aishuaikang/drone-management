@@ -252,6 +252,7 @@ const labels: Record<Locale, Record<string, string>> = {
     positionTcp: "定位 TCP",
     fpvTcp: "FPV TCP",
     connected: "已连接",
+    connecting: "连接中",
     disconnected: "未连接",
     enabled: "已启用",
     disabled: "已停用",
@@ -442,6 +443,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunHideTopics: "收起 Topic",
     lingyunPublishLogs: "最近发送",
     lingyunPublishLogEmpty: "暂无发送记录",
+    lingyunPublishPayload: "内容",
     lingyunPublishSuccess: "成功",
     lingyunPublishFailed: "失败",
     lingyunPublishKindDevice: "注册",
@@ -650,6 +652,7 @@ const labels: Record<Locale, Record<string, string>> = {
     positionTcp: "Position TCP",
     fpvTcp: "FPV TCP",
     connected: "Connected",
+    connecting: "Connecting",
     disconnected: "Disconnected",
     enabled: "Enabled",
     disabled: "Disabled",
@@ -840,6 +843,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunHideTopics: "Hide topics",
     lingyunPublishLogs: "Recent sends",
     lingyunPublishLogEmpty: "No sends yet",
+    lingyunPublishPayload: "Payload",
     lingyunPublishSuccess: "Sent",
     lingyunPublishFailed: "Failed",
     lingyunPublishKindDevice: "Register",
@@ -1091,6 +1095,7 @@ export function App() {
   const [deviceLocation, setDeviceLocation] = useState<ScreenDeviceLocationResponse | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => defaultUserSettings());
   const [userSettingsLoaded, setUserSettingsLoaded] = useState(false);
+  const userSettingsLoadingRef = useRef(false);
   const [strikeState, setStrikeState] = useState<ScreenStrikeState | null>(null);
   const [whitelistBusySerial, setWhitelistBusySerial] = useState("");
   const [selectedPositionId, setSelectedPositionId] = useState("");
@@ -1157,6 +1162,20 @@ export function App() {
     setStrikeStateSyncedAt(currentServerTimeMs());
   }, [currentServerTimeMs]);
 
+  const syncUserSettings = useCallback(async () => {
+    if (userSettingsLoadingRef.current) {
+      return;
+    }
+    userSettingsLoadingRef.current = true;
+    try {
+      const settings = await getUserSettings();
+      setUserSettings(resolveUserSettings(settings));
+      setUserSettingsLoaded(true);
+    } finally {
+      userSettingsLoadingRef.current = false;
+    }
+  }, []);
+
   const syncLicenseStatus = useCallback(async () => {
     try {
       const nextLicense = await getLicenseStatus();
@@ -1201,6 +1220,20 @@ export function App() {
     if (!licenseValid) {
       return;
     }
+    void syncUserSettings().catch(() => undefined);
+  }, [licenseValid, syncUserSettings]);
+
+  useEffect(() => {
+    if (!licenseValid || effectiveView !== "lingyun" || userSettingsLoaded) {
+      return;
+    }
+    void syncUserSettings().catch(() => undefined);
+  }, [effectiveView, licenseValid, syncUserSettings, userSettingsLoaded]);
+
+  useEffect(() => {
+    if (!licenseValid) {
+      return;
+    }
     let cancelled = false;
     let syncing = false;
 
@@ -1225,10 +1258,7 @@ export function App() {
         apply(getScreenPositions(targetLimit), (response) => setPositions(sortPositions(response.items))),
         apply(getScreenFPV(targetLimit), (response) => setFPV(sortFPV(response.items))),
         apply(getScreenDeviceLocation(), setDeviceLocation),
-        apply(getUserSettings(), (settings) => {
-          setUserSettings(resolveUserSettings(settings));
-          setUserSettingsLoaded(true);
-        }),
+        apply(syncUserSettings(), () => undefined),
         apply(getScreenStrike(), syncStrikeState),
       ]);
       if (!cancelled) {
@@ -1243,7 +1273,37 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [licenseValid, syncRuntimeStatus, syncStrikeState]);
+  }, [licenseValid, syncRuntimeStatus, syncStrikeState, syncUserSettings]);
+
+  useEffect(() => {
+    if (!licenseValid || effectiveView !== "lingyun") {
+      return;
+    }
+    let cancelled = false;
+    let syncing = false;
+    const syncLingyunStatus = async () => {
+      if (syncing) {
+        return;
+      }
+      syncing = true;
+      try {
+        const nextStatus = await getScreenStatus();
+        if (!cancelled) {
+          syncRuntimeStatus(nextStatus);
+        }
+      } catch {
+        // The main status poll owns the visible connection error message.
+      } finally {
+        syncing = false;
+      }
+    };
+    void syncLingyunStatus();
+    const timer = window.setInterval(() => void syncLingyunStatus(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [effectiveView, licenseValid, syncRuntimeStatus]);
 
   useEffect(() => {
     if (!licenseValid) {
@@ -1363,8 +1423,9 @@ export function App() {
     });
     const resolved = resolveUserSettings(saved);
     setUserSettings(resolved);
+    void getScreenStatus().then(syncRuntimeStatus).catch(() => undefined);
     return resolved;
-  }, [userSettings]);
+  }, [syncRuntimeStatus, userSettings]);
 
   const handleTogglePositionWhitelist = useCallback(async (target: ScreenPositionTarget) => {
     const serial = target.serial.trim();
@@ -3545,8 +3606,16 @@ function LingyunSettingsManagement({
   const savedLingyunWithRuntimeLocation = resolveLingyunSettingsWithDeviceLocation(savedLingyun, deviceLocation);
   const changed = JSON.stringify(draftLingyunWithRuntimeLocation) !== JSON.stringify(savedLingyunWithRuntimeLocation);
   const softwareSN = lingyunDeviceIdentity(draftLingyunWithRuntimeLocation) || "-";
+  const runtimeClientId = status?.lingyun?.clientId?.trim() || draftLingyunWithRuntimeLocation.clientId || "-";
   const interferenceBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
   const [expandedTopicTypes, setExpandedTopicTypes] = useState<Record<string, boolean>>({});
+  const settingsPending = !settingsLoaded;
+  const managementClassName = [
+    "screen-management",
+    "screen-management--lingyun",
+    banner ? "screen-management--with-banner" : "",
+    settingsPending ? "screen-management--loading" : "",
+  ].filter(Boolean).join(" ");
 
   const updateLingyun = (patch: Partial<NonNullable<UserSettings["lingyun"]>>) => {
     setLingyunDraft((current) => ({ ...current, ...patch }));
@@ -3567,6 +3636,10 @@ function LingyunSettingsManagement({
   };
 
   const saveLingyun = async () => {
+    if (settingsPending) {
+      setBanner(t.waiting);
+      return;
+    }
     if (!validLingyunSettings(normalizedLingyun)) {
       setBanner(t.lingyunInvalid);
       return;
@@ -3583,30 +3656,12 @@ function LingyunSettingsManagement({
     }
   };
 
-  if (!settingsLoaded) {
-    return (
-      <div className="screen-management screen-management--lingyun">
-        <div className="screen-management__header">
-          <div className="screen-panel-title">
-            <span className="screen-panel-title__icon screen-panel-title__icon--target">
-              <Globe2 aria-hidden="true" />
-            </span>
-            <span className="screen-panel-title__text">
-              <em>{t.lingyunView}</em>
-              <strong>{t.lingyunSettings}</strong>
-            </span>
-          </div>
-        </div>
-        <div className="screen-management-empty">
-          <Loader2 className="app-spinner" size={16} aria-hidden="true" />
-          <span>{t.waiting}</span>
-        </div>
-      </div>
-    );
+  if (settingsPending) {
+    return <LingyunSettingsSkeleton t={t} managementClassName={managementClassName} />;
   }
 
   return (
-    <div className={banner ? "screen-management screen-management--lingyun screen-management--with-banner" : "screen-management screen-management--lingyun"}>
+    <div className={managementClassName}>
       <div className="screen-management__header">
         <div className="screen-panel-title">
           <span className="screen-panel-title__icon screen-panel-title__icon--target">
@@ -3617,6 +3672,12 @@ function LingyunSettingsManagement({
             <strong>{t.lingyunSettings}</strong>
           </span>
         </div>
+        {settingsPending ? (
+          <span className="screen-lingyun-loading-pill">
+            <Loader2 className="app-spinner" size={13} aria-hidden="true" />
+            <span>{t.waiting}</span>
+          </span>
+        ) : null}
       </div>
 
       <div className="screen-lingyun-page">
@@ -3658,7 +3719,7 @@ function LingyunSettingsManagement({
               </label>
               <label>
                 <span>{t.lingyunClientId}</span>
-                <LingyunStaticValue value={draftLingyunWithRuntimeLocation.clientId ?? "-"} />
+                <LingyunStaticValue value={runtimeClientId} />
               </label>
               <label>
                 <span>{t.lingyunSoftwareSN}</span>
@@ -3722,7 +3783,10 @@ function LingyunSettingsManagement({
             <div className="screen-info-grid screen-lingyun-status-grid">
               <div className="screen-info-block">
                 <span>{t.status}</span>
-                <strong>{lingyunStatusLabel(status?.lingyun, t)}</strong>
+                <strong className={lingyunStatusLoading(status?.lingyun) ? "screen-lingyun-status-value screen-lingyun-status-value--loading" : "screen-lingyun-status-value"}>
+                  {lingyunStatusLoading(status?.lingyun) ? <i aria-hidden="true" /> : null}
+                  <span>{lingyunStatusLabel(status?.lingyun, t)}</span>
+                </strong>
               </div>
               <div className="screen-info-block">
                 <span>{t.lingyunBroker}</span>
@@ -3765,6 +3829,15 @@ function LingyunSettingsManagement({
                         type="checkbox"
                         checked={device.enabled}
                         onChange={(event) => updateLingyunDevice(type, { enabled: event.target.checked })}
+                      />
+                    </label>
+                    <label>
+                      <span>{t.lingyunDeviceId}</span>
+                      <input
+                        value={device.deviceId ?? ""}
+                        maxLength={64}
+                        placeholder={softwareSN}
+                        onChange={(event) => updateLingyunDevice(type, { deviceId: event.target.value })}
                       />
                     </label>
                     <label>
@@ -3870,12 +3943,18 @@ function LingyunSettingsManagement({
                           <div
                             key={`${log.at}-${log.kind}-${index}`}
                             className={log.success ? "screen-lingyun-publish-log-row" : "screen-lingyun-publish-log-row screen-lingyun-publish-log-row--error"}
-                            title={log.error || log.topic}
+                            title={log.error || log.payload || log.topic}
                           >
                             <time dateTime={log.at}>{formatLingyunPublishTime(log.at, locale)}</time>
                             <span>{lingyunPublishKindLabel(log.kind, t)}</span>
                             <strong>{log.success ? t.lingyunPublishSuccess : t.lingyunPublishFailed}</strong>
                             <code>{log.topic}</code>
+                            {log.payload ? (
+                              <div className="screen-lingyun-publish-log-row__payload">
+                                <span>{t.lingyunPublishPayload}</span>
+                                <pre>{log.payload}</pre>
+                              </div>
+                            ) : null}
                             {log.error ? <em>{log.error}</em> : null}
                           </div>
                         ))}
@@ -3918,17 +3997,155 @@ function LingyunSettingsManagement({
       <div className="screen-management__footer screen-settings-actions">
         <button
           type="button"
-          disabled={saving}
+          disabled={saving || settingsPending}
           onClick={() => setLingyunDraft(defaultLingyunSettings(createLingyunClientID(), lingyunDeviceIdentity(savedLingyun)))}
         >
           <RefreshCw size={14} aria-hidden="true" />
           <span>{t.restoreDefault}</span>
         </button>
-        <button type="button" disabled={saving || !changed} onClick={() => void saveLingyun()}>
+        <button type="button" disabled={saving || settingsPending || !changed} onClick={() => void saveLingyun()}>
           {saving ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
           <span>{t.save}</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+function LingyunSettingsSkeleton({
+  t,
+  managementClassName,
+}: {
+  t: Record<string, string>;
+  managementClassName: string;
+}) {
+  const connectionFields = [
+    t.lingyunEnabled,
+    t.lingyunBroker,
+    t.lingyunProviderCode,
+    t.lingyunClientId,
+    t.lingyunSoftwareSN,
+    t.lingyunUsername,
+    t.lingyunPassword,
+    t.lingyunProtocolVersion,
+    t.lingyunPublishInterval,
+    t.lingyunRegisterInterval,
+    t.lingyunStatusInterval,
+  ];
+  const deviceFields = [
+    t.enabled,
+    t.lingyunDeviceId,
+    t.lingyunDeviceName,
+    t.longitude,
+    t.latitude,
+    t.altitude,
+    t.lingyunInstallMode,
+    t.lingyunDetectionRange,
+    t.lingyunDevModel,
+    t.lingyunInstallLocation,
+  ];
+
+  return (
+    <div className={managementClassName}>
+      <div className="screen-management__header">
+        <div className="screen-panel-title">
+          <span className="screen-panel-title__icon screen-panel-title__icon--target">
+            <Globe2 aria-hidden="true" />
+          </span>
+          <span className="screen-panel-title__text">
+            <em>{t.lingyunView}</em>
+            <strong>{t.lingyunSettings}</strong>
+          </span>
+        </div>
+        <span className="screen-lingyun-loading-pill">
+          <Loader2 className="app-spinner" size={13} aria-hidden="true" />
+          <span>{t.waiting}</span>
+        </span>
+      </div>
+
+      <div className="screen-lingyun-page" aria-busy="true">
+        <section className="screen-settings-section screen-lingyun-connection">
+          <header>
+            <span className="screen-settings-section__icon">
+              <Signal size={15} aria-hidden="true" />
+            </span>
+            <span className="screen-settings-section__heading">
+              <strong>{t.lingyunConnectionSettings}</strong>
+              <span>{t.lingyunSettingsHint}</span>
+            </span>
+          </header>
+          <div className="screen-lingyun-settings">
+            <div className="screen-settings-form-grid screen-settings-form-grid--lingyun-main">
+              {connectionFields.map((label, index) => (
+                <LingyunSkeletonField key={`${label}-${index}`} label={label} wide={index === 1} />
+              ))}
+            </div>
+            <div className="screen-info-grid screen-lingyun-status-grid">
+              {[t.status, t.lingyunBroker, t.lingyunLastError].map((label) => (
+                <div key={label} className="screen-info-block screen-lingyun-skeleton-info">
+                  <span>{label}</span>
+                  <i aria-hidden="true" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="screen-lingyun-device-section">
+          <header className="screen-lingyun-device-section__header">
+            <span>
+              <strong>{t.lingyunDeviceSettings}</strong>
+              <em>{t.lingyunSettingsHint}</em>
+            </span>
+          </header>
+          <div className="screen-lingyun-device-grid screen-lingyun-device-grid--page">
+            {lingyunDeviceTypes.map((type) => (
+              <article key={type} className="screen-lingyun-device screen-lingyun-device--skeleton">
+                <header>
+                  <strong>{lingyunDeviceLabel(type, t)}</strong>
+                  <i aria-hidden="true" />
+                </header>
+                <div className="screen-lingyun-device-form">
+                  {deviceFields.map((label, index) => (
+                    <LingyunSkeletonField key={`${type}-${label}-${index}`} label={label} wide={index === 2} />
+                  ))}
+                </div>
+                <div className="screen-lingyun-publish-log screen-lingyun-publish-log--skeleton">
+                  <div className="screen-lingyun-publish-log__header">
+                    <span>{t.lingyunPublishLogs}</span>
+                  </div>
+                  <i aria-hidden="true" />
+                  <i aria-hidden="true" />
+                </div>
+                <div className="screen-lingyun-topic-summary screen-lingyun-topic-summary--skeleton">
+                  <span>{t.lingyunTopics}</span>
+                  <i aria-hidden="true" />
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <div className="screen-management__footer screen-settings-actions">
+        <button type="button" disabled>
+          <RefreshCw size={14} aria-hidden="true" />
+          <span>{t.restoreDefault}</span>
+        </button>
+        <button type="button" disabled>
+          <Check size={14} aria-hidden="true" />
+          <span>{t.save}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LingyunSkeletonField({ label, wide = false }: { label: string; wide?: boolean }) {
+  return (
+    <div className={wide ? "screen-lingyun-skeleton-field screen-lingyun-skeleton-field--wide" : "screen-lingyun-skeleton-field"}>
+      <span>{label}</span>
+      <i aria-hidden="true" />
     </div>
   );
 }
@@ -7075,7 +7292,7 @@ function lingyunDeviceTopics(
 ) {
   const providerCode = settings.providerCode?.trim() || "{providerCode}";
   const abbr = lingyunDeviceAbbr(device.type);
-  const deviceId = device.deviceId?.trim() || "{deviceId}";
+  const deviceId = device.deviceId?.trim() || lingyunDeviceIdentity(settings) || "{deviceId}";
   const topic = (name: string) => `bridge/${providerCode}/${name}/${abbr}/${deviceId}`;
   const topics = [
     { label: t.lingyunRegisterTopic, value: topic("device") },
@@ -7090,13 +7307,26 @@ function lingyunDeviceTopics(
 }
 
 function lingyunStatusLabel(status: ScreenRuntimeStatus["lingyun"] | undefined, t: Record<string, string>) {
-  if (!status?.enabled) {
+  if (!status) {
+    return t.connecting;
+  }
+  if (!status.enabled) {
     return t.disabled;
   }
   if (!status.configured) {
     return t.lingyunUnconfigured;
   }
+  if (status.connecting && !status.connected) {
+    return t.connecting;
+  }
   return status.connected ? t.connected : t.disconnected;
+}
+
+function lingyunStatusLoading(status: ScreenRuntimeStatus["lingyun"] | undefined) {
+  if (!status) {
+    return true;
+  }
+  return Boolean(status.enabled && status.configured && status.connecting && !status.connected);
 }
 
 function lingyunDeviceRuntime(status: ScreenRuntimeStatus["lingyun"] | undefined, type: LingyunDeviceType) {

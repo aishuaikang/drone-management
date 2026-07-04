@@ -4224,6 +4224,15 @@ button {
   }
 }
 
+@keyframes screen-lingyun-skeleton {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -40% 0;
+  }
+}
+
 .app-spinner {
   animation: app-spin 0.9s linear infinite;
 }
@@ -5358,6 +5367,37 @@ button.screen-position-card__point {
   white-space: nowrap;
 }
 
+.screen-info-block strong.screen-lingyun-status-value {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.36em;
+}
+
+.screen-info-block strong.screen-lingyun-status-value span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-lingyun-status-value i {
+  width: 0.82em;
+  height: 0.82em;
+  flex: 0 0 auto;
+  border: 2px solid rgba(204, 226, 224, 0.28);
+  border-top-color: #e7fffb;
+  border-radius: 999px;
+}
+
+.screen-lingyun-status-value--loading i {
+  animation: app-spin 0.9s linear infinite;
+}
+
 .screen-settings-channel-labels {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5456,6 +5496,86 @@ button.screen-position-card__point {
   display: grid;
   min-width: 0;
   gap: 0.58em;
+}
+
+.screen-lingyun-loading-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.34em;
+  border: 1px solid rgba(var(--screen-primary-muted-rgb), 0.2);
+  border-radius: 999px;
+  padding: 0.34em 0.58em;
+  color: rgba(230, 248, 246, 0.82);
+  background: rgba(4, 8, 10, 0.36);
+  font-size: 0.66em;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.screen-lingyun-skeleton-field {
+  display: grid;
+  min-width: 0;
+  gap: 0.24em;
+}
+
+.screen-lingyun-skeleton-field span {
+  overflow: hidden;
+  color: rgba(204, 226, 224, 0.62);
+  font-size: 0.56em;
+  font-weight: 850;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-lingyun-skeleton-field i,
+.screen-lingyun-skeleton-info i,
+.screen-lingyun-device--skeleton header i,
+.screen-lingyun-publish-log--skeleton i,
+.screen-lingyun-topic-summary--skeleton i {
+  display: block;
+  min-width: 0;
+  border-radius: 0.54em;
+  background:
+    linear-gradient(90deg, rgba(168, 185, 183, 0.07), rgba(231, 255, 251, 0.16), rgba(168, 185, 183, 0.07)),
+    rgba(4, 8, 10, 0.44);
+  background-size: 220% 100%;
+  animation: screen-lingyun-skeleton 1.25s ease-in-out infinite;
+}
+
+.screen-lingyun-skeleton-field i {
+  height: 2.34em;
+}
+
+.screen-lingyun-skeleton-field--wide i {
+  min-width: 12em;
+}
+
+.screen-lingyun-skeleton-info i {
+  width: min(100%, 13em);
+  height: 0.9em;
+}
+
+.screen-lingyun-device--skeleton header i {
+  flex: 0 0 5.8em;
+  height: 1.22em;
+  border-radius: 999px;
+}
+
+.screen-lingyun-publish-log--skeleton i {
+  height: 1.25em;
+}
+
+.screen-lingyun-publish-log--skeleton i:last-child {
+  width: 72%;
+}
+
+.screen-lingyun-topic-summary--skeleton i {
+  flex: 0 0 6.2em;
+  height: 1.55em;
+  border-radius: 999px;
 }
 
 .screen-lingyun-page {
@@ -5927,6 +6047,38 @@ button.screen-position-card__point {
   font-weight: 740;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.screen-lingyun-publish-log-row__payload {
+  display: grid;
+  grid-column: 1 / -1;
+  min-width: 0;
+  gap: 0.16em;
+}
+
+.screen-lingyun-publish-log-row__payload span {
+  color: rgba(204, 226, 224, 0.58);
+  font-size: 0.44em;
+  font-weight: 820;
+  line-height: 1.3;
+}
+
+.screen-lingyun-publish-log-row__payload pre {
+  min-width: 0;
+  max-height: 8.5em;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(168, 185, 183, 0.12);
+  border-radius: 4px;
+  padding: 0.34em 0.42em;
+  background: rgba(2, 6, 8, 0.34);
+  color: rgba(231, 255, 251, 0.9);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.44em;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .screen-lingyun-publish-log-row em {

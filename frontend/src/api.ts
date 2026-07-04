@@ -132,7 +132,7 @@ function responseFileName(contentDisposition: string | null) {
 }
 
 export function getScreenStatus() {
-  return requestJson<ScreenRuntimeStatus>("/screen/status");
+  return requestJson<ScreenRuntimeStatus>("/screen/status", { timeoutMs: 2500 });
 }
 
 export function getScreenPositions(limit = 100) {

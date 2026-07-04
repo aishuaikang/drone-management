@@ -296,8 +296,12 @@ func LingyunSettingsWithDeviceIdentity(settings LingyunSettings, identity string
 		return settings
 	}
 	for index := range settings.Devices {
-		settings.Devices[index].DeviceID = identity
-		settings.Devices[index].DeviceSpec.DevSN = identity
+		if strings.TrimSpace(settings.Devices[index].DeviceID) == "" {
+			settings.Devices[index].DeviceID = identity
+		}
+		if strings.TrimSpace(settings.Devices[index].DeviceSpec.DevSN) == "" {
+			settings.Devices[index].DeviceSpec.DevSN = identity
+		}
 	}
 	return settings
 }
@@ -646,6 +650,8 @@ type LingyunStatus struct {
 	Enabled    bool                  `json:"enabled"`
 	Configured bool                  `json:"configured"`
 	Connected  bool                  `json:"connected"`
+	Connecting bool                  `json:"connecting"`
+	ClientID   string                `json:"clientId,omitempty"`
 	Broker     string                `json:"broker,omitempty"`
 	LastError  string                `json:"lastError,omitempty"`
 	UpdatedAt  *time.Time            `json:"updatedAt,omitempty"`
@@ -673,6 +679,7 @@ type LingyunDeviceStatus struct {
 type LingyunPublishLog struct {
 	Kind    string    `json:"kind"`
 	Topic   string    `json:"topic"`
+	Payload string    `json:"payload,omitempty"`
 	Success bool      `json:"success"`
 	At      time.Time `json:"at"`
 	Error   string    `json:"error,omitempty"`

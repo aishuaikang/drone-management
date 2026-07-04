@@ -20,14 +20,16 @@ type publishedMessage struct {
 }
 
 type fakeTransport struct {
-	mu             sync.Mutex
-	connected      bool
-	published      []publishedMessage
-	subscriptions  map[string]messageHandler
-	publishStarted chan string
-	blockTopic     string
-	blockRelease   <-chan struct{}
-	blocked        bool
+	mu               sync.Mutex
+	connected        bool
+	published        []publishedMessage
+	subscriptions    map[string]messageHandler
+	subscribeStarted chan string
+	subscribeRelease <-chan struct{}
+	publishStarted   chan string
+	blockTopic       string
+	blockRelease     <-chan struct{}
+	blocked          bool
 }
 
 type fakeInterferenceController struct {
@@ -77,6 +79,52 @@ func (c *fakeInterferenceController) Requests() []model.ScreenStrikeRequest {
 	return out
 }
 
+type cachedActiveInterferenceController struct {
+	active     bool
+	stateCalls int
+	state      model.ScreenStrikeState
+}
+
+func (c *cachedActiveInterferenceController) ListChannels() []model.InterferenceChannel {
+	return nil
+}
+
+func (c *cachedActiveInterferenceController) ScreenStrikeState() model.ScreenStrikeState {
+	c.stateCalls++
+	return c.state
+}
+
+func (c *cachedActiveInterferenceController) SetScreenStrike(req model.ScreenStrikeRequest) (model.ScreenStrikeState, error) {
+	c.active = req.Enabled
+	return model.ScreenStrikeState{Active: req.Enabled}, nil
+}
+
+func (c *cachedActiveInterferenceController) ScreenStrikeActive() bool {
+	return c.active
+}
+
+type cachedChannelInterferenceController struct {
+	listCalls int
+	cached    []model.InterferenceChannel
+}
+
+func (c *cachedChannelInterferenceController) ListChannels() []model.InterferenceChannel {
+	c.listCalls++
+	return nil
+}
+
+func (c *cachedChannelInterferenceController) ScreenStrikeState() model.ScreenStrikeState {
+	return model.ScreenStrikeState{}
+}
+
+func (c *cachedChannelInterferenceController) SetScreenStrike(req model.ScreenStrikeRequest) (model.ScreenStrikeState, error) {
+	return model.ScreenStrikeState{Active: req.Enabled}, nil
+}
+
+func (c *cachedChannelInterferenceController) ListChannelsCached() []model.InterferenceChannel {
+	return append([]model.InterferenceChannel{}, c.cached...)
+}
+
 func newFakeTransport() *fakeTransport {
 	return &fakeTransport{subscriptions: map[string]messageHandler{}}
 }
@@ -89,6 +137,15 @@ func (t *fakeTransport) Connect(context.Context, transportConfig) error {
 }
 
 func (t *fakeTransport) Subscribe(_ context.Context, topic string, handler messageHandler) error {
+	if t.subscribeStarted != nil {
+		select {
+		case t.subscribeStarted <- topic:
+		default:
+		}
+	}
+	if t.subscribeRelease != nil {
+		<-t.subscribeRelease
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.subscriptions[topic] = handler
@@ -172,10 +229,15 @@ func TestServiceTickPublishesRegistrationStatusAndSubscribesControls(t *testing.
 		WithNow(func() time.Time { return now }),
 	)
 
+	initialStatus := service.Status()
+	if !initialStatus.Connecting || initialStatus.Connected {
+		t.Fatalf("initial status = %#v, want connecting before first tick", initialStatus)
+	}
+
 	service.tick(context.Background())
 
 	status := service.Status()
-	if !status.Enabled || !status.Configured || !status.Connected {
+	if !status.Enabled || !status.Configured || !status.Connected || status.Connecting {
 		t.Fatalf("status = %#v", status)
 	}
 	settings := service.settingsSnapshot()
@@ -218,6 +280,44 @@ func TestServiceTickPublishesRegistrationStatusAndSubscribesControls(t *testing.
 	}
 }
 
+func TestServiceConnectSubscribesControlsInParallel(t *testing.T) {
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	transport := newFakeTransport()
+	transport.subscribeStarted = started
+	transport.subscribeRelease = release
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+	)
+
+	done := make(chan struct{})
+	go func() {
+		service.tick(context.Background())
+		close(done)
+	}()
+
+	topics := map[string]struct{}{}
+	for i := 0; i < 4; i++ {
+		select {
+		case topic := <-started:
+			topics[topic] = struct{}{}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for parallel subscriptions; started topics = %#v", topics)
+		}
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tick did not finish after releasing subscriptions")
+	}
+	if len(topics) != 4 {
+		t.Fatalf("started subscription topics = %#v, want 4 unique topics", topics)
+	}
+}
+
 func TestServiceStatusIncludesPublishLogs(t *testing.T) {
 	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	transport := newFakeTransport()
@@ -241,6 +341,61 @@ func TestServiceStatusIncludesPublishLogs(t *testing.T) {
 	log := waitForDevicePublishLog(t, service, model.LingyunDeviceAOA, "device", topic)
 	if !log.Success || !log.At.Equal(now) || log.Error != "" {
 		t.Fatalf("publish log = %#v, want successful AOA registration at %s", log, now)
+	}
+	message, ok := findMessage(transport.messages(), topic)
+	if !ok {
+		t.Fatalf("published message missing on %s", topic)
+	}
+	if log.Payload != string(message.payload) {
+		t.Fatalf("publish log payload = %s, want %s", log.Payload, string(message.payload))
+	}
+}
+
+func TestServiceStatusRefreshesInterferenceState(t *testing.T) {
+	controller := &cachedActiveInterferenceController{active: true}
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithInterferenceController(controller),
+	)
+
+	status := service.Status()
+	var ifrStatus *model.LingyunDeviceStatus
+	for index := range status.Devices {
+		if status.Devices[index].Type == model.LingyunDeviceInterference {
+			ifrStatus = &status.Devices[index]
+			break
+		}
+	}
+	if ifrStatus == nil {
+		t.Fatalf("IFR device status missing: %#v", status.Devices)
+	}
+	if ifrStatus.WorkState != 0 {
+		t.Fatalf("IFR workState = %d, want 0 from refreshed inactive strike state", ifrStatus.WorkState)
+	}
+	if controller.stateCalls != 1 {
+		t.Fatalf("ScreenStrikeState calls = %d, want 1", controller.stateCalls)
+	}
+}
+
+func TestServiceInterferenceBandsUseCachedChannels(t *testing.T) {
+	controller := &cachedChannelInterferenceController{
+		cached: []model.InterferenceChannel{{Bands: []string{"2.4", "5.8"}}},
+	}
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithInterferenceController(controller),
+	)
+
+	device := service.deviceWithCurrentInterferenceBands(model.LingyunDeviceSettings{
+		Type: model.LingyunDeviceInterference,
+	})
+	if controller.listCalls != 0 {
+		t.Fatalf("ListChannels calls = %d, want 0", controller.listCalls)
+	}
+	if len(device.Bands) != 2 || device.Bands[0] != "2.4G" || device.Bands[1] != "5.8G" {
+		t.Fatalf("bands = %#v, want cached formatted bands", device.Bands)
 	}
 }
 
@@ -344,9 +499,11 @@ func TestServiceSettingsChangePublishesWhileOldPublishInFlight(t *testing.T) {
 	nextTopic := deviceTopic(nextSettings, def, nextDevice, "device")
 	waitForStartedTopics(t, started, nextTopic)
 	waitForPublishedTopicCount(t, transport, nextTopic, 1)
+	waitForDevicePublishLog(t, service, model.LingyunDeviceAOA, "device", nextTopic)
 
 	releaseOnce.Do(func() { close(release) })
 	waitForPublishedTopicCount(t, transport, oldTopic, 1)
+	assertNoDevicePublishLog(t, service, model.LingyunDeviceAOA, "device", oldTopic)
 }
 
 func TestServiceTickPublishesDevicesInParallel(t *testing.T) {
@@ -414,12 +571,9 @@ func TestServiceTickPublishesDevicesInParallel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tick waited for blocked AOA publish")
 	}
-	if !hasTopic(transport.messages(), dcdRegisterTopic) {
-		t.Fatalf("DCD registration was not published while AOA was blocked: %#v", messageTopics(transport.messages()))
-	}
-	if !hasTopic(transport.messages(), ridRegisterTopic) || !hasTopic(transport.messages(), ifrRegisterTopic) {
-		t.Fatalf("RID/IFR registration was not published while AOA was blocked: %#v", messageTopics(transport.messages()))
-	}
+	waitForPublishedTopicCount(t, transport, dcdRegisterTopic, 1)
+	waitForPublishedTopicCount(t, transport, ridRegisterTopic, 1)
+	waitForPublishedTopicCount(t, transport, ifrRegisterTopic, 1)
 	waitForPublishedTopicCount(t, transport, dcdStatusTopic, 1)
 	waitForDevicePublishIdle(t, service, model.LingyunDeviceDCD)
 	drainStartedTopics(started)
@@ -521,13 +675,14 @@ func TestServiceInterferenceRegistrationUsesLocalChannelBands(t *testing.T) {
 	}
 }
 
-func TestServiceApplySettingsGeneratesAndReusesClientID(t *testing.T) {
+func TestServiceApplySettingsUsesRuntimeClientID(t *testing.T) {
 	service := NewService(
 		store.New(10, 10),
 		model.UserSettings{
 			Lingyun: model.LingyunSettings{
 				Enabled:      true,
 				Broker:       "127.0.0.1:1883",
+				ClientID:     "persisted-client",
 				ProviderCode: "DPTEST",
 			},
 		},
@@ -538,10 +693,17 @@ func TestServiceApplySettingsGeneratesAndReusesClientID(t *testing.T) {
 	if !strings.HasPrefix(first, model.DefaultLingyunClientIDPrefix) {
 		t.Fatalf("client ID = %q, want prefix %q", first, model.DefaultLingyunClientIDPrefix)
 	}
+	if first == "persisted-client" {
+		t.Fatal("service must ignore persisted client ID and use runtime client ID")
+	}
+	if status := service.Status(); status.ClientID != first {
+		t.Fatalf("status client ID = %q, want %q", status.ClientID, first)
+	}
 	service.ApplySettings(model.UserSettings{
 		Lingyun: model.LingyunSettings{
 			Enabled:      true,
 			Broker:       "127.0.0.1:1883",
+			ClientID:     "another-persisted-client",
 			ProviderCode: "DPTEST",
 		},
 	})
@@ -738,7 +900,7 @@ func TestServiceDoesNotPublishInterferenceData(t *testing.T) {
 		},
 	})
 
-	if err := service.flushDevice(context.Background(), settings, def, device); err != nil {
+	if err := service.flushDevice(context.Background(), settings, service.settingsKeySnapshot(), def, device); err != nil {
 		t.Fatalf("flushDevice(IFR) error = %v", err)
 	}
 	if _, ok := findMessage(transport.messages(), deviceTopic(settings, def, device, "device_data")); ok {
@@ -889,6 +1051,21 @@ func waitForDevicePublishLog(t *testing.T, service *Service, deviceType string, 
 	}
 	t.Fatalf("timed out waiting for %s publish log on %s", kind, topic)
 	return model.LingyunPublishLog{}
+}
+
+func assertNoDevicePublishLog(t *testing.T, service *Service, deviceType string, kind string, topic string) {
+	t.Helper()
+	status := service.Status()
+	for _, device := range status.Devices {
+		if device.Type != deviceType {
+			continue
+		}
+		for _, log := range device.PublishLogs {
+			if log.Kind == kind && log.Topic == topic {
+				t.Fatalf("unexpected stale publish log for %s on %s: %#v", kind, topic, log)
+			}
+		}
+	}
 }
 
 func waitForDevicePublishIdle(t *testing.T, service *Service, deviceType string) {

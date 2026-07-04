@@ -210,7 +210,7 @@ func TestStableHardwareAddrFromInterfacesPrefersDeterministicGlobalAddr(t *testi
 	}
 }
 
-func TestLingyunSettingsWithDeviceIdentityOverridesDeviceIDAndDevSN(t *testing.T) {
+func TestLingyunSettingsWithDeviceIdentityFillsEmptyDeviceIDAndKeepsCustom(t *testing.T) {
 	const identity = "drone-management-001A2B3C4D5E"
 	settings := LingyunSettingsWithDeviceIdentity(LingyunSettings{
 		Devices: []LingyunDeviceSettings{
@@ -221,12 +221,21 @@ func TestLingyunSettingsWithDeviceIdentityOverridesDeviceIDAndDevSN(t *testing.T
 					DevSN: "custom-sn",
 				},
 			},
+			{
+				Type: LingyunDeviceDCD,
+			},
 		},
 	}, identity)
 
 	for _, device := range settings.Devices {
+		if device.Type == LingyunDeviceAOA {
+			if device.DeviceID != "custom-aoa" || device.DeviceSpec.DevSN != "custom-sn" {
+				t.Fatalf("AOA custom identity = %q/%q", device.DeviceID, device.DeviceSpec.DevSN)
+			}
+			continue
+		}
 		if device.DeviceID != identity || device.DeviceSpec.DevSN != identity {
-			t.Fatalf("device %s identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
+			t.Fatalf("device %s default identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
 		}
 	}
 }
