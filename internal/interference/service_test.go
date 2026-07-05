@@ -557,6 +557,10 @@ func TestStatusSnapshotsDoNotWaitForRelayStateRead(t *testing.T) {
 		if !service.ScreenStrikeActive() {
 			t.Errorf("ScreenStrikeActive() = false, want cached true")
 		}
+		cached := service.CachedScreenStrikeState()
+		if !cached.Active {
+			t.Errorf("CachedScreenStrikeState().Active = false, want cached true")
+		}
 		close(doneStatus)
 	}()
 

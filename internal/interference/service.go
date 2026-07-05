@@ -105,6 +105,8 @@ type Service struct {
 	statusProvider     ConnectionStatusProvider
 	statusProviderMu   sync.RWMutex
 	screenStrikeActive atomic.Bool
+	cachedStrikeMu     sync.RWMutex
+	cachedStrikeState  model.ScreenStrikeState
 	store              *store.Store
 	reports            ReportStore
 	settings           UserSettingsStore
@@ -176,7 +178,7 @@ func NewService(
 		}
 		order = append(order, def.ID)
 	}
-	return &Service{
+	service := &Service{
 		channels:      channels,
 		order:         order,
 		outputFactory: outputFactory,
@@ -190,6 +192,8 @@ func NewService(
 			PollInterval:  unattendedStatePollInterval,
 		},
 	}
+	service.cachedStrikeState = service.screenStrikeCachedStateLocked(time.Now())
+	return service
 }
 
 // SetReportStore sets the report store.
@@ -290,6 +294,8 @@ func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
 	snapshot := s.screenStrikeSnapshotLocked(now)
 	if s.finishCompletedReportIfInactiveLocked(snapshot, now) {
 		s.publishScreenStrikeLocked(snapshot.state)
+	} else {
+		s.setCachedScreenStrikeState(snapshot.state)
 	}
 	return snapshot.state
 }
@@ -303,10 +309,10 @@ func (s *Service) ScreenStrikeActive() bool {
 // reading relay outputs. Status endpoints use this so unavailable hardware does
 // not block unrelated UI/API refreshes.
 func (s *Service) CachedScreenStrikeState() model.ScreenStrikeState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.screenStrikeCachedStateLocked(time.Now())
+	s.cachedStrikeMu.RLock()
+	state := cloneStrikeStateValue(s.cachedStrikeState)
+	s.cachedStrikeMu.RUnlock()
+	return screenStrikeStateWithCurrentRemaining(state, time.Now())
 }
 
 // SetScreenStrike starts or stops screen interference operation.
@@ -939,10 +945,17 @@ func (s *Service) finishCompletedReportIfInactiveLocked(snapshot screenStrikeSna
 }
 
 func (s *Service) publishScreenStrikeLocked(state model.ScreenStrikeState) {
+	s.setCachedScreenStrikeState(state)
 	if s.store == nil {
 		return
 	}
 	s.store.Publish(model.Event{Type: screenStrikeEventType, Time: time.Now(), Payload: state})
+}
+
+func (s *Service) setCachedScreenStrikeState(state model.ScreenStrikeState) {
+	s.cachedStrikeMu.Lock()
+	defer s.cachedStrikeMu.Unlock()
+	s.cachedStrikeState = cloneStrikeStateValue(state)
 }
 
 func (s *Service) createRunningReportLocked(
@@ -1157,11 +1170,30 @@ func cloneStrikeState(state *model.ScreenStrikeState) *model.ScreenStrikeState {
 	cloned := *state
 	cloned.ChannelIDs = append([]string{}, state.ChannelIDs...)
 	cloned.Channels = cloneInterferenceChannels(state.Channels)
+	cloned.Unattended = cloneUnattendedState(state.Unattended)
 	if state.StartedAt != nil {
 		startedAt := *state.StartedAt
 		cloned.StartedAt = &startedAt
 	}
 	return &cloned
+}
+
+func cloneStrikeStateValue(state model.ScreenStrikeState) model.ScreenStrikeState {
+	cloned := cloneStrikeState(&state)
+	if cloned == nil {
+		return model.ScreenStrikeState{}
+	}
+	return *cloned
+}
+
+func screenStrikeStateWithCurrentRemaining(state model.ScreenStrikeState, now time.Time) model.ScreenStrikeState {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if state.Active && state.StartedAt != nil && state.DurationSeconds > 0 {
+		state.RemainingSeconds = ceilSeconds(state.StartedAt.Add(time.Duration(state.DurationSeconds) * time.Second).Sub(now))
+	}
+	return state
 }
 
 func cloneInterferenceChannels(channels []model.InterferenceChannel) []model.InterferenceChannel {
