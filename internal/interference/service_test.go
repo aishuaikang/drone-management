@@ -125,6 +125,40 @@ type fakeOutputSnapshot struct {
 	timedDurations []time.Duration
 }
 
+type blockingOutput struct {
+	fakeOutput
+
+	blockMu sync.Mutex
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (o *blockingOutput) blockStateReads(entered chan struct{}, release chan struct{}) {
+	o.blockMu.Lock()
+	defer o.blockMu.Unlock()
+	o.entered = entered
+	o.release = release
+}
+
+func (o *blockingOutput) GetState() (OutputState, error) {
+	o.blockMu.Lock()
+	entered := o.entered
+	release := o.release
+	o.blockMu.Unlock()
+
+	if entered != nil {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+	}
+	if release != nil {
+		<-release
+	}
+	return o.fakeOutput.GetState()
+}
+
 type memoryReportStore struct {
 	mu      sync.Mutex
 	created []model.InterferenceReport
@@ -448,6 +482,92 @@ func TestScreenStrikeActiveUsesCachedState(t *testing.T) {
 	if after != before {
 		t.Fatalf("relay read count = %d, want unchanged %d", after, before)
 	}
+}
+
+func TestCachedScreenStrikeStateDoesNotReadRelay(t *testing.T) {
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
+
+	state, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("SetScreenStrike(start) error = %v", err)
+	}
+	if !state.Active {
+		t.Fatalf("started state should be active: %#v", state)
+	}
+
+	before := outputs[1].snapshot().readCount
+	outputs[1].setStateErr(errors.New("relay read should not be needed"))
+	cached := service.CachedScreenStrikeState()
+	after := outputs[1].snapshot().readCount
+	if after != before {
+		t.Fatalf("relay read count = %d, want unchanged %d", after, before)
+	}
+	if !cached.Active || len(cached.ChannelIDs) != 1 || cached.ChannelIDs[0] != "io1" {
+		t.Fatalf("cached state = %#v, want active io1", cached)
+	}
+}
+
+func TestStatusSnapshotsDoNotWaitForRelayStateRead(t *testing.T) {
+	output := &blockingOutput{}
+	service := NewService(store.New(10, 10), DefaultChannels(), func(number int) Output {
+		if number == 1 {
+			return output
+		}
+		return &fakeOutput{}
+	})
+	service.SetConnectionStatusProvider(func() model.TCPClientStatus {
+		return model.TCPClientStatus{Connected: true}
+	})
+
+	if _, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	}); err != nil {
+		t.Fatalf("SetScreenStrike(start) error = %v", err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	output.blockStateReads(entered, release)
+	doneReading := make(chan struct{})
+	go func() {
+		_ = service.ScreenStrikeState()
+		close(doneReading)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("ScreenStrikeState did not enter relay read")
+	}
+
+	doneStatus := make(chan struct{})
+	go func() {
+		status := service.ConnectionStatus()
+		if !status.Connected {
+			t.Errorf("ConnectionStatus().Connected = false, want true")
+		}
+		if !service.ScreenStrikeActive() {
+			t.Errorf("ScreenStrikeActive() = false, want cached true")
+		}
+		close(doneStatus)
+	}()
+
+	select {
+	case <-doneStatus:
+	case <-time.After(100 * time.Millisecond):
+		close(release)
+		t.Fatal("status snapshots waited for relay state read")
+	}
+	close(release)
+	<-doneReading
 }
 
 func TestUnattendedWaitsForTarget(t *testing.T) {

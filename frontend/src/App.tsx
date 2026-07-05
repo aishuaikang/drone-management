@@ -1097,7 +1097,9 @@ export function App() {
   const [deviceLocation, setDeviceLocation] = useState<ScreenDeviceLocationResponse | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettings>(() => defaultUserSettings());
   const [userSettingsLoaded, setUserSettingsLoaded] = useState(false);
+  const [userSettingsError, setUserSettingsError] = useState("");
   const userSettingsLoadingRef = useRef(false);
+  const userSettingsSavingRef = useRef(false);
   const [strikeState, setStrikeState] = useState<ScreenStrikeState | null>(null);
   const [whitelistBusySerial, setWhitelistBusySerial] = useState("");
   const [selectedPositionId, setSelectedPositionId] = useState("");
@@ -1165,7 +1167,7 @@ export function App() {
   }, [currentServerTimeMs]);
 
   const syncUserSettings = useCallback(async () => {
-    if (userSettingsLoadingRef.current) {
+    if (userSettingsLoadingRef.current || userSettingsSavingRef.current) {
       return;
     }
     userSettingsLoadingRef.current = true;
@@ -1173,6 +1175,13 @@ export function App() {
       const settings = await getUserSettings();
       setUserSettings(resolveUserSettings(settings));
       setUserSettingsLoaded(true);
+      setUserSettingsError("");
+    } catch (error) {
+      setUserSettingsLoaded(true);
+      if (!userSettingsSavingRef.current) {
+        setUserSettingsError(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
     } finally {
       userSettingsLoadingRef.current = false;
     }
@@ -1388,15 +1397,21 @@ export function App() {
   }, [licenseLocked, licenseRequiredMessage]);
 
   const saveUserSettings = useCallback(async (next: UserSettings) => {
-    const saved = await updateUserSettings({
-      ...userSettings,
-      ...next,
-      whitelist: next.whitelist ?? userSettings.whitelist ?? [],
-    });
-    const resolved = resolveUserSettings(saved);
-    setUserSettings(resolved);
-    void getScreenStatus().then(syncRuntimeStatus).catch(() => undefined);
-    return resolved;
+    userSettingsSavingRef.current = true;
+    try {
+      const saved = await updateUserSettings({
+        ...userSettings,
+        ...next,
+        whitelist: next.whitelist ?? userSettings.whitelist ?? [],
+      });
+      const resolved = resolveUserSettings(saved);
+      setUserSettings(resolved);
+      setUserSettingsError("");
+      void getScreenStatus().then(syncRuntimeStatus).catch(() => undefined);
+      return resolved;
+    } finally {
+      userSettingsSavingRef.current = false;
+    }
   }, [syncRuntimeStatus, userSettings]);
 
   const handleTogglePositionWhitelist = useCallback(async (target: ScreenPositionTarget) => {
@@ -1984,6 +1999,7 @@ export function App() {
           offlineMapState={offlineMapState}
           userSettings={userSettings}
           userSettingsLoaded={userSettingsLoaded}
+          userSettingsError={userSettingsError}
           strikeState={strikeState}
           deviceLocation={deviceLocation}
           status={status}
@@ -2843,6 +2859,7 @@ function ManagementView({
   offlineMapState,
   userSettings,
   userSettingsLoaded,
+  userSettingsError,
   strikeState,
   deviceLocation,
   status,
@@ -2860,6 +2877,7 @@ function ManagementView({
   offlineMapState: OfflineMapViewState;
   userSettings: UserSettings;
   userSettingsLoaded: boolean;
+  userSettingsError: string;
   strikeState: ScreenStrikeState | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
   status: ScreenRuntimeStatus | null;
@@ -2891,6 +2909,7 @@ function ManagementView({
           locale={locale}
           userSettings={userSettings}
           settingsLoaded={userSettingsLoaded}
+          settingsError={userSettingsError}
           strikeState={strikeState}
           deviceLocation={deviceLocation}
           status={status}
@@ -3550,6 +3569,7 @@ function LingyunSettingsManagement({
   locale,
   userSettings,
   settingsLoaded,
+  settingsError,
   strikeState,
   deviceLocation,
   status,
@@ -3559,19 +3579,24 @@ function LingyunSettingsManagement({
   locale: Locale;
   userSettings: UserSettings;
   settingsLoaded: boolean;
+  settingsError: string;
   strikeState: ScreenStrikeState | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
   status: ScreenRuntimeStatus | null;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
 }) {
   const savedLingyun = resolveLingyunSettings(userSettings.lingyun);
+  const savedLingyunKey = JSON.stringify(savedLingyun);
   const [lingyunDraft, setLingyunDraft] = useState(savedLingyun);
+  const lingyunDraftDirtyRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState("");
 
   useEffect(() => {
-    setLingyunDraft(savedLingyun);
-  }, [JSON.stringify(savedLingyun)]);
+    if (!lingyunDraftDirtyRef.current) {
+      setLingyunDraft(savedLingyun);
+    }
+  }, [savedLingyunKey]);
 
   const draftLingyunWithRuntimeLocation = lingyunSettingsWithRuntimeLocation(lingyunDraft, deviceLocation);
   const normalizedLingyun = resolveLingyunSettingsWithDeviceLocation(lingyunDraft, deviceLocation);
@@ -3582,17 +3607,23 @@ function LingyunSettingsManagement({
   const interferenceBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
   const [expandedTopicTypes, setExpandedTopicTypes] = useState<Record<string, boolean>>({});
   const settingsPending = !settingsLoaded;
+  const runtimeLingyunStatus = status?.lingyun;
+  const statusLoading = lingyunStatusLoading(runtimeLingyunStatus, draftLingyunWithRuntimeLocation.enabled);
+  const statusLabel = lingyunStatusLabel(runtimeLingyunStatus, t, draftLingyunWithRuntimeLocation.enabled);
+  const bannerText = banner || settingsError;
   const managementClassName = [
     "screen-management",
     "screen-management--lingyun",
-    banner ? "screen-management--with-banner" : "",
+    bannerText ? "screen-management--with-banner" : "",
     settingsPending ? "screen-management--loading" : "",
   ].filter(Boolean).join(" ");
 
   const updateLingyun = (patch: Partial<NonNullable<UserSettings["lingyun"]>>) => {
+    lingyunDraftDirtyRef.current = true;
     setLingyunDraft((current) => ({ ...current, ...patch }));
   };
   const updateLingyunDevice = (type: LingyunDeviceType, patch: Partial<LingyunDeviceSettings>) => {
+    lingyunDraftDirtyRef.current = true;
     setLingyunDraft((current) => {
       const devices = current.devices ?? lingyunDeviceTypes.map((deviceType) => defaultLingyunDevice(deviceType, lingyunDeviceIdentity(current)));
       return {
@@ -3619,7 +3650,9 @@ function LingyunSettingsManagement({
     setSaving(true);
     setBanner("");
     try {
-      await onSaveUserSettings({ lingyun: normalizedLingyun });
+      const saved = await onSaveUserSettings({ lingyun: normalizedLingyun });
+      lingyunDraftDirtyRef.current = false;
+      setLingyunDraft(resolveLingyunSettings(saved.lingyun));
       setBanner(t.settingsSaved);
     } catch (error) {
       setBanner(error instanceof Error ? error.message : t.saveFailed);
@@ -3715,7 +3748,12 @@ function LingyunSettingsManagement({
               </label>
               <label>
                 <span>{t.lingyunProtocolVersion}</span>
-                <LingyunStaticValue value={defaultLingyunProtocolVersion} />
+                <input
+                  value={draftLingyunWithRuntimeLocation.protocolVersion ?? defaultLingyunProtocolVersion}
+                  maxLength={16}
+                  placeholder={defaultLingyunProtocolVersion}
+                  onChange={(event) => updateLingyun({ protocolVersion: event.target.value.trim() })}
+                />
               </label>
               <label>
                 <span>{t.lingyunPublishInterval}</span>
@@ -3755,9 +3793,9 @@ function LingyunSettingsManagement({
             <div className="screen-info-grid screen-lingyun-status-grid">
               <div className="screen-info-block">
                 <span>{t.status}</span>
-                <strong className={lingyunStatusLoading(status?.lingyun) ? "screen-lingyun-status-value screen-lingyun-status-value--loading" : "screen-lingyun-status-value"}>
-                  {lingyunStatusLoading(status?.lingyun) ? <i aria-hidden="true" /> : null}
-                  <span>{lingyunStatusLabel(status?.lingyun, t)}</span>
+                <strong className={statusLoading ? "screen-lingyun-status-value screen-lingyun-status-value--loading" : "screen-lingyun-status-value"}>
+                  {statusLoading ? <i aria-hidden="true" /> : null}
+                  <span>{statusLabel}</span>
                 </strong>
               </div>
               <div className="screen-info-block">
@@ -3792,7 +3830,7 @@ function LingyunSettingsManagement({
                 <article key={type} className="screen-lingyun-device">
                   <header>
                     <strong>{lingyunDeviceLabel(type, t)}</strong>
-                    <em>{runtime ? lingyunDeviceStatusLabel(runtime, t) : t.waiting}</em>
+                    <em>{runtime ? lingyunDeviceStatusLabel(runtime, t) : draftLingyunWithRuntimeLocation.enabled ? t.waiting : t.disabled}</em>
                   </header>
                   <div className="screen-lingyun-device-form">
                     <label className="screen-settings-toggle-row">
@@ -3960,13 +3998,16 @@ function LingyunSettingsManagement({
         </section>
       </div>
 
-      {banner ? <div className="screen-management__banner">{banner}</div> : null}
+      {bannerText ? <div className="screen-management__banner">{bannerText}</div> : null}
 
       <div className="screen-management__footer screen-settings-actions">
         <button
           type="button"
           disabled={saving || settingsPending}
-          onClick={() => setLingyunDraft(defaultLingyunSettings(createLingyunClientID(), lingyunDeviceIdentity(savedLingyun)))}
+          onClick={() => {
+            lingyunDraftDirtyRef.current = true;
+            setLingyunDraft(defaultLingyunSettings(createLingyunClientID(), lingyunDeviceIdentity(savedLingyun)));
+          }}
         >
           <RefreshCw size={14} aria-hidden="true" />
           <span>{t.restoreDefault}</span>
@@ -7117,7 +7158,7 @@ function resolveLingyunSettings(settings?: UserSettings["lingyun"] | null): NonN
     ...defaults,
     ...settings,
     clientId: settings?.clientId?.trim() || defaults.clientId,
-    protocolVersion: defaultLingyunProtocolVersion,
+    protocolVersion: settings?.protocolVersion?.trim() || defaultLingyunProtocolVersion,
     publishMinIntervalSeconds: positiveInteger(settings?.publishMinIntervalSeconds, 1),
     registerIntervalSeconds: positiveInteger(settings?.registerIntervalSeconds, 300),
     statusIntervalSeconds: positiveInteger(settings?.statusIntervalSeconds, 10),
@@ -7320,9 +7361,9 @@ function lingyunDeviceTopics(
   return topics;
 }
 
-function lingyunStatusLabel(status: ScreenRuntimeStatus["lingyun"] | undefined, t: Record<string, string>) {
+function lingyunStatusLabel(status: ScreenRuntimeStatus["lingyun"] | undefined, t: Record<string, string>, fallbackEnabled = false) {
   if (!status) {
-    return t.connecting;
+    return fallbackEnabled ? t.connecting : t.disabled;
   }
   if (!status.enabled) {
     return t.disabled;
@@ -7336,9 +7377,9 @@ function lingyunStatusLabel(status: ScreenRuntimeStatus["lingyun"] | undefined, 
   return status.connected ? t.connected : t.disconnected;
 }
 
-function lingyunStatusLoading(status: ScreenRuntimeStatus["lingyun"] | undefined) {
+function lingyunStatusLoading(status: ScreenRuntimeStatus["lingyun"] | undefined, fallbackEnabled = false) {
   if (!status) {
-    return true;
+    return fallbackEnabled;
   }
   return Boolean(status.enabled && status.configured && status.connecting && !status.connected);
 }

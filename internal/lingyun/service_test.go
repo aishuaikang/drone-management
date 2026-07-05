@@ -22,6 +22,8 @@ type publishedMessage struct {
 type fakeTransport struct {
 	mu               sync.Mutex
 	connected        bool
+	connectErr       error
+	connectCalls     int
 	published        []publishedMessage
 	subscriptions    map[string]messageHandler
 	subscribeStarted chan string
@@ -133,6 +135,11 @@ func newFakeTransport() *fakeTransport {
 func (t *fakeTransport) Connect(context.Context, transportConfig) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.connectCalls++
+	if t.connectErr != nil {
+		t.connected = false
+		return t.connectErr
+	}
 	t.connected = true
 	return nil
 }
@@ -189,6 +196,12 @@ func (t *fakeTransport) Connected() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.connected
+}
+
+func (t *fakeTransport) connectCallCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.connectCalls
 }
 
 func (t *fakeTransport) deliver(topic string, payload []byte) bool {
@@ -278,6 +291,44 @@ func TestServiceTickPublishesRegistrationStatusAndSubscribesControls(t *testing.
 	if !hasTopic(messages, aoaRegisterTopic) ||
 		!hasTopic(messages, ridStatusTopic) {
 		t.Fatalf("published topics = %#v", messageTopics(messages))
+	}
+}
+
+func TestServiceBacksOffAfterConnectFailure(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	transport := newFakeTransport()
+	transport.connectErr = fmt.Errorf("dial timeout")
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+		WithNow(func() time.Time { return now }),
+	)
+
+	service.tick(context.Background())
+
+	status := service.Status()
+	if status.Connected || status.Connecting || status.LastError == "" {
+		t.Fatalf("status after failed connect = %#v, want disconnected with error", status)
+	}
+	if calls := transport.connectCallCount(); calls != 1 {
+		t.Fatalf("connect calls = %d, want 1", calls)
+	}
+
+	now = now.Add(time.Second)
+	service.tick(context.Background())
+	if calls := transport.connectCallCount(); calls != 1 {
+		t.Fatalf("connect calls during backoff = %d, want 1", calls)
+	}
+	status = service.Status()
+	if status.Connecting {
+		t.Fatalf("status during backoff = %#v, want not connecting", status)
+	}
+
+	now = now.Add(defaultMQTTRetryDelay)
+	service.tick(context.Background())
+	if calls := transport.connectCallCount(); calls != 2 {
+		t.Fatalf("connect calls after backoff = %d, want 2", calls)
 	}
 }
 
@@ -912,6 +963,73 @@ func TestServiceDoesNotPublishInterferenceData(t *testing.T) {
 	}
 }
 
+func TestServiceFlushDeviceAddsRequiredSpeedOutsideAOA(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	transport := newFakeTransport()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+		WithNow(func() time.Time { return now }),
+	)
+	settings := service.settingsSnapshot()
+	dcdDevice, ok := lingyunDevice(settings, model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("DCD device missing")
+	}
+	aoaDevice, ok := lingyunDevice(settings, model.LingyunDeviceAOA)
+	if !ok {
+		t.Fatal("AOA device missing")
+	}
+	dcdDef, _ := definitionByType(model.LingyunDeviceDCD)
+	aoaDef, _ := definitionByType(model.LingyunDeviceAOA)
+	lon := 114.500168
+	lat := 22.661026
+	service.addPending(model.LingyunDeviceDCD, senseDataObject{
+		ObjectID:  "DCD-MISSING-SPEED",
+		Longitude: &lon,
+		Latitude:  &lat,
+		Time:      now.UnixMilli(),
+		Extension: dataExtension{ObjectType: uavObjectType, UAVSN: "DCD-MISSING-SPEED"},
+	})
+	service.addPending(model.LingyunDeviceAOA, senseDataObject{
+		ObjectID:  "AOA-MISSING-SPEED",
+		Time:      now.UnixMilli(),
+		Extension: dataExtension{ObjectType: uavObjectType, UAVSN: "AOA-MISSING-SPEED"},
+	})
+
+	if err := service.flushDevice(context.Background(), settings, service.settingsKeySnapshot(), dcdDef, dcdDevice); err != nil {
+		t.Fatalf("flushDevice(DCD) error = %v", err)
+	}
+	if err := service.flushDevice(context.Background(), settings, service.settingsKeySnapshot(), aoaDef, aoaDevice); err != nil {
+		t.Fatalf("flushDevice(AOA) error = %v", err)
+	}
+
+	dcdMessage, ok := findMessage(transport.messages(), deviceTopic(settings, dcdDef, dcdDevice, "device_data"))
+	if !ok {
+		t.Fatalf("DCD device_data not published; topics = %#v", messageTopics(transport.messages()))
+	}
+	var dcdPayload dataPayload
+	if err := json.Unmarshal(dcdMessage.payload, &dcdPayload); err != nil {
+		t.Fatalf("decode DCD payload: %v", err)
+	}
+	if len(dcdPayload.Objects) != 1 || dcdPayload.Objects[0].Speed == nil || *dcdPayload.Objects[0].Speed != 0 {
+		t.Fatalf("DCD speed = %#v, want explicit 0", dcdPayload.Objects)
+	}
+
+	aoaMessage, ok := findMessage(transport.messages(), deviceTopic(settings, aoaDef, aoaDevice, "device_data"))
+	if !ok {
+		t.Fatalf("AOA device_data not published; topics = %#v", messageTopics(transport.messages()))
+	}
+	var aoaPayload dataPayload
+	if err := json.Unmarshal(aoaMessage.payload, &aoaPayload); err != nil {
+		t.Fatalf("decode AOA payload: %v", err)
+	}
+	if len(aoaPayload.Objects) != 1 || aoaPayload.Objects[0].Speed != nil {
+		t.Fatalf("AOA speed = %#v, want omitted", aoaPayload.Objects)
+	}
+}
+
 func TestServiceRoutesRIDAndDJIOPositionDataToRIDAndDCD(t *testing.T) {
 	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	transport := newFakeTransport()
@@ -982,6 +1100,9 @@ func TestServiceRoutesRIDAndDJIOPositionDataToRIDAndDCD(t *testing.T) {
 			t.Fatalf("%s objects = %#v, want RID and decoded dji_O targets only", topic, payload.Objects)
 		}
 		for _, object := range payload.Objects {
+			if object.Speed == nil {
+				t.Fatalf("%s object %s is missing required speed", topic, object.ObjectID)
+			}
 			if object.Extension.UAVModel == "DJI-Drone" || object.Extension.UAVSN == "PLACEHOLDER-SN" {
 				t.Fatalf("%s included DJI-Drone placeholder object: %#v", topic, object)
 			}

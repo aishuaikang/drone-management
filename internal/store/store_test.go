@@ -472,6 +472,9 @@ func TestPositionMergesRIDPrefixedSerialWithDJIOSerial(t *testing.T) {
 	if item.Serial != "F6Z9C2412003L1W8" || item.Model != "Mini 4 Pro" {
 		t.Fatalf("identity = %#v", item)
 	}
+	if item.ReportedSerial != "1581F6Z9C2412003L1W8" {
+		t.Fatalf("reported serial = %q, want full RID SN", item.ReportedSerial)
+	}
 	if item.Pilot == nil || item.Pilot.Latitude != pilot.Latitude || item.Pilot.Longitude != pilot.Longitude {
 		t.Fatalf("pilot was not preserved from dji_O: %#v", item.Pilot)
 	}
@@ -681,6 +684,9 @@ func TestPositionNormalizesModelAliases(t *testing.T) {
 	}
 	if items[0].Serial != "F6Z9C2412003L1W8" || items[0].Model != "Mini 4 Pro" {
 		t.Fatalf("normalized target = %#v", items[0])
+	}
+	if items[0].ReportedSerial != "1581F6Z9C2412003L1W8" {
+		t.Fatalf("reported serial = %q, want full RID SN", items[0].ReportedSerial)
 	}
 	if items[0].LastRecord.Model != "Mini 4 Pro" {
 		t.Fatalf("last record model = %q, want Mini 4 Pro", items[0].LastRecord.Model)

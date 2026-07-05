@@ -198,6 +198,7 @@ func (s *Store) effectiveDeviceLocationLocked() model.ScreenDeviceLocationRespon
 
 // AddPosition merges a positioning target and publishes an update.
 func (s *Store) AddPosition(target model.ScreenPositionTarget) (model.ScreenPositionTarget, bool) {
+	target.ReportedSerial = preferredReportedSerial(target.ReportedSerial, target.LastRecord.Serial, target.Serial)
 	target.Serial = normalizePositionSerial(target.Source, target.Serial)
 	target.Model = normalizePositionModel(target.Model)
 	target.Source = strings.TrimSpace(target.Source)
@@ -546,6 +547,14 @@ func mergePosition(current, incoming model.ScreenPositionTarget) model.ScreenPos
 		current.Device = firstNonEmpty(incoming.Device, current.Device)
 	}
 	current.LastSeen = laterTime(current.LastSeen, incoming.LastSeen)
+	current.ReportedSerial = preferredReportedSerial(
+		current.ReportedSerial,
+		incoming.ReportedSerial,
+		incoming.LastRecord.Serial,
+		current.LastRecord.Serial,
+		incoming.Serial,
+		current.Serial,
+	)
 	hitIncrement := 1
 	if incoming.HitCount > 0 {
 		hitIncrement = incoming.HitCount
@@ -685,6 +694,7 @@ func appendTrajectoryPoint(
 }
 
 func sanitizePositionTarget(target model.ScreenPositionTarget) model.ScreenPositionTarget {
+	target.ReportedSerial = normalizeReportedSerial(target.ReportedSerial)
 	target.Drone = cleanPoint(target.Drone)
 	target.Pilot = cleanPoint(target.Pilot)
 	target.Home = cleanPoint(target.Home)
@@ -994,6 +1004,57 @@ func normalizePositionSerial(source, serial string) string {
 		}
 	}
 	return serial
+}
+
+func normalizeReportedSerial(serial string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(serial)), "")
+}
+
+func preferredReportedSerial(values ...string) string {
+	best := ""
+	for _, value := range values {
+		value = normalizeReportedSerial(value)
+		if value == "" {
+			continue
+		}
+		if betterReportedSerial(value, best) {
+			best = value
+		}
+	}
+	return best
+}
+
+func betterReportedSerial(candidate string, current string) bool {
+	if current == "" {
+		return true
+	}
+	if isFullRIDSerial(candidate) && !isFullRIDSerial(current) {
+		return true
+	}
+	if !isTemporarySerialValue(candidate) && isTemporarySerialValue(current) {
+		return true
+	}
+	return len(candidate) > len(current)
+}
+
+func isFullRIDSerial(serial string) bool {
+	serial = strings.ToUpper(strings.TrimSpace(serial))
+	return strings.HasPrefix(serial, "1581") && len(serial) > 16
+}
+
+func isTemporarySerialValue(serial string) bool {
+	serial = strings.TrimSpace(serial)
+	if len(serial) != 8 {
+		return false
+	}
+	for _, ch := range serial {
+		if !((ch >= '0' && ch <= '9') ||
+			(ch >= 'a' && ch <= 'f') ||
+			(ch >= 'A' && ch <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizePositionModel(value string) string {

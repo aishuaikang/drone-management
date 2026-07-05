@@ -181,10 +181,15 @@ func TestLingyunSettingsWithGeneratedClientID(t *testing.T) {
 	}
 }
 
-func TestLingyunSettingsWithDefaultsLocksProtocolVersion(t *testing.T) {
-	settings := LingyunSettingsWithDefaults(LingyunSettings{ProtocolVersion: "V9.9"})
+func TestLingyunSettingsWithDefaultsKeepsCustomProtocolVersion(t *testing.T) {
+	settings := LingyunSettingsWithDefaults(LingyunSettings{ProtocolVersion: " V9.9 "})
+	if settings.ProtocolVersion != "V9.9" {
+		t.Fatalf("protocol version = %q, want V9.9", settings.ProtocolVersion)
+	}
+
+	settings = LingyunSettingsWithDefaults(LingyunSettings{})
 	if settings.ProtocolVersion != DefaultLingyunProtocolVersion {
-		t.Fatalf("protocol version = %q, want %q", settings.ProtocolVersion, DefaultLingyunProtocolVersion)
+		t.Fatalf("default protocol version = %q, want %q", settings.ProtocolVersion, DefaultLingyunProtocolVersion)
 	}
 }
 

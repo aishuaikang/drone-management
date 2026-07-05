@@ -43,12 +43,13 @@ func projectPosition(
 	altitude := floatValueOrZero(target.Altitude)
 	height := floatValueOrZero(target.Height)
 	speed := floatValueOrZero(target.Speed)
+	uavSN := reportedUAVSN(target, objectID)
 	extension := dataExtension{
 		ObjectType: uavObjectType,
 		Channel:    channelFromFrequency(target.Frequency),
 		BandWidth:  firstNonEmpty(device.BandWidth, model.DefaultLingyunBandWidth),
 		UAVModel:   strings.TrimSpace(target.Model),
-		UAVSN:      objectID,
+		UAVSN:      uavSN,
 	}
 	if target.Pilot != nil && validCoordinate(target.Pilot.Latitude, target.Pilot.Longitude) {
 		pilotLon := target.Pilot.Longitude
@@ -147,4 +148,42 @@ func firstNonEmpty(primary, fallback string) string {
 		return strings.TrimSpace(primary)
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func reportedUAVSN(target model.ScreenPositionTarget, fallback string) string {
+	values := []string{
+		target.ReportedSerial,
+		target.LastRecord.Serial,
+		target.Serial,
+		fallback,
+	}
+	best := ""
+	for _, value := range values {
+		value = strings.Join(strings.Fields(strings.TrimSpace(value)), "")
+		if value == "" {
+			continue
+		}
+		if betterReportedUAVSN(value, best) {
+			best = value
+		}
+	}
+	return best
+}
+
+func betterReportedUAVSN(candidate string, current string) bool {
+	if current == "" {
+		return true
+	}
+	if isFullRIDUAVSN(candidate) && !isFullRIDUAVSN(current) {
+		return true
+	}
+	if isFullRIDUAVSN(current) && !isFullRIDUAVSN(candidate) {
+		return false
+	}
+	return len(candidate) > len(current)
+}
+
+func isFullRIDUAVSN(value string) bool {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "1581") && len(value) > 16
 }

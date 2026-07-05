@@ -45,6 +45,7 @@ import (
 const (
 	sseHeartbeatInterval     = 15 * time.Second
 	fpvVideoStopTimeout      = 10 * time.Second
+	userSettingsPruneTimeout = 2 * time.Second
 	fpvVideoSessionReadyType = "screen.fpv_video.ready"
 	fpvVideoSessionErrorType = "screen.fpv_video.error"
 	fpvVideoSessionBusyCode  = "busy"
@@ -711,10 +712,11 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	saved = model.UserSettingsWithDefaults(saved)
 	saved = s.userSettingsWithRuntimeDefaults(saved)
-	if err := s.pruneIntrusionsByUserSettings(r.Context(), saved); err != nil {
-		respondError(w, http.StatusInternalServerError, "prune intrusion records failed")
-		return
+	pruneCtx, cancelPrune := context.WithTimeout(r.Context(), userSettingsPruneTimeout)
+	if err := s.pruneIntrusionsByUserSettings(pruneCtx, saved); err != nil {
+		slog.Warn("保存用户设置后清理入侵记录失败", "error", err)
 	}
+	cancelPrune()
 	s.applyUserSettings(saved)
 	respondJSON(w, http.StatusOK, saved)
 }

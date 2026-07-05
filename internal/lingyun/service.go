@@ -26,6 +26,7 @@ const (
 	minInterferenceDurationSeconds     = 10
 	maxInterferenceDurationSeconds     = 180
 	maxDevicePublishLogs               = 8
+	defaultMQTTRetryDelay              = 10 * time.Second
 )
 
 var _ protocol.Connector = (*Service)(nil)
@@ -41,10 +42,6 @@ type interferenceController interface {
 
 type interferenceCachedChannelProvider interface {
 	ListChannelsCached() []model.InterferenceChannel
-}
-
-type interferenceCachedActiveProvider interface {
-	ScreenStrikeActive() bool
 }
 
 // WithTransport replaces MQTT transport, primarily for tests.
@@ -102,16 +99,17 @@ type Service struct {
 	now          func() time.Time
 	interference interferenceController
 
-	mu          sync.RWMutex
-	settings    model.LingyunSettings
-	states      map[string]*deviceRuntimeState
-	pending     map[string]map[string]senseDataObject
-	status      model.LingyunStatus
-	settingsKey string
-	clientID    string
-	subscribed  bool
-	seeded      bool
-	wake        chan struct{}
+	mu                   sync.RWMutex
+	settings             model.LingyunSettings
+	states               map[string]*deviceRuntimeState
+	pending              map[string]map[string]senseDataObject
+	status               model.LingyunStatus
+	settingsKey          string
+	clientID             string
+	subscribed           bool
+	seeded               bool
+	nextConnectAttemptAt time.Time
+	wake                 chan struct{}
 }
 
 // NewService creates a Lingyun protocol integration.
@@ -167,6 +165,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 	if changed {
 		s.subscribed = false
 		s.seeded = false
+		s.nextConnectAttemptAt = time.Time{}
 		s.pending = map[string]map[string]senseDataObject{}
 		for _, device := range next.Devices {
 			s.pending[device.Type] = map[string]senseDataObject{}
@@ -228,19 +227,26 @@ func (s *Service) tick(ctx context.Context) {
 	if !settings.Enabled {
 		s.transport.Disconnect()
 		s.clearAllPending()
+		s.clearNextConnectAttempt()
 		s.markDisconnected()
 		s.setConnected(false, "")
 		return
 	}
 	if !lingyunConfigured(settings) {
+		s.clearNextConnectAttempt()
 		s.setConnected(false, "Lingyun MQTT/provider/device config is incomplete")
+		return
+	}
+	if !s.transport.Connected() && s.connectRetryPending(s.now()) {
 		return
 	}
 	s.setConnecting(true, "")
 	if err := s.connect(ctx, settings); err != nil {
+		s.setNextConnectAttempt(s.now().Add(defaultMQTTRetryDelay))
 		s.setConnected(false, err.Error())
 		return
 	}
+	s.clearNextConnectAttempt()
 
 	if !s.isSeeded() {
 		s.seedCurrentTargets(settings)
@@ -417,6 +423,7 @@ func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSetting
 	if !s.reportingEnabled(device.Type) {
 		return nil
 	}
+	objects = completeDataObjectsForPublish(device.Type, objects)
 	msgCnt := s.nextMsgCnt(device.Type)
 	payload := dataPayload{
 		DeviceID:        strings.TrimSpace(device.DeviceID),
@@ -438,6 +445,19 @@ func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSetting
 		s.markDevicePublished(device.Type, "data")
 	}
 	return nil
+}
+
+func completeDataObjectsForPublish(deviceType string, objects []senseDataObject) []senseDataObject {
+	if deviceType == model.LingyunDeviceAOA {
+		return objects
+	}
+	for index := range objects {
+		if objects[index].Speed == nil {
+			speed := 0.0
+			objects[index].Speed = &speed
+		}
+	}
+	return objects
 }
 
 func (s *Service) publishJSON(ctx context.Context, topic string, payload any) (string, error) {
@@ -1030,6 +1050,24 @@ func (s *Service) setConnecting(connecting bool, message string) {
 	s.status.UpdatedAt = cloneTime(s.now())
 }
 
+func (s *Service) connectRetryPending(now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.nextConnectAttemptAt.IsZero() && now.Before(s.nextConnectAttemptAt)
+}
+
+func (s *Service) setNextConnectAttempt(at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextConnectAttemptAt = at
+}
+
+func (s *Service) clearNextConnectAttempt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextConnectAttemptAt = time.Time{}
+}
+
 func (s *Service) markDisconnected() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1163,11 +1201,7 @@ func (s *Service) interferenceActive() bool {
 	if s.interference == nil {
 		return false
 	}
-	state := s.interference.ScreenStrikeState()
-	if provider, ok := s.interference.(interferenceCachedActiveProvider); ok {
-		return provider.ScreenStrikeActive()
-	}
-	return state.Active
+	return s.interference.ScreenStrikeState().Active
 }
 
 func lingyunConfigured(settings model.LingyunSettings) bool {

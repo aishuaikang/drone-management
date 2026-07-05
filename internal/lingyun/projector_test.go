@@ -94,6 +94,31 @@ func TestProjectDCDUsesCommonDroneFields(t *testing.T) {
 	}
 }
 
+func TestProjectPositionReportsFullUAVSNWhenAvailable(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	device := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{Type: model.LingyunDeviceRemoteID})
+	target := model.ScreenPositionTarget{
+		ID:             "rid-1",
+		Serial:         "F8PJC247Q00057LX",
+		ReportedSerial: "1581F8PJC247Q00057LX",
+		Model:          "DJI Mini 4 Pro",
+		Source:         "RID",
+		Drone:          &model.ScreenPositionPoint{Latitude: 22.6799, Longitude: 114.2036},
+		LastSeen:       now,
+	}
+
+	object, ok := projectPosition(target, device, now)
+	if !ok {
+		t.Fatal("projectPosition() ok = false")
+	}
+	if object.ObjectID != "F8PJC247Q00057LX" {
+		t.Fatalf("objectId = %q, want existing canonical id", object.ObjectID)
+	}
+	if object.Extension.UAVSN != "1581F8PJC247Q00057LX" {
+		t.Fatalf("uavSN = %q, want full RID SN", object.Extension.UAVSN)
+	}
+}
+
 func TestProjectPositionRoutesRIDAndDJIOSourcesToRIDAndDCD(t *testing.T) {
 	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	ridDevice := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{Type: model.LingyunDeviceRemoteID})

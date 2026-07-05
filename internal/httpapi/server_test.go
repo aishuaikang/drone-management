@@ -670,6 +670,7 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 			"username": "user",
 			"password": "plain-secret",
 			"providerCode": "DPTEST",
+			"protocolVersion": "V2.0",
 			"devices": [
 				{"type":"aoa","enabled":true,"deviceId":"AOA01","deviceName":"AOA"},
 				{"type":"dcd","enabled":true,"deviceId":"DCD01","deviceName":"DCD"},
@@ -696,7 +697,10 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	if settingsStore.settings.Lingyun.ProviderCode != "DPTEST" {
 		t.Fatalf("saved Lingyun = %#v", settingsStore.settings.Lingyun)
 	}
-	if !lingyunSvc.applied.Lingyun.Enabled || lingyunSvc.applied.Lingyun.ProviderCode != "DPTEST" {
+	if settingsStore.settings.Lingyun.ProtocolVersion != "V2.0" {
+		t.Fatalf("saved protocolVersion = %q, want V2.0", settingsStore.settings.Lingyun.ProtocolVersion)
+	}
+	if !lingyunSvc.applied.Lingyun.Enabled || lingyunSvc.applied.Lingyun.ProviderCode != "DPTEST" || lingyunSvc.applied.Lingyun.ProtocolVersion != "V2.0" {
 		t.Fatalf("applied settings = %#v", lingyunSvc.applied.Lingyun)
 	}
 }
@@ -936,7 +940,7 @@ func TestInterferenceChannelRoutes(t *testing.T) {
 }
 
 func TestScreenStrikeRoutes(t *testing.T) {
-	s := newTestServer(t, store.New(10, 10))
+	s, outputs := newTestServerWithHTTPOutputs(t, store.New(10, 10))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/strike", nil)
 	rec := httptest.NewRecorder()
@@ -968,6 +972,23 @@ func TestScreenStrikeRoutes(t *testing.T) {
 	}
 	if !response.State.Active || len(response.State.ChannelIDs) != 2 {
 		t.Fatalf("started state = %#v", response.State)
+	}
+
+	outputs[1].value = 0
+	outputs[1].remaining = 0
+	outputs[2].value = 0
+	outputs[2].remaining = 0
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/screen/strike", nil)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get expired status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatalf("decode expired state: %v", err)
+	}
+	if state.Active || len(state.ChannelIDs) != 0 {
+		t.Fatalf("expired state = %#v, want inactive from refreshed relay state", state)
 	}
 
 	req = httptest.NewRequest(
@@ -1842,6 +1863,12 @@ func TestPersistFPVVideoRecordMarksReadyAndFailed(t *testing.T) {
 
 func newTestServer(t *testing.T, state *store.Store) *Server {
 	t.Helper()
+	s, _ := newTestServerWithHTTPOutputs(t, state)
+	return s
+}
+
+func newTestServerWithHTTPOutputs(t *testing.T, state *store.Store) (*Server, map[int]*httpTestOutput) {
+	t.Helper()
 	deviceSN := "drone-management-001A2B3C4D5E"
 	cfg := config.Config{
 		Addr:                ":0",
@@ -1869,7 +1896,7 @@ func newTestServer(t *testing.T, state *store.Store) *Server {
 		return output
 	})
 	licenseSvc := newValidTestLicenseService(t, cfg.LicensePath, deviceSN)
-	return New(cfg, state, positionSvc, fpvSvc, WithInterferenceService(interferenceSvc), WithLicenseService(licenseSvc))
+	return New(cfg, state, positionSvc, fpvSvc, WithInterferenceService(interferenceSvc), WithLicenseService(licenseSvc)), outputs
 }
 
 func newTestServerWithLicense(t *testing.T, path string, deviceSN string) *Server {

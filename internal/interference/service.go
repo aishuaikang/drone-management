@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"drone-management/internal/model"
@@ -98,13 +99,15 @@ type unattendedTimings struct {
 type Service struct {
 	mu sync.RWMutex
 
-	channels       map[string]*channelState
-	order          []string
-	outputFactory  OutputFactory
-	statusProvider ConnectionStatusProvider
-	store          *store.Store
-	reports        ReportStore
-	settings       UserSettingsStore
+	channels           map[string]*channelState
+	order              []string
+	outputFactory      OutputFactory
+	statusProvider     ConnectionStatusProvider
+	statusProviderMu   sync.RWMutex
+	screenStrikeActive atomic.Bool
+	store              *store.Store
+	reports            ReportStore
+	settings           UserSettingsStore
 
 	activeReport   *model.InterferenceReport
 	activeReportID string
@@ -117,16 +120,16 @@ type Service struct {
 
 // SetConnectionStatusProvider sets the physical output connection status source.
 func (s *Service) SetConnectionStatusProvider(provider ConnectionStatusProvider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.statusProviderMu.Lock()
+	defer s.statusProviderMu.Unlock()
 	s.statusProvider = provider
 }
 
 // ConnectionStatus returns the current physical output connection status.
 func (s *Service) ConnectionStatus() model.TCPClientStatus {
-	s.mu.RLock()
+	s.statusProviderMu.RLock()
 	provider := s.statusProvider
-	s.mu.RUnlock()
+	s.statusProviderMu.RUnlock()
 	if provider == nil {
 		return model.TCPClientStatus{}
 	}
@@ -293,19 +296,17 @@ func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
 
 // ScreenStrikeActive returns the last observed strike activity without reading relay outputs.
 func (s *Service) ScreenStrikeActive() bool {
+	return s.screenStrikeActive.Load()
+}
+
+// CachedScreenStrikeState returns the last observed screen strike state without
+// reading relay outputs. Status endpoints use this so unavailable hardware does
+// not block unrelated UI/API refreshes.
+func (s *Service) CachedScreenStrikeState() model.ScreenStrikeState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, id := range s.order {
-		state := s.channels[id]
-		if state == nil || state.def.Reserved {
-			continue
-		}
-		if state.enabled {
-			return true
-		}
-	}
-	return false
+	return s.screenStrikeCachedStateLocked(time.Now())
 }
 
 // SetScreenStrike starts or stops screen interference operation.
@@ -846,6 +847,46 @@ func (s *Service) screenStrikeStateLocked(now time.Time) model.ScreenStrikeState
 	return s.screenStrikeSnapshotLocked(now).state
 }
 
+func (s *Service) screenStrikeCachedStateLocked(now time.Time) model.ScreenStrikeState {
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	channels := make([]model.InterferenceChannel, 0, len(s.order))
+	activeChannelIDs := make([]string, 0, len(s.order))
+	for _, id := range s.screenStrikeChannelIDsLocked() {
+		state := s.channels[id]
+		if state == nil {
+			continue
+		}
+		channel := state.dto()
+		channels = append(channels, channel)
+		if channel.Enabled {
+			activeChannelIDs = append(activeChannelIDs, channel.ID)
+		}
+	}
+
+	active := len(activeChannelIDs) > 0
+	result := model.ScreenStrikeState{
+		Active:           active,
+		ChannelIDs:       append([]string{}, activeChannelIDs...),
+		DurationSeconds:  0,
+		RemainingSeconds: 0,
+		Channels:         channels,
+		Unattended:       cloneUnattendedState(s.unattended),
+	}
+	if active && s.activeReport != nil {
+		result.DurationSeconds = s.activeReport.RequestedDurationSeconds
+		startedAt := s.activeReport.StartedAt
+		result.StartedAt = &startedAt
+		if s.activeReport.RequestedDurationSeconds > 0 {
+			remaining := startedAt.Add(time.Duration(s.activeReport.RequestedDurationSeconds) * time.Second).Sub(now)
+			result.RemainingSeconds = ceilSeconds(remaining)
+		}
+	}
+	return result
+}
+
 func (s *Service) screenStrikeSnapshotLocked(now time.Time) screenStrikeSnapshot {
 	if now.IsZero() {
 		now = time.Now()
@@ -1246,6 +1287,7 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 		state.actualLevel = channel.ActualLevel
 		state.status = channel.Status
 		state.lastError = channel.LastError
+		s.syncScreenStrikeActiveLocked()
 		return channel, OutputState{}, false
 	}
 	channel = applyActualLevel(channel, outputState.Value)
@@ -1253,7 +1295,22 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 	state.actualLevel = channel.ActualLevel
 	state.status = channel.Status
 	state.lastError = ""
+	s.syncScreenStrikeActiveLocked()
 	return channel, outputState, true
+}
+
+func (s *Service) syncScreenStrikeActiveLocked() {
+	for _, id := range s.order {
+		state := s.channels[id]
+		if state == nil || state.def.Reserved {
+			continue
+		}
+		if state.enabled {
+			s.screenStrikeActive.Store(true)
+			return
+		}
+	}
+	s.screenStrikeActive.Store(false)
 }
 
 func (s *Service) readOutputStateLocked(state *channelState) (OutputState, error) {

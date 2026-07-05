@@ -60,11 +60,19 @@ async function requestJson<T>(path: string, init?: JsonRequestInit): Promise<T> 
   const controller = timeoutMs > 0 && !requestInit.signal ? new AbortController() : null;
   const timeout = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
   try {
-    const response = await fetch(`${API_PREFIX}${path}`, {
-      ...requestInit,
-      headers,
-      signal: requestInit.signal ?? controller?.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_PREFIX}${path}`, {
+        ...requestInit,
+        headers,
+        signal: requestInit.signal ?? controller?.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error("请求超时，请稍后重试");
+      }
+      throw error;
+    }
     if (!response.ok) {
       throw new Error(await responseErrorMessage(response));
     }
@@ -74,6 +82,10 @@ async function requestJson<T>(path: string, init?: JsonRequestInit): Promise<T> 
       window.clearTimeout(timeout);
     }
   }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 async function requestBlob(path: string, init?: RequestInit): Promise<{ blob: Blob; fileName: string }> {
@@ -148,7 +160,7 @@ export function getScreenDeviceLocation() {
 }
 
 export function getScreenStrike() {
-  return requestJson<ScreenStrikeState>("/screen/strike");
+  return requestJson<ScreenStrikeState>("/screen/strike", { timeoutMs: 2500 });
 }
 
 export function updateScreenTCPPorts(payload: ScreenTCPPortRequest) {
@@ -344,6 +356,7 @@ export function updateUserSettings(payload: UserSettings) {
   return requestJson<UserSettings>("/user/settings", {
     method: "PUT",
     body: JSON.stringify(payload),
+    timeoutMs: 10000,
   });
 }
 

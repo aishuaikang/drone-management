@@ -236,7 +236,10 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 // LingyunSettingsWithDefaults fills optional Lingyun protocol settings.
 func LingyunSettingsWithDefaults(settings LingyunSettings) LingyunSettings {
 	settings.ClientID = strings.TrimSpace(settings.ClientID)
-	settings.ProtocolVersion = DefaultLingyunProtocolVersion
+	settings.ProtocolVersion = strings.TrimSpace(settings.ProtocolVersion)
+	if settings.ProtocolVersion == "" {
+		settings.ProtocolVersion = DefaultLingyunProtocolVersion
+	}
 	if settings.PublishMinIntervalSeconds <= 0 {
 		settings.PublishMinIntervalSeconds = DefaultLingyunPublishMinIntervalSec
 	}
@@ -786,6 +789,7 @@ type ScreenPositionTarget struct {
 	ID                  string                     `json:"id"`
 	CorrelationID       string                     `json:"correlationId,omitempty"`
 	Serial              string                     `json:"serial"`
+	ReportedSerial      string                     `json:"-"`
 	Model               string                     `json:"model"`
 	Source              string                     `json:"source"`
 	Sources             []string                   `json:"sources,omitempty"`
