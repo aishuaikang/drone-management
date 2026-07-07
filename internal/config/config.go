@@ -79,7 +79,7 @@ func Load() Config {
 		TCPBindRetry:             time.Duration(envInt("API_TCP_BIND_RETRY_MS", 1000)) * time.Millisecond,
 		TCPReadIdleTimeout:       time.Duration(envInt("API_TCP_READ_IDLE_TIMEOUT_MS", 0)) * time.Millisecond,
 		FPVCommandTimeout:        time.Duration(envInt("API_FPV_COMMAND_TIMEOUT_MS", 3000)) * time.Millisecond,
-		PositionTargetTTL:        time.Duration(envInt("API_POSITION_TARGET_TTL_SECONDS", 5)) * time.Second,
+		PositionTargetTTL:        time.Duration(envInt("API_POSITION_TARGET_TTL_SECONDS", 20)) * time.Second,
 		MaxPositionTargets:       envInt("API_MAX_POSITION_TARGETS", 500),
 		MaxFPVTargets:            envInt("API_MAX_FPV_TARGETS", 500),
 		EventBufferSize:          envInt("API_EVENT_BUFFER_SIZE", 64),

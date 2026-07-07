@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultPositionTTL        = 5 * time.Second
+	defaultPositionTTL        = 20 * time.Second
 	fpvTTL                    = 10 * time.Second
 	screenPositionUpdatedType = "screen.position.updated"
 	screenPositionRemovedType = "screen.position.removed"

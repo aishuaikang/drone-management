@@ -172,7 +172,7 @@ type WhitelistItem struct {
 
 const (
 	DefaultIntrusionRetentionDays  = 90
-	DefaultPositionExpireSeconds   = 5
+	DefaultPositionExpireSeconds   = 20
 	MinPositionExpireSeconds       = 1
 	MaxPositionExpireSeconds       = 3600
 	MinTCPPort                     = 1

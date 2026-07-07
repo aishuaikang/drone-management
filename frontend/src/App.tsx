@@ -187,7 +187,7 @@ const virtualKeyboardLocaleOptions = ["zh-CN", "en-US"] as const;
 installLeafletCoordConverter();
 
 const targetLimit = 100;
-const defaultPositionExpireSeconds = 5;
+const defaultPositionExpireSeconds = 20;
 const minPositionExpireSeconds = 1;
 const maxPositionExpireSeconds = 3600;
 const minTCPPort = 1;
@@ -495,7 +495,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunIdle: "待机",
     positionExpireSettings: "定位过期设置",
     positionExpireSeconds: "定位过期秒数",
-    positionExpireHint: "控制定位目标从大屏消失并归档为入侵记录的时间，默认 5 秒。",
+    positionExpireHint: "控制定位目标从大屏消失并归档为入侵记录的时间，默认 20 秒。",
     savedValue: "当前保存值",
     preview: "预览",
     restoreDefault: "恢复默认",
@@ -896,7 +896,7 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunIdle: "Idle",
     positionExpireSettings: "Position Expiration",
     positionExpireSeconds: "Position expiration seconds",
-    positionExpireHint: "Controls when positioning targets disappear and archive as intrusion records. Default is 5 seconds.",
+    positionExpireHint: "Controls when positioning targets disappear and archive as intrusion records. Default is 20 seconds.",
     savedValue: "Saved value",
     preview: "Preview",
     restoreDefault: "Restore default",
