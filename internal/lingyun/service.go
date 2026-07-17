@@ -36,16 +36,9 @@ type Option func(*Service)
 
 type interferenceController interface {
 	ListChannels() []model.InterferenceChannel
-	ScreenStrikeState() model.ScreenStrikeState
-	SetScreenStrike(model.ScreenStrikeRequest) (model.ScreenStrikeState, error)
-}
-
-type interferenceCachedChannelProvider interface {
 	ListChannelsCached() []model.InterferenceChannel
-}
-
-type interferenceCachedActiveProvider interface {
 	ScreenStrikeActive() bool
+	SetScreenStrike(model.ScreenStrikeRequest) (model.ScreenStrikeState, error)
 }
 
 // WithTransport replaces MQTT transport, primarily for tests.
@@ -489,12 +482,7 @@ func (s *Service) deviceWithCurrentInterferenceBands(device model.LingyunDeviceS
 	if device.Type != model.LingyunDeviceInterference || s.interference == nil {
 		return device
 	}
-	var channels []model.InterferenceChannel
-	if provider, ok := s.interference.(interferenceCachedChannelProvider); ok {
-		channels = provider.ListChannelsCached()
-	} else {
-		channels = s.interference.ListChannels()
-	}
+	channels := s.interference.ListChannelsCached()
 	if bands := lingyunInterferenceBandsFromChannels(channels); len(bands) > 0 {
 		device.Bands = bands
 	}
@@ -1174,7 +1162,7 @@ func (s *Service) deviceStatusesLocked(interferenceActive bool) []model.LingyunD
 }
 
 func (s *Service) statusInterval(settings model.LingyunSettings, device model.LingyunDeviceSettings) time.Duration {
-	if device.Type == model.LingyunDeviceInterference && s.interferenceActive() {
+	if device.Type == model.LingyunDeviceInterference && s.cachedInterferenceActive() {
 		return time.Second
 	}
 	return time.Duration(settings.StatusIntervalSeconds) * time.Second
@@ -1182,7 +1170,11 @@ func (s *Service) statusInterval(settings model.LingyunSettings, device model.Li
 
 func (s *Service) currentWorkState(device model.LingyunDeviceSettings) int {
 	reporting := s.reportingEnabled(device.Type)
-	return statusWorkState(device, reporting, s.interferenceActive())
+	interferenceActive := false
+	if device.Type == model.LingyunDeviceInterference {
+		interferenceActive = s.cachedInterferenceActive()
+	}
+	return statusWorkState(device, reporting, interferenceActive)
 }
 
 func statusWorkState(device model.LingyunDeviceSettings, reporting bool, interferenceActive bool) int {
@@ -1195,21 +1187,11 @@ func statusWorkState(device model.LingyunDeviceSettings, reporting bool, interfe
 	return workState(device.Enabled, reporting)
 }
 
-func (s *Service) interferenceActive() bool {
-	if s.interference == nil {
-		return false
-	}
-	return s.interference.ScreenStrikeState().Active
-}
-
 func (s *Service) cachedInterferenceActive() bool {
 	if s.interference == nil {
 		return false
 	}
-	if provider, ok := s.interference.(interferenceCachedActiveProvider); ok {
-		return provider.ScreenStrikeActive()
-	}
-	return s.interference.ScreenStrikeState().Active
+	return s.interference.ScreenStrikeActive()
 }
 
 func lingyunConfigured(settings model.LingyunSettings) bool {

@@ -3,6 +3,7 @@ package interference
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -218,6 +219,32 @@ func (s memorySettingsStore) SaveEditableUser(settings model.UserSettings) (mode
 	return model.UserSettingsWithDefaults(settings), nil
 }
 
+type recordingSettingsStore struct {
+	mu       sync.Mutex
+	settings model.UserSettings
+	ok       bool
+}
+
+func (s *recordingSettingsStore) LoadUser() (model.UserSettings, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settings, s.ok, nil
+}
+
+func (s *recordingSettingsStore) SaveEditableUser(settings model.UserSettings) (model.UserSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings = model.UserSettingsWithDefaults(settings)
+	s.ok = true
+	return s.settings, nil
+}
+
+func (s *recordingSettingsStore) snapshot() model.UserSettings {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.settings
+}
+
 func TestScreenStrikeStartStopAndReport(t *testing.T) {
 	outputs, factory := newFakeOutputFactory()
 	service := NewService(store.New(10, 10), DefaultChannels(), factory)
@@ -354,6 +381,110 @@ func TestListChannelsCachedDoesNotReadOutputs(t *testing.T) {
 	}
 	if outputCreated {
 		t.Fatal("ListChannelsCached() should not create or read relay outputs")
+	}
+}
+
+func TestConfirmedOfflineSkipsSynchronousRelayIO(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	first := &blockingOutput{}
+	first.blockStateReads(entered, release)
+	others := map[int]*fakeOutput{}
+	service := NewService(store.New(10, 10), DefaultChannels(), func(number int) Output {
+		if number == 1 {
+			return first
+		}
+		output := others[number]
+		if output == nil {
+			output = &fakeOutput{}
+			others[number] = output
+		}
+		return output
+	})
+	now := time.Now()
+	service.SetConnectionStatusProvider(func() model.TCPClientStatus {
+		return model.TCPClientStatus{
+			Connected:    false,
+			ConnectError: "relay offline",
+			UpdatedAt:    &now,
+		}
+	})
+
+	startedAt := time.Now()
+	channels := service.ListChannels()
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("ListChannels() took %s while relay was confirmed offline", elapsed)
+	}
+	if len(channels) != len(DefaultChannels()) {
+		t.Fatalf("channels = %d, want %d", len(channels), len(DefaultChannels()))
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("offline recovery probe did not start")
+	}
+
+	startedAt = time.Now()
+	if _, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	}); ErrorCode(err) != interferenceOfflineCode {
+		t.Fatalf("SetScreenStrike() error = %v, code = %q", err, ErrorCode(err))
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("SetScreenStrike() took %s while relay was confirmed offline", elapsed)
+	}
+	if _, err := service.SetState("io1", false); ErrorCode(err) != interferenceOfflineCode {
+		t.Fatalf("SetState() error = %v, code = %q", err, ErrorCode(err))
+	}
+	startedAt = time.Now()
+	if state := service.ScreenStrikeState(); state.Active {
+		t.Fatalf("ScreenStrikeState() = %#v, want cached inactive state", state)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("ScreenStrikeState() took %s while relay was confirmed offline", elapsed)
+	}
+
+	close(release)
+	released = true
+	waitUntil(t, time.Second, func() bool {
+		return !service.strikeRefreshBusy.Load()
+	})
+	if reads := first.snapshot().readCount; reads != 1 {
+		t.Fatalf("offline recovery read count = %d, want 1", reads)
+	}
+	for number, output := range others {
+		if reads := output.snapshot().readCount; reads != 0 {
+			t.Fatalf("output %d read count = %d, want 0 after failed/offline probe", number, reads)
+		}
+	}
+}
+
+func TestUnknownConnectionAllowsInitialRelayOperation(t *testing.T) {
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(store.New(10, 10), DefaultChannels(), factory)
+	service.SetConnectionStatusProvider(func() model.TCPClientStatus {
+		return model.TCPClientStatus{Connected: false}
+	})
+
+	state, err := service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("SetScreenStrike() with unprobed connection error = %v", err)
+	}
+	if !state.Active || outputs[1].snapshot().value != 1 {
+		t.Fatalf("state = %#v, output = %#v", state, outputs[1].snapshot())
 	}
 }
 
@@ -808,6 +939,87 @@ func TestUnattendedDisablesManualStartAndStopsActiveStrike(t *testing.T) {
 	}
 	if state.Unattended.Enabled || state.Active || outputs[1].snapshot().value != 0 {
 		t.Fatalf("state after disable = %#v output = %#v", state, outputs[1].snapshot())
+	}
+}
+
+func TestDisableUnattendedOfflineRetriesStopAfterReconnect(t *testing.T) {
+	stateStore := store.New(10, 10)
+	_, _ = stateStore.AddFPV(model.ScreenFPVTarget{
+		Frequency:  5800,
+		SignalType: "fpv",
+		LastSeen:   time.Now(),
+	})
+	outputs, factory := newFakeOutputFactory()
+	service := NewService(stateStore, DefaultChannels(), factory)
+	service.SetUnattendedTimings(10*time.Millisecond, 20*time.Millisecond, 5*time.Millisecond)
+	reports := &memoryReportStore{}
+	service.SetReportStore(reports)
+	settings := &recordingSettingsStore{}
+	service.SetUserSettingsStore(settings)
+	var connected atomic.Bool
+	connected.Store(true)
+	updatedAt := time.Now()
+	service.SetConnectionStatusProvider(func() model.TCPClientStatus {
+		return model.TCPClientStatus{
+			Connected: connected.Load(),
+			UpdatedAt: &updatedAt,
+		}
+	})
+	defer service.Shutdown()
+
+	_, err := service.SetUnattended(model.ScreenStrikeUnattendedConfig{
+		Enabled:         true,
+		ChannelIDs:      []string{"io1"},
+		DurationSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("SetUnattended(enable) error = %v", err)
+	}
+	waitUntil(t, time.Second, func() bool {
+		return outputs[1].snapshot().value == 1
+	})
+
+	connected.Store(false)
+	state, err := service.SetUnattended(model.ScreenStrikeUnattendedConfig{Enabled: false})
+	if ErrorCode(err) != interferenceOfflineCode {
+		t.Fatalf("SetUnattended(disable) error = %v, code = %q", err, ErrorCode(err))
+	}
+	if state.Unattended.Enabled {
+		t.Fatalf("unattended state = %#v, want locally disabled", state.Unattended)
+	}
+	if output := outputs[1].snapshot(); output.value != 1 {
+		t.Fatalf("offline output = %#v, want still active until reconnect", output)
+	}
+	service.mu.Lock()
+	pending := service.pendingStrikeStop
+	service.mu.Unlock()
+	if !pending {
+		t.Fatal("pendingStrikeStop = false, want pending recovery stop")
+	}
+	if saved := settings.snapshot(); saved.ScreenStrikeUnattended == nil || saved.ScreenStrikeUnattended.Enabled {
+		t.Fatalf("saved unattended settings = %#v, want disabled", saved.ScreenStrikeUnattended)
+	}
+
+	waitUntil(t, time.Second, func() bool {
+		return !service.strikeRefreshBusy.Load()
+	})
+	connected.Store(true)
+	_, err = service.SetScreenStrike(model.ScreenStrikeRequest{
+		Enabled:         true,
+		ChannelIDs:      []string{"io2"},
+		DurationSeconds: 10,
+	})
+	if ErrorCode(err) != "strike_stop_pending" {
+		t.Fatalf("SetScreenStrike() while stop pending error = %v, code = %q", err, ErrorCode(err))
+	}
+	service.RefreshScreenStrikeStateAsync()
+	waitUntil(t, time.Second, func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return outputs[1].snapshot().value == 0 && !service.pendingStrikeStop
+	})
+	if updated := reports.updatedReports(); len(updated) != 1 || updated[0].Status != model.InterferenceReportStatusCompleted {
+		t.Fatalf("updated reports = %#v, want completed after recovery stop", updated)
 	}
 }
 

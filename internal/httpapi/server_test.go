@@ -1096,6 +1096,70 @@ func TestScreenStrikeRoutes(t *testing.T) {
 	}
 }
 
+func TestOfflineInterferenceRoutesSkipBlockedRelayIO(t *testing.T) {
+	state := store.New(10, 10)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	blocked := &httpBlockingOutput{entered: entered, release: release}
+	interferenceSvc := interference.NewService(state, interference.DefaultChannels(), func(number int) interference.Output {
+		if number == 1 {
+			return blocked
+		}
+		return &httpTestOutput{}
+	})
+	now := time.Now()
+	interferenceSvc.SetConnectionStatusProvider(func() model.TCPClientStatus {
+		return model.TCPClientStatus{
+			Connected:    false,
+			ConnectError: "relay offline",
+			UpdatedAt:    &now,
+		}
+	})
+	s := newTestServer(t, state)
+	s.interference = interferenceSvc
+	defer close(release)
+
+	startedAt := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/interference/channels", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list channels status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("list channels took %s while relay was offline", elapsed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("offline recovery probe did not start")
+	}
+
+	requests := []*http.Request{
+		httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/screen/strike",
+			strings.NewReader(`{"enabled":true,"channelIds":["io1"],"durationSeconds":10}`),
+		),
+		httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/interference/channels/io1/state",
+			strings.NewReader(`{"enabled":false}`),
+		),
+	}
+	for _, req := range requests {
+		startedAt = time.Now()
+		rec = httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "interference_offline") {
+			t.Fatalf("offline operation status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+			t.Fatalf("offline operation took %s while recovery probe was blocked", elapsed)
+		}
+	}
+}
+
 func TestScreenStrikeUnattendedRoute(t *testing.T) {
 	s := newTestServer(t, store.New(10, 10))
 	settingsStore := &memoryUserSettingsStore{}

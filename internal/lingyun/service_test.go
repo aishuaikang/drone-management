@@ -50,10 +50,20 @@ func (c *fakeInterferenceController) ListChannels() []model.InterferenceChannel 
 	return out
 }
 
+func (c *fakeInterferenceController) ListChannelsCached() []model.InterferenceChannel {
+	return c.ListChannels()
+}
+
 func (c *fakeInterferenceController) ScreenStrikeState() model.ScreenStrikeState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state
+}
+
+func (c *fakeInterferenceController) ScreenStrikeActive() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state.Active
 }
 
 func (c *fakeInterferenceController) SetScreenStrike(req model.ScreenStrikeRequest) (model.ScreenStrikeState, error) {
@@ -88,6 +98,10 @@ type cachedActiveInterferenceController struct {
 }
 
 func (c *cachedActiveInterferenceController) ListChannels() []model.InterferenceChannel {
+	return nil
+}
+
+func (c *cachedActiveInterferenceController) ListChannelsCached() []model.InterferenceChannel {
 	return nil
 }
 
@@ -126,6 +140,10 @@ func (c *cachedChannelInterferenceController) SetScreenStrike(req model.ScreenSt
 
 func (c *cachedChannelInterferenceController) ListChannelsCached() []model.InterferenceChannel {
 	return append([]model.InterferenceChannel{}, c.cached...)
+}
+
+func (c *cachedChannelInterferenceController) ScreenStrikeActive() bool {
+	return false
 }
 
 func newFakeTransport() *fakeTransport {
@@ -433,7 +451,7 @@ func TestServiceStatusUsesCachedInterferenceState(t *testing.T) {
 	}
 }
 
-func TestServiceBackgroundWorkStateRefreshesInterferenceState(t *testing.T) {
+func TestServiceBackgroundWorkStateUsesCachedInterferenceState(t *testing.T) {
 	controller := &cachedActiveInterferenceController{
 		active: true,
 		state:  model.ScreenStrikeState{Active: false},
@@ -449,14 +467,14 @@ func TestServiceBackgroundWorkStateRefreshesInterferenceState(t *testing.T) {
 		t.Fatal("interference device missing")
 	}
 
-	if interval := service.statusInterval(settings, device); interval != time.Duration(settings.StatusIntervalSeconds)*time.Second {
-		t.Fatalf("status interval = %s, want configured interval for refreshed inactive state", interval)
+	if interval := service.statusInterval(settings, device); interval != time.Second {
+		t.Fatalf("status interval = %s, want active interference interval", interval)
 	}
-	if workState := service.currentWorkState(device); workState != 0 {
-		t.Fatalf("work state = %d, want inactive state from relay refresh", workState)
+	if workState := service.currentWorkState(device); workState != 1 {
+		t.Fatalf("work state = %d, want cached active state", workState)
 	}
-	if controller.stateCalls != 2 {
-		t.Fatalf("ScreenStrikeState calls = %d, want one refresh per background status decision", controller.stateCalls)
+	if controller.stateCalls != 0 {
+		t.Fatalf("ScreenStrikeState calls = %d, want no synchronous relay refresh", controller.stateCalls)
 	}
 }
 

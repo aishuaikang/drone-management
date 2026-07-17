@@ -16,6 +16,7 @@ import (
 
 const (
 	screenStrikeEventType          = "screen.strike.updated"
+	interferenceOfflineCode        = "interference_offline"
 	screenStrikeMinDurationSeconds = 10
 	screenStrikeMaxDurationSeconds = 180
 	unattendedPhaseDisabled        = "disabled"
@@ -106,14 +107,17 @@ type Service struct {
 	statusProviderMu   sync.RWMutex
 	screenStrikeActive atomic.Bool
 	strikeRefreshBusy  atomic.Bool
+	cachedChannelsMu   sync.RWMutex
+	cachedChannels     []model.InterferenceChannel
 	cachedStrikeMu     sync.RWMutex
 	cachedStrikeState  model.ScreenStrikeState
 	store              *store.Store
 	reports            ReportStore
 	settings           UserSettingsStore
 
-	activeReport   *model.InterferenceReport
-	activeReportID string
+	activeReport      *model.InterferenceReport
+	activeReportID    string
+	pendingStrikeStop bool
 
 	unattended        model.ScreenStrikeUnattendedState
 	unattendedTimings unattendedTimings
@@ -137,6 +141,34 @@ func (s *Service) ConnectionStatus() model.TCPClientStatus {
 		return model.TCPClientStatus{}
 	}
 	return provider()
+}
+
+func (s *Service) confirmedOffline() (model.TCPClientStatus, bool) {
+	s.statusProviderMu.RLock()
+	provider := s.statusProvider
+	s.statusProviderMu.RUnlock()
+	if provider == nil {
+		return model.TCPClientStatus{}, false
+	}
+	status := provider()
+	return status, status.UpdatedAt != nil && !status.Connected
+}
+
+func (s *Service) confirmedOfflineError() error {
+	status, offline := s.confirmedOffline()
+	if !offline {
+		return nil
+	}
+	s.RefreshScreenStrikeStateAsync()
+	return s.offlineError(status)
+}
+
+func (s *Service) offlineError(status model.TCPClientStatus) error {
+	message := "interference device is offline"
+	if detail := strings.TrimSpace(status.ConnectError); detail != "" {
+		message += ": " + detail
+	}
+	return s.codedError(interferenceOfflineCode, message)
 }
 
 type channelState struct {
@@ -194,6 +226,12 @@ func NewService(
 		},
 	}
 	service.cachedStrikeState = service.screenStrikeCachedStateLocked(time.Now())
+	service.cachedChannels = make([]model.InterferenceChannel, 0, len(service.order))
+	for _, id := range service.order {
+		if state := service.channels[id]; state != nil {
+			service.cachedChannels = append(service.cachedChannels, state.dto())
+		}
+	}
 	return service
 }
 
@@ -237,35 +275,41 @@ func (s *Service) SetUnattended(config model.ScreenStrikeUnattendedConfig) (mode
 
 // ListChannels returns channel state in stable display order.
 func (s *Service) ListChannels() []model.InterferenceChannel {
+	if _, offline := s.confirmedOffline(); offline {
+		s.RefreshScreenStrikeStateAsync()
+		return s.ListChannelsCached()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	result := make([]model.InterferenceChannel, 0, len(s.order))
 	for _, id := range s.order {
-		result = append(result, s.dtoWithActual(s.channels[id]))
+		state := s.channels[id]
+		if _, offline := s.confirmedOffline(); offline {
+			result = append(result, s.markChannelOfflineLocked(state))
+			continue
+		}
+		result = append(result, s.dtoWithActual(state))
 	}
 	return result
 }
 
 // ListChannelsCached returns channel metadata and last observed state without reading relay outputs.
 func (s *Service) ListChannelsCached() []model.InterferenceChannel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]model.InterferenceChannel, 0, len(s.order))
-	for _, id := range s.order {
-		state := s.channels[id]
-		if state == nil {
-			continue
-		}
-		result = append(result, state.dto())
-	}
-	return result
+	s.cachedChannelsMu.RLock()
+	channels := cloneInterferenceChannels(s.cachedChannels)
+	s.cachedChannelsMu.RUnlock()
+	return channels
 }
 
 // SetState sets one channel high or low.
 func (s *Service) SetState(id string, enabled bool) (model.InterferenceChannel, error) {
 	id = strings.TrimSpace(id)
+	if err := s.confirmedOfflineError(); err != nil {
+		return s.cachedChannel(id), err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -288,11 +332,19 @@ func (s *Service) SetState(id string, enabled bool) (model.InterferenceChannel, 
 
 // ScreenStrikeState returns current screen strike state.
 func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
+	if _, offline := s.confirmedOffline(); offline {
+		s.RefreshScreenStrikeStateAsync()
+		return s.CachedScreenStrikeState()
+	}
+	return s.refreshScreenStrikeState(false)
+}
+
+func (s *Service) refreshScreenStrikeState(allowOfflineProbe bool) model.ScreenStrikeState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	snapshot := s.screenStrikeSnapshotLocked(now)
+	snapshot := s.screenStrikeSnapshotWithPolicyLocked(now, allowOfflineProbe)
 	if s.finishCompletedReportIfInactiveLocked(snapshot, now) {
 		s.publishScreenStrikeLocked(snapshot.state)
 	} else {
@@ -315,7 +367,8 @@ func (s *Service) RefreshScreenStrikeStateAsync() {
 	}
 	go func() {
 		defer s.strikeRefreshBusy.Store(false)
-		_ = s.ScreenStrikeState()
+		_ = s.refreshScreenStrikeState(true)
+		s.retryPendingStrikeStop()
 	}()
 }
 
@@ -340,9 +393,17 @@ func (s *Service) setUnattended(config model.ScreenStrikeUnattendedConfig, persi
 	if !config.Enabled {
 		return s.disableUnattended(persist)
 	}
+	if err := s.confirmedOfflineError(); err != nil {
+		return s.CachedScreenStrikeState(), err
+	}
 
 	duration := time.Duration(config.DurationSeconds) * time.Second
 	s.mu.Lock()
+	if s.pendingStrikeStop {
+		state := s.screenStrikeCachedStateLocked(time.Now())
+		s.mu.Unlock()
+		return state, s.codedError("strike_stop_pending", "interference stop is pending")
+	}
 	selected, err := s.validateScreenStrikeChannelsLocked(config.ChannelIDs)
 	if err != nil {
 		state := s.screenStrikeStateLocked(time.Now())
@@ -355,6 +416,11 @@ func (s *Service) setUnattended(config model.ScreenStrikeUnattendedConfig, persi
 		return state, s.codedError("strike_invalid_duration", "interference duration must be between 10 and 180 seconds")
 	}
 	current := s.screenStrikeSnapshotLocked(time.Now())
+	if err := s.confirmedOfflineError(); err != nil {
+		state := current.state
+		s.mu.Unlock()
+		return state, err
+	}
 	if current.state.Active {
 		state := current.state
 		s.mu.Unlock()
@@ -390,14 +456,17 @@ func (s *Service) setUnattended(config model.ScreenStrikeUnattendedConfig, persi
 func (s *Service) disableUnattended(persist bool) (model.ScreenStrikeState, error) {
 	s.mu.Lock()
 	wasEnabled := s.unattended.Enabled
+	strikeMayBeActive := s.unattended.Phase == unattendedPhaseStriking ||
+		s.screenStrikeActive.Load() || s.activeReport != nil
+	needsStop := s.pendingStrikeStop || (wasEnabled && strikeMayBeActive)
 	s.stopUnattendedLocked()
 	s.unattended = model.ScreenStrikeUnattendedState{Phase: unattendedPhaseDisabled}
-	state := s.screenStrikeStateLocked(time.Now())
+	state := s.screenStrikeCachedStateLocked(time.Now())
 	s.publishScreenStrikeLocked(state)
 	s.mu.Unlock()
 
 	var err error
-	if wasEnabled && state.Active {
+	if needsStop {
 		_, err = s.applyScreenStrikeWithType(false, nil, 0, 0, model.InterferenceOperationUnattended)
 	}
 	if persist {
@@ -622,8 +691,32 @@ func (s *Service) applyScreenStrikeWithType(
 	durationSeconds int,
 	operationType model.InterferenceOperationType,
 ) (model.ScreenStrikeState, error) {
+	if !enabled {
+		if status, offline := s.confirmedOffline(); offline {
+			s.markPendingStrikeStop()
+			s.RefreshScreenStrikeStateAsync()
+			return s.CachedScreenStrikeState(), s.offlineError(status)
+		}
+	}
+	if err := s.confirmedOfflineError(); err != nil {
+		return s.CachedScreenStrikeState(), err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.applyScreenStrikeWithTypeLocked(enabled, channelIDs, duration, durationSeconds, operationType)
+}
+
+func (s *Service) applyScreenStrikeWithTypeLocked(
+	enabled bool,
+	channelIDs []string,
+	duration time.Duration,
+	durationSeconds int,
+	operationType model.InterferenceOperationType,
+) (model.ScreenStrikeState, error) {
+	if enabled && s.pendingStrikeStop {
+		return s.screenStrikeCachedStateLocked(time.Now()), s.codedError("strike_stop_pending", "interference stop is pending")
+	}
 
 	if enabled && operationType == model.InterferenceOperationManual && s.unattended.Enabled {
 		return s.screenStrikeStateLocked(time.Now()), s.codedError("strike_unattended_active", "unattended strike is active")
@@ -642,7 +735,13 @@ func (s *Service) applyScreenStrikeWithType(
 			s.finishActiveReportLocked(model.InterferenceReportStatusCompleted, "", err, endedAt, snapshot.state)
 		}
 		s.publishScreenStrikeLocked(snapshot.state)
-		return snapshot.state, err
+		if err != nil {
+			s.pendingStrikeStop = true
+			s.RefreshScreenStrikeStateAsync()
+			return snapshot.state, err
+		}
+		s.pendingStrikeStop = false
+		return snapshot.state, nil
 	}
 
 	startedAt := time.Now()
@@ -668,8 +767,20 @@ func (s *Service) applyScreenStrikeWithType(
 	s.finishCompletedReportIfInactiveLocked(current, startedAt)
 
 	for _, id := range selected {
+		if err := s.confirmedOfflineError(); err != nil {
+			state := s.screenStrikeStateLocked(time.Now())
+			s.createFailedReportLocked(req, selected, startedAt, err, state, operationType)
+			s.publishScreenStrikeLocked(state)
+			return state, err
+		}
 		if _, err := s.setTimedStateLocked(id, duration); err != nil {
 			_ = s.stopScreenStrikeChannelIDsLocked(selected)
+			state := s.screenStrikeStateLocked(time.Now())
+			s.createFailedReportLocked(req, selected, startedAt, err, state, operationType)
+			s.publishScreenStrikeLocked(state)
+			return state, err
+		}
+		if err := s.confirmedOfflineError(); err != nil {
 			state := s.screenStrikeStateLocked(time.Now())
 			s.createFailedReportLocked(req, selected, startedAt, err, state, operationType)
 			s.publishScreenStrikeLocked(state)
@@ -687,6 +798,31 @@ func (s *Service) applyScreenStrikeWithType(
 	s.createRunningReportLocked(req, selected, startedAt, state, operationType)
 	s.publishScreenStrikeLocked(state)
 	return state, nil
+}
+
+func (s *Service) markPendingStrikeStop() {
+	s.mu.Lock()
+	s.pendingStrikeStop = true
+	s.mu.Unlock()
+}
+
+func (s *Service) retryPendingStrikeStop() {
+	if _, offline := s.confirmedOffline(); offline {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pendingStrikeStop {
+		return
+	}
+	_, _ = s.applyScreenStrikeWithTypeLocked(
+		false,
+		nil,
+		0,
+		0,
+		model.InterferenceOperationUnattended,
+	)
 }
 
 func (s *Service) setStateLocked(id string, enabled bool) (model.InterferenceChannel, error) {
@@ -856,6 +992,12 @@ func (s *Service) isScreenStrikeChannelIDLocked(id string) bool {
 func (s *Service) stopScreenStrikeChannelIDsLocked(ids []string) error {
 	var firstErr error
 	for _, id := range ids {
+		if err := s.confirmedOfflineError(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
 		if _, err := s.setStateLocked(id, false); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -908,6 +1050,10 @@ func (s *Service) screenStrikeCachedStateLocked(now time.Time) model.ScreenStrik
 }
 
 func (s *Service) screenStrikeSnapshotLocked(now time.Time) screenStrikeSnapshot {
+	return s.screenStrikeSnapshotWithPolicyLocked(now, false)
+}
+
+func (s *Service) screenStrikeSnapshotWithPolicyLocked(now time.Time, allowOfflineProbe bool) screenStrikeSnapshot {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -916,8 +1062,18 @@ func (s *Service) screenStrikeSnapshotLocked(now time.Time) screenStrikeSnapshot
 	activeChannelIDs := make([]string, 0, len(s.order))
 	var maxRemaining time.Duration
 	fullyObserved := true
+	offlineProbeAvailable := allowOfflineProbe
 	for _, id := range s.screenStrikeChannelIDsLocked() {
-		channel, outputState, ok := s.dtoWithActualState(s.channels[id])
+		state := s.channels[id]
+		_, offline := s.confirmedOffline()
+		if offline && !offlineProbeAvailable {
+			channel := s.markChannelOfflineLocked(state)
+			fullyObserved = false
+			channels = append(channels, channel)
+			continue
+		}
+		offlineProbeAvailable = false
+		channel, outputState, ok := s.dtoWithActualState(state)
 		if !ok {
 			fullyObserved = false
 		}
@@ -948,6 +1104,28 @@ func (s *Service) screenStrikeSnapshotLocked(now time.Time) screenStrikeSnapshot
 		state:         state,
 		fullyObserved: fullyObserved,
 	}
+}
+
+func (s *Service) markChannelOfflineLocked(state *channelState) model.InterferenceChannel {
+	if state == nil {
+		return model.InterferenceChannel{}
+	}
+	channel := state.dto()
+	channel.Enabled = false
+	channel.ActualLevel = "unknown"
+	channel.Status = "error"
+	status, _ := s.confirmedOffline()
+	channel.LastError = strings.TrimSpace(status.ConnectError)
+	if channel.LastError == "" {
+		channel.LastError = "interference device is offline"
+	}
+	state.enabled = false
+	state.actualLevel = channel.ActualLevel
+	state.status = channel.Status
+	state.lastError = channel.LastError
+	s.syncScreenStrikeActiveLocked()
+	s.cacheChannel(channel)
+	return channel
 }
 
 func (s *Service) finishCompletedReportIfInactiveLocked(snapshot screenStrikeSnapshot, endedAt time.Time) bool {
@@ -1292,6 +1470,7 @@ func (s *Service) markError(state *channelState, err error) (model.InterferenceC
 	state.status = "error"
 	state.lastError = err.Error()
 	channel := state.dto()
+	s.cacheChannel(channel)
 	if s.store != nil {
 		s.store.Publish(model.Event{Type: "interference.channel.updated", Time: time.Now(), Payload: channel})
 	}
@@ -1334,6 +1513,7 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 		state.status = channel.Status
 		state.lastError = channel.LastError
 		s.syncScreenStrikeActiveLocked()
+		s.cacheChannel(channel)
 		return channel, OutputState{}, false
 	}
 	channel = applyActualLevel(channel, outputState.Value)
@@ -1342,7 +1522,31 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 	state.status = channel.Status
 	state.lastError = ""
 	s.syncScreenStrikeActiveLocked()
+	s.cacheChannel(channel)
 	return channel, outputState, true
+}
+
+func (s *Service) cachedChannel(id string) model.InterferenceChannel {
+	s.cachedChannelsMu.RLock()
+	defer s.cachedChannelsMu.RUnlock()
+	for _, channel := range s.cachedChannels {
+		if channel.ID == id {
+			return cloneInterferenceChannels([]model.InterferenceChannel{channel})[0]
+		}
+	}
+	return model.InterferenceChannel{}
+}
+
+func (s *Service) cacheChannel(channel model.InterferenceChannel) {
+	s.cachedChannelsMu.Lock()
+	defer s.cachedChannelsMu.Unlock()
+	for index := range s.cachedChannels {
+		if s.cachedChannels[index].ID == channel.ID {
+			s.cachedChannels[index] = cloneInterferenceChannels([]model.InterferenceChannel{channel})[0]
+			return
+		}
+	}
+	s.cachedChannels = append(s.cachedChannels, cloneInterferenceChannels([]model.InterferenceChannel{channel})[0])
 }
 
 func (s *Service) syncScreenStrikeActiveLocked() {

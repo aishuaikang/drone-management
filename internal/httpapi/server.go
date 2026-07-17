@@ -529,11 +529,7 @@ func (s *Server) handleSetScreenStrike(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := s.interference.SetScreenStrike(req)
 	if err != nil {
-		if code := interference.ErrorCode(err); code != "" {
-			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
-			return
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondInterferenceError(w, err)
 		return
 	}
 	message := "干扰已停止"
@@ -558,11 +554,7 @@ func (s *Server) handleSetScreenStrikeUnattended(w http.ResponseWriter, r *http.
 	}
 	state, err := s.interference.SetUnattended(req)
 	if err != nil {
-		if code := interference.ErrorCode(err); code != "" {
-			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
-			return
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondInterferenceError(w, err)
 		return
 	}
 	message := "无人值守已关闭"
@@ -602,11 +594,7 @@ func (s *Server) handleSetInterferenceChannelState(w http.ResponseWriter, r *htt
 	}
 	channel, err := s.interference.SetState(strings.TrimSpace(r.PathValue("id")), req.Enabled)
 	if err != nil {
-		if code := interference.ErrorCode(err); code != "" {
-			respondErrorCode(w, http.StatusBadRequest, code, err.Error(), nil)
-			return
-		}
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondInterferenceError(w, err)
 		return
 	}
 	message := "通道已关闭"
@@ -617,6 +605,18 @@ func (s *Server) handleSetInterferenceChannelState(w http.ResponseWriter, r *htt
 		Channel: channel,
 		Message: message,
 	})
+}
+
+func respondInterferenceError(w http.ResponseWriter, err error) {
+	if code := interference.ErrorCode(err); code != "" {
+		status := http.StatusBadRequest
+		if code == "interference_offline" {
+			status = http.StatusServiceUnavailable
+		}
+		respondErrorCode(w, status, code, err.Error(), nil)
+		return
+	}
+	respondError(w, http.StatusInternalServerError, err.Error())
 }
 
 func (s *Server) handleScreenDeviceLocation(w http.ResponseWriter, _ *http.Request) {
