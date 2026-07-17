@@ -135,8 +135,11 @@ const copy = {
     dnsServers: "DNS 地址，使用逗号分隔",
     fixDNS: "写入 DNS",
     dnsUpdated: "DNS 配置已更新",
+    dnsUpdatedRefreshFailed: "DNS 已写入，但状态刷新失败",
     resolvConf: "/etc/resolv.conf",
     resolverStatus: "解析器状态",
+    dnsLookupResult: "DNS 查询",
+    internetProbe: "互联网探测",
     backupName: "备份文件",
     createdAt: "创建时间",
     size: "大小",
@@ -226,8 +229,11 @@ const copy = {
     dnsServers: "DNS addresses separated by commas",
     fixDNS: "Write DNS",
     dnsUpdated: "DNS configuration updated",
+    dnsUpdatedRefreshFailed: "DNS was updated, but status refresh failed",
     resolvConf: "/etc/resolv.conf",
     resolverStatus: "Resolver status",
+    dnsLookupResult: "DNS lookup",
+    internetProbe: "Internet probe",
     backupName: "Backup",
     createdAt: "Created",
     size: "Size",
@@ -433,7 +439,15 @@ export function NetworkManagement({ locale }: { locale: Locale }) {
     try {
       await fixNetworkDNS(dnsServers.split(",").map((item) => item.trim()).filter(Boolean));
       setNotice({ tone: "success", text: t.dnsUpdated });
-      setDNSDiagnostics(await getNetworkDNSDiagnostics());
+      void getNetworkDNSDiagnostics()
+        .then(setDNSDiagnostics)
+        .catch((error) => {
+          const detail = error instanceof Error ? error.message : "";
+          setNotice({
+            tone: "success",
+            text: detail ? `${t.dnsUpdatedRefreshFailed}: ${detail}` : t.dnsUpdatedRefreshFailed,
+          });
+        });
     } catch (error) {
       showError(error);
     } finally {
@@ -718,7 +732,13 @@ function DiagnosticsPage({ t, diagnostics, dns, dnsServers, busy, onDNSServers, 
       <div className="network-section__heading"><Wifi aria-hidden="true" /><h3>{t.dnsDiagnostics}</h3><button type="button" onClick={onDNSDiagnostics} disabled={busy === "dns-diagnostics"}><RefreshCw size={14} className={busy === "dns-diagnostics" ? "network-spin" : ""} />{t.diagnoseDNS}</button></div>
       <div className="network-dns-actions"><input value={dnsServers} onChange={(event) => onDNSServers(event.target.value)} placeholder={t.dnsServers} /><button type="button" onClick={onFixDNS} disabled={busy === "dns-fix"}><Save size={14} />{t.fixDNS}</button></div>
       {dns ? <div className="network-dns-output">
-        <dl><div><dt>systemd-resolved</dt><dd>{dns.systemdResolved ? t.active : t.inactive}</dd></div><div><dt>{t.dns}</dt><dd><code>{dns.dnsServers || "-"}</code></dd></div><div><dt>{t.resolverStatus}</dt><dd>{dns.testResult || "-"}</dd></div></dl>
+        <dl>
+          <div><dt>systemd-resolved</dt><dd>{dns.systemdResolved ? t.active : t.inactive}</dd></div>
+          <div><dt>{t.dns}</dt><dd><code>{dns.dnsServers || "-"}</code></dd></div>
+          <div><dt>{t.resolverStatus}</dt><dd>{dns.resolvectlStatus || "-"}</dd></div>
+          <div><dt>{t.dnsLookupResult}</dt><dd>{dns.testResult || "-"}</dd></div>
+          <div><dt>{t.internetProbe}</dt><dd>{dns.pingTest || "-"}</dd></div>
+        </dl>
         <label><span>{t.resolvConf}</span><textarea readOnly value={dns.resolvConf || ""} /></label>
       </div> : <div className="network-empty"><Gauge /><span>{t.pending}</span></div>}
     </section>

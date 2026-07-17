@@ -41,6 +41,7 @@ func (s *Server) handleUploadLicense(w http.ResponseWriter, r *http.Request) {
 		s.respondLicenseUploadError(w, err, status)
 		return
 	}
+	s.mapTileLicenseStatus.invalidate()
 	respondJSON(w, http.StatusOK, model.LicenseUploadResponse{
 		License: status,
 		Message: "license uploaded",

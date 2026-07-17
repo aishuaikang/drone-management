@@ -13,13 +13,18 @@ import (
 type fakeRunner struct {
 	outputs  map[string]string
 	errors   map[string]error
+	blocks   map[string]bool
 	started  []string
 	commands []string
 }
 
-func (r *fakeRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+func (r *fakeRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
 	r.commands = append(r.commands, key)
+	if r.blocks[key] {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
 	return r.outputs[key], r.errors[key]
 }
 
@@ -191,18 +196,74 @@ func TestFixDNSRejectsInvalidServer(t *testing.T) {
 	}
 }
 
+func TestDiagnoseDNSReturnsConfigurationWhenNetworkProbesTimeout(t *testing.T) {
+	service, runner := newTestService(t)
+	if err := os.WriteFile(service.resolvConfPath, []byte("nameserver 114.114.114.114\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner.outputs["systemctl is-active systemd-resolved"] = "active"
+	for _, command := range []string{
+		"resolvectl status",
+		"resolvectl dns",
+		"getent hosts www.baidu.com",
+		"ping -c 1 -W 2 8.8.8.8",
+	} {
+		runner.blocks[command] = true
+	}
+
+	startedAt := time.Now()
+	result, err := service.DiagnoseDNS(context.Background())
+	if err != nil {
+		t.Fatalf("DiagnoseDNS() error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("DiagnoseDNS() took %s, want bounded probe time", elapsed)
+	}
+	if result.DNSServers != "nameserver 114.114.114.114" {
+		t.Fatalf("DNS servers = %q, want resolv.conf fallback", result.DNSServers)
+	}
+	if !strings.Contains(result.ResolvectlStatus, "timed out") || !strings.Contains(result.TestResult, "timed out") || !strings.Contains(result.PingTest, "timed out") {
+		t.Fatalf("diagnostics = %#v, want stage-specific timeout results", result)
+	}
+}
+
+func TestFixDNSReturnsBoundedRestartTimeoutAfterWritingConfig(t *testing.T) {
+	service, runner := newTestService(t)
+	runner.outputs["systemctl is-active systemd-resolved"] = "active"
+	runner.blocks["systemctl restart systemd-resolved"] = true
+
+	startedAt := time.Now()
+	err := service.FixDNS(context.Background(), []string{"114.114.114.114", "8.8.8.8"})
+	if err == nil || !strings.Contains(err.Error(), "restart systemd-resolved") || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("FixDNS() error = %v, want bounded restart timeout", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 250*time.Millisecond {
+		t.Fatalf("FixDNS() took %s, want bounded restart timeout", elapsed)
+	}
+	data, readErr := os.ReadFile(filepath.Join(filepath.Dir(service.resolvConfPath), "systemd", "resolved.conf"))
+	if readErr != nil {
+		t.Fatalf("read resolved.conf: %v", readErr)
+	}
+	if !strings.Contains(string(data), "DNS=114.114.114.114 8.8.8.8") {
+		t.Fatalf("resolved.conf = %q, want requested DNS servers", data)
+	}
+}
+
 func newTestService(t *testing.T) (*Service, *fakeRunner) {
 	t.Helper()
 	root := t.TempDir()
-	runner := &fakeRunner{outputs: map[string]string{}, errors: map[string]error{}}
+	runner := &fakeRunner{outputs: map[string]string{}, errors: map[string]error{}, blocks: map[string]bool{}}
 	service := &Service{
-		runner:          runner,
-		goos:            "linux",
-		configPath:      filepath.Join(root, "netplan", "99-custom-config.yaml"),
-		netplanDir:      filepath.Join(root, "netplan"),
-		cloudConfigPath: filepath.Join(root, "cloud", "99-disable-network-config.cfg"),
-		resolvConfPath:  filepath.Join(root, "resolv.conf"),
-		interfacesPath:  filepath.Join(root, "interfaces"),
+		runner:            runner,
+		goos:              "linux",
+		configPath:        filepath.Join(root, "netplan", "99-custom-config.yaml"),
+		netplanDir:        filepath.Join(root, "netplan"),
+		cloudConfigPath:   filepath.Join(root, "cloud", "99-disable-network-config.cfg"),
+		resolvConfPath:    filepath.Join(root, "resolv.conf"),
+		interfacesPath:    filepath.Join(root, "interfaces"),
+		dnsStatusTimeout:  20 * time.Millisecond,
+		dnsProbeTimeout:   20 * time.Millisecond,
+		dnsRestartTimeout: 20 * time.Millisecond,
 		now: func() time.Time {
 			return time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 		},

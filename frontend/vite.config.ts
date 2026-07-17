@@ -7,7 +7,10 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:18080",
       "/healthz": "http://127.0.0.1:18080",
-      "/map": "http://127.0.0.1:18080"
+      "/map": "http://127.0.0.1:18080",
+      "/amap-road-tile": "http://127.0.0.1:18080",
+      "/amap-satellite-tile": "http://127.0.0.1:18080",
+      "/google-tile": "http://127.0.0.1:18080"
     }
   }
 });

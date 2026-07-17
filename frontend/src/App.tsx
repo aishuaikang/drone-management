@@ -134,6 +134,26 @@ type ReferenceMapLayer =
   | "leaflet.map.googleMap"
   | "leaflet.map.googleSatellite"
   | "leaflet.map.offlineMap";
+type TileNetworkMode = "device" | "client";
+type OnlineTileURLs = {
+  amapRoad: string;
+  amapSatellite: string;
+  googleRoad: string;
+  googleSatellite: string;
+};
+type TileNetworkControlLabels = {
+  label: string;
+  hint: string;
+  device: string;
+  client: string;
+};
+type TileNetworkControlElements = {
+  container: HTMLDivElement;
+  title: HTMLDivElement;
+  hint: HTMLDivElement;
+  deviceButton: HTMLButtonElement;
+  clientButton: HTMLButtonElement;
+};
 type NavigationQRCodeItem = {
   provider: NavigationMapProvider;
   labelKey: string;
@@ -210,9 +230,25 @@ const referenceMapCenter: L.LatLngTuple = [39.909181, 116.397472];
 const referenceMapZoom = 13;
 const referenceMapLayerStorageKey = "drone-management.mapLayer";
 const referenceLegacyMapLayerStorageKey = "mapLayer";
+const tileNetworkModeStorageKey = "drone-management.tileNetworkMode";
 const screenAlarmSoundStorageKey = "drone-management.soundAlarmEnabled";
 const screenThemeColorStorageKey = "drone-management.themeColor";
 const referenceDefaultMapLayer: ReferenceMapLayer = "leaflet.map.gaodeSatellite";
+const defaultTileNetworkMode: TileNetworkMode = "client";
+const onlineTileURLs: Record<TileNetworkMode, OnlineTileURLs> = {
+  device: {
+    amapRoad: "/amap-road-tile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+    amapSatellite: "/amap-satellite-tile?style=6&x={x}&y={y}&z={z}",
+    googleRoad: "/google-tile?lyrs=m&x={x}&y={y}&z={z}",
+    googleSatellite: "/google-tile?lyrs=s&x={x}&y={y}&z={z}",
+  },
+  client: {
+    amapRoad: "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+    amapSatellite: "https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+    googleRoad: "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+    googleSatellite: "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+  },
+};
 let offlineMapUploadLogSequence = 0;
 const themeColorOptions: ThemeColorOption[] = [
   { id: "blue", className: "screen-shell--theme-blue", labelKey: "themeBlue", primary: "#60a5fa", trackColor: "#60a5fa" },
@@ -359,6 +395,10 @@ const labels: Record<Locale, Record<string, string>> = {
     "leaflet.map.googleMap": "谷歌地图",
     "leaflet.map.googleSatellite": "谷歌卫星地图",
     "leaflet.map.offlineMap": "离线地图",
+    tileNetworkLabel: "在线地图网络",
+    tileNetworkHint: "仅影响高德和谷歌在线地图",
+    tileNetworkDevice: "设备网络",
+    tileNetworkClient: "客户端网络",
     map: "地图",
     mapLegend: "图例",
     warningZone: "预警圈",
@@ -761,6 +801,10 @@ const labels: Record<Locale, Record<string, string>> = {
     "leaflet.map.googleMap": "Google Map",
     "leaflet.map.googleSatellite": "Google Satellite",
     "leaflet.map.offlineMap": "Offline Map",
+    tileNetworkLabel: "Online map network",
+    tileNetworkHint: "Only affects Gaode and Google online maps",
+    tileNetworkDevice: "Device network",
+    tileNetworkClient: "Client network",
     map: "Map",
     mapLegend: "Legend",
     warningZone: "Warning zone",
@@ -2086,7 +2130,11 @@ function ScreenMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
+  const baseLayersRef = useRef<Record<ReferenceMapLayer, L.TileLayer> | null>(null);
+  const tileNetworkControlRef = useRef<TileNetworkControlElements | null>(null);
   const fitOnceRef = useRef(false);
+  const [tileNetworkMode, setTileNetworkMode] = useState<TileNetworkMode>(() => getStoredTileNetworkMode());
+  const tileNetworkModeRef = useRef(tileNetworkMode);
   const dataRef = useRef<ScreenMapData>({ deviceLocation, positions, warningZone: warningZone ?? null });
   const onWarningZoneToggleRef = useRef(onWarningZoneToggle);
   const onManualLocationPickRef = useRef(onManualLocationPick);
@@ -2148,6 +2196,22 @@ function ScreenMap({
     layerLabelsRef.current = layerLabels;
   }, [layerLabels]);
 
+  useEffect(() => {
+    tileNetworkModeRef.current = tileNetworkMode;
+    persistTileNetworkMode(tileNetworkMode);
+    if (baseLayersRef.current) {
+      updateOnlineTileURLs(baseLayersRef.current, tileNetworkMode);
+    }
+    if (tileNetworkControlRef.current) {
+      updateTileNetworkControl(tileNetworkControlRef.current, tileNetworkMode, {
+        label: t.tileNetworkLabel,
+        hint: t.tileNetworkHint,
+        device: t.tileNetworkDevice,
+        client: t.tileNetworkClient,
+      });
+    }
+  }, [t.tileNetworkClient, t.tileNetworkDevice, t.tileNetworkHint, t.tileNetworkLabel, tileNetworkMode]);
+
   const fitMap = useCallback(() => {
     const map = mapRef.current;
     if (!map) {
@@ -2178,7 +2242,8 @@ function ScreenMap({
     map.getPane("screenSelectedMarkers")!.style.zIndex = "660";
 
     const availableMapLayers = referenceMapLayers;
-    const baseLayers = buildBaseLayers();
+    const baseLayers = buildBaseLayers(tileNetworkModeRef.current);
+    baseLayersRef.current = baseLayers;
     const activeLayer = resolveActiveMapLayer(
       getStoredMapLayer(),
       availableMapLayers,
@@ -2227,6 +2292,21 @@ function ScreenMap({
         },
       );
       map.addControl(layersControl);
+      const layersControlList = layersControl.getContainer()?.querySelector(".leaflet-control-layers-list");
+      if (layersControlList) {
+        const tileNetworkControl = createTileNetworkControl(
+          tileNetworkModeRef.current,
+          {
+            label: t.tileNetworkLabel,
+            hint: t.tileNetworkHint,
+            device: t.tileNetworkDevice,
+            client: t.tileNetworkClient,
+          },
+          setTileNetworkMode,
+        );
+        layersControlList.appendChild(tileNetworkControl.container);
+        tileNetworkControlRef.current = tileNetworkControl;
+      }
       map.on("baselayerchange", (event: L.LayersControlEvent) => {
         const nextLayer = availableMapLayers.find((key) => layerLabelsRef.current[key] === event.name);
         if (nextLayer) {
@@ -2257,9 +2337,23 @@ function ScreenMap({
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
+      baseLayersRef.current = null;
+      tileNetworkControlRef.current = null;
       fitOnceRef.current = false;
     };
-  }, [fitMap, locale, showLayerControl, t.center, t.disableWarningZone, t.enableWarningZone, warningZoneEditable]);
+  }, [
+    fitMap,
+    locale,
+    showLayerControl,
+    t.center,
+    t.disableWarningZone,
+    t.enableWarningZone,
+    t.tileNetworkClient,
+    t.tileNetworkDevice,
+    t.tileNetworkHint,
+    t.tileNetworkLabel,
+    warningZoneEditable,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -2318,26 +2412,99 @@ function getOfflineTileBase() {
   return "";
 }
 
-function buildBaseLayers(): Record<ReferenceMapLayer, L.TileLayer> {
+function buildBaseLayers(tileNetworkMode: TileNetworkMode): Record<ReferenceMapLayer, L.TileLayer> {
+  const tileURLs = onlineTileURLs[tileNetworkMode];
   return {
     "leaflet.map.gaodeMap": L.tileLayer(
-      "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+      tileURLs.amapRoad,
       { coordFunction: "gps84ToGcj02" },
     ),
-    "leaflet.map.gaodeSatellite": L.tileLayer("https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}", {
+    "leaflet.map.gaodeSatellite": L.tileLayer(tileURLs.amapSatellite, {
       coordFunction: "gps84ToGcj02",
       minZoom: 3,
       maxZoom: 16,
     }),
-    "leaflet.map.googleMap": L.tileLayer("https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", {
+    "leaflet.map.googleMap": L.tileLayer(tileURLs.googleRoad, {
       coordFunction: "gps84ToGcj02",
       maxZoom: 22,
     }),
-    "leaflet.map.googleSatellite": L.tileLayer("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", {
+    "leaflet.map.googleSatellite": L.tileLayer(tileURLs.googleSatellite, {
       maxZoom: 21,
     }),
     "leaflet.map.offlineMap": L.tileLayer(`${getOfflineTileBase()}/map/dt/{z}/{x}/{y}.jpg`),
   };
+}
+
+function updateOnlineTileURLs(baseLayers: Record<ReferenceMapLayer, L.TileLayer>, tileNetworkMode: TileNetworkMode) {
+  const tileURLs = onlineTileURLs[tileNetworkMode];
+  baseLayers["leaflet.map.gaodeMap"].setUrl(tileURLs.amapRoad);
+  baseLayers["leaflet.map.gaodeSatellite"].setUrl(tileURLs.amapSatellite);
+  baseLayers["leaflet.map.googleMap"].setUrl(tileURLs.googleRoad);
+  baseLayers["leaflet.map.googleSatellite"].setUrl(tileURLs.googleSatellite);
+}
+
+function createTileNetworkControl(
+  tileNetworkMode: TileNetworkMode,
+  labels: TileNetworkControlLabels,
+  onChange: (mode: TileNetworkMode) => void,
+): TileNetworkControlElements {
+  const container = L.DomUtil.create("div", "screen-map-tile-network") as HTMLDivElement;
+  const title = L.DomUtil.create("div", "screen-map-tile-network__title", container) as HTMLDivElement;
+  const hint = L.DomUtil.create("div", "screen-map-tile-network__hint", container) as HTMLDivElement;
+  const options = L.DomUtil.create("div", "screen-map-tile-network__options", container);
+  const deviceButton = createTileNetworkButton("device", options, onChange);
+  const clientButton = createTileNetworkButton("client", options, onChange);
+  const elements = { container, title, hint, deviceButton, clientButton };
+
+  container.setAttribute("role", "group");
+  L.DomEvent.disableClickPropagation(container);
+  L.DomEvent.disableScrollPropagation(container);
+  updateTileNetworkControl(elements, tileNetworkMode, labels);
+  return elements;
+}
+
+function createTileNetworkButton(
+  mode: TileNetworkMode,
+  container: HTMLElement,
+  onChange: (mode: TileNetworkMode) => void,
+) {
+  const button = L.DomUtil.create(
+    "button",
+    "screen-map-tile-network__option",
+    container,
+  ) as HTMLButtonElement;
+  button.type = "button";
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    onChange(mode);
+  });
+  return button;
+}
+
+function updateTileNetworkControl(
+  elements: TileNetworkControlElements,
+  tileNetworkMode: TileNetworkMode,
+  labels: TileNetworkControlLabels,
+) {
+  elements.container.setAttribute("aria-label", labels.label);
+  elements.title.textContent = labels.label;
+  elements.hint.textContent = labels.hint;
+  updateTileNetworkButton(elements.deviceButton, "device", tileNetworkMode, labels.device);
+  updateTileNetworkButton(elements.clientButton, "client", tileNetworkMode, labels.client);
+}
+
+function updateTileNetworkButton(
+  button: HTMLButtonElement,
+  mode: TileNetworkMode,
+  activeMode: TileNetworkMode,
+  label: string,
+) {
+  const active = mode === activeMode;
+  button.textContent = label;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-pressed", String(active));
+  button.classList.toggle("screen-map-tile-network__option--active", active);
 }
 
 function referenceDefaultMapLayerForLocale(locale?: string): ReferenceMapLayer {
@@ -2397,6 +2564,29 @@ function persistMapLayer(layer: ReferenceMapLayer) {
   try {
     window.localStorage.setItem(referenceMapLayerStorageKey, JSON.stringify({ mapLayer: layer }));
     window.localStorage.removeItem(referenceLegacyMapLayerStorageKey);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function getStoredTileNetworkMode(): TileNetworkMode {
+  if (typeof window === "undefined") {
+    return defaultTileNetworkMode;
+  }
+  try {
+    const value = window.localStorage.getItem(tileNetworkModeStorageKey);
+    return value === "device" || value === "client" ? value : defaultTileNetworkMode;
+  } catch {
+    return defaultTileNetworkMode;
+  }
+}
+
+function persistTileNetworkMode(mode: TileNetworkMode) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(tileNetworkModeStorageKey, mode);
   } catch {
     // Ignore storage errors.
   }

@@ -102,21 +102,23 @@ type InterferenceReportStore interface {
 
 // Server exposes HTTP APIs and static frontend files.
 type Server struct {
-	cfg                 config.Config
-	store               *store.Store
-	position            *position.Service
-	fpv                 *fpv.Service
-	interference        *interference.Service
-	fpvVideo            *fpvvideo.Service
-	lingyun             LingyunService
-	server              *http.Server
-	userSettings        UserSettingsStore
-	intrusions          IntrusionStore
-	fpvRecords          FPVVideoRecordStore
-	interferenceReports InterferenceReportStore
-	offlineMap          *offlinemap.Service
-	network             *networkmanager.Service
-	license             *license.Service
+	cfg                  config.Config
+	store                *store.Store
+	position             *position.Service
+	fpv                  *fpv.Service
+	interference         *interference.Service
+	fpvVideo             *fpvvideo.Service
+	lingyun              LingyunService
+	server               *http.Server
+	userSettings         UserSettingsStore
+	intrusions           IntrusionStore
+	fpvRecords           FPVVideoRecordStore
+	interferenceReports  InterferenceReportStore
+	offlineMap           *offlinemap.Service
+	mapTiles             *mapTileProxySet
+	mapTileLicenseStatus *mapTileLicenseStatusCache
+	network              *networkmanager.Service
+	license              *license.Service
 
 	fpvVideoStopMu               sync.Mutex
 	fpvVideoMu                   sync.Mutex
@@ -227,11 +229,17 @@ func New(
 	fpvSvc *fpv.Service,
 	options ...Option,
 ) *Server {
+	mapTiles, err := newMapTileProxySet(defaultMapTileUpstreams)
+	if err != nil {
+		panic(fmt.Sprintf("invalid map tile proxy configuration: %v", err))
+	}
 	s := &Server{
-		cfg:      cfg,
-		store:    store,
-		position: positionSvc,
-		fpv:      fpvSvc,
+		cfg:                  cfg,
+		store:                store,
+		position:             positionSvc,
+		fpv:                  fpvSvc,
+		mapTiles:             mapTiles,
+		mapTileLicenseStatus: newMapTileLicenseStatusCache(),
 		fpvVideo: fpvvideo.New(fpvvideo.Options{
 			RTSPURL:          cfg.FPVVideo.RTSPURL,
 			MediaMTXPath:     cfg.FPVVideo.MediaMTXPath,
@@ -336,6 +344,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/screen/fpv-video/session", s.requireLicense(s.handleScreenFPVVideoSession))
 	mux.HandleFunc("POST /api/v1/screen/fpv-video/session/close", s.requireLicense(s.handleScreenFPVVideoSessionClose))
 	mux.HandleFunc("GET /api/v1/screen/stream", s.requireLicense(s.handleScreenStream))
+	mux.HandleFunc("/amap-road-tile", s.requireMapTileLicense(s.handleAMapRoadTile))
+	mux.HandleFunc("/amap-satellite-tile", s.requireMapTileLicense(s.handleAMapSatelliteTile))
+	mux.HandleFunc("/google-tile", s.requireMapTileLicense(s.handleGoogleTile))
 	mux.HandleFunc("GET /map/", s.requireLicense(s.handleOfflineMapTile))
 	mux.HandleFunc("/", s.handleFrontend)
 }

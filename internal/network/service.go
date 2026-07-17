@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	defaultNetplanPath = "/etc/netplan/99-custom-config.yaml"
-	maxConfigBytes     = 1 << 20
+	defaultNetplanPath       = "/etc/netplan/99-custom-config.yaml"
+	maxConfigBytes           = 1 << 20
+	defaultDNSStatusTimeout  = 2 * time.Second
+	defaultDNSProbeTimeout   = 3 * time.Second
+	defaultDNSRestartTimeout = 5 * time.Second
 )
 
 var (
@@ -136,27 +139,33 @@ func (execRunner) Start(name string, args ...string) error {
 
 // Service manages networking on the same host as drone-management.
 type Service struct {
-	runner          commandRunner
-	goos            string
-	configPath      string
-	netplanDir      string
-	cloudConfigPath string
-	resolvConfPath  string
-	interfacesPath  string
-	now             func() time.Time
+	runner            commandRunner
+	goos              string
+	configPath        string
+	netplanDir        string
+	cloudConfigPath   string
+	resolvConfPath    string
+	interfacesPath    string
+	dnsStatusTimeout  time.Duration
+	dnsProbeTimeout   time.Duration
+	dnsRestartTimeout time.Duration
+	now               func() time.Time
 }
 
 // NewService creates a host network management service.
 func NewService() *Service {
 	return &Service{
-		runner:          execRunner{},
-		goos:            runtime.GOOS,
-		configPath:      defaultNetplanPath,
-		netplanDir:      "/etc/netplan",
-		cloudConfigPath: "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg",
-		resolvConfPath:  "/etc/resolv.conf",
-		interfacesPath:  "/sys/class/net",
-		now:             time.Now,
+		runner:            execRunner{},
+		goos:              runtime.GOOS,
+		configPath:        defaultNetplanPath,
+		netplanDir:        "/etc/netplan",
+		cloudConfigPath:   "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg",
+		resolvConfPath:    "/etc/resolv.conf",
+		interfacesPath:    "/sys/class/net",
+		dnsStatusTimeout:  defaultDNSStatusTimeout,
+		dnsProbeTimeout:   defaultDNSProbeTimeout,
+		dnsRestartTimeout: defaultDNSRestartTimeout,
+		now:               time.Now,
 	}
 }
 
@@ -331,11 +340,18 @@ func (s *Service) DiagnoseDNS(ctx context.Context) (DNSDiagnostics, error) {
 	if data, err := os.ReadFile(s.resolvConfPath); err == nil {
 		result.ResolvConf = strings.TrimSpace(string(data))
 	}
-	output, _ := s.runner.Run(ctx, "systemctl", "is-active", "systemd-resolved")
+	output, statusErr := s.runDNSCommand(ctx, s.dnsStatusTimeout, defaultDNSStatusTimeout, "systemctl", "is-active", "systemd-resolved")
 	result.SystemdResolved = strings.TrimSpace(output) == "active"
+	if statusErr != nil && strings.TrimSpace(output) == "" {
+		result.ResolvectlStatus = diagnosticCommandResult("systemd-resolved status", output, statusErr)
+	}
 	if result.SystemdResolved {
-		result.ResolvectlStatus, _ = s.runner.Run(ctx, "resolvectl", "status")
-		result.DNSServers, _ = s.runner.Run(ctx, "resolvectl", "dns")
+		statusOutput, err := s.runDNSCommand(ctx, s.dnsStatusTimeout, defaultDNSStatusTimeout, "resolvectl", "status")
+		result.ResolvectlStatus = diagnosticCommandResult("resolvectl status", statusOutput, err)
+		dnsOutput, err := s.runDNSCommand(ctx, s.dnsStatusTimeout, defaultDNSStatusTimeout, "resolvectl", "dns")
+		if err == nil {
+			result.DNSServers = strings.TrimSpace(dnsOutput)
+		}
 	}
 	if result.DNSServers == "" {
 		for _, line := range strings.Split(result.ResolvConf, "\n") {
@@ -345,8 +361,10 @@ func (s *Service) DiagnoseDNS(ctx context.Context) (DNSDiagnostics, error) {
 		}
 		result.DNSServers = strings.TrimSpace(result.DNSServers)
 	}
-	result.TestResult, _ = s.runner.Run(ctx, "getent", "hosts", "www.baidu.com")
-	result.PingTest, _ = s.runner.Run(ctx, "ping", "-c", "1", "-W", "2", "www.baidu.com")
+	lookupOutput, lookupErr := s.runDNSCommand(ctx, s.dnsProbeTimeout, defaultDNSProbeTimeout, "getent", "hosts", "www.baidu.com")
+	result.TestResult = diagnosticCommandResult("DNS lookup", lookupOutput, lookupErr)
+	pingOutput, pingErr := s.runDNSCommand(ctx, s.dnsProbeTimeout, defaultDNSProbeTimeout, "ping", "-c", "1", "-W", "2", "8.8.8.8")
+	result.PingTest = diagnosticCommandResult("internet connectivity", pingOutput, pingErr)
 	return result, nil
 }
 
@@ -367,14 +385,17 @@ func (s *Service) FixDNS(ctx context.Context, servers []string) error {
 			return fmt.Errorf("%w: invalid DNS server %q", ErrInvalidInput, servers[index])
 		}
 	}
-	output, _ := s.runner.Run(ctx, "systemctl", "is-active", "systemd-resolved")
+	output, statusErr := s.runDNSCommand(ctx, s.dnsStatusTimeout, defaultDNSStatusTimeout, "systemctl", "is-active", "systemd-resolved")
+	if errors.Is(statusErr, context.DeadlineExceeded) || errors.Is(statusErr, context.Canceled) {
+		return fmt.Errorf("check systemd-resolved status: %w", statusErr)
+	}
 	if strings.TrimSpace(output) == "active" {
 		resolvedPath := filepath.Join(filepath.Dir(s.resolvConfPath), "systemd", "resolved.conf")
 		content := "[Resolve]\nDNS=" + strings.Join(servers, " ") + "\nFallbackDNS=114.114.114.114 8.8.8.8\nDNSStubListener=yes\n"
 		if err := writeFileAtomic(resolvedPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write systemd-resolved config: %w", err)
 		}
-		if _, err := s.runner.Run(ctx, "systemctl", "restart", "systemd-resolved"); err != nil {
+		if _, err := s.runDNSCommand(ctx, s.dnsRestartTimeout, defaultDNSRestartTimeout, "systemctl", "restart", "systemd-resolved"); err != nil {
 			return fmt.Errorf("restart systemd-resolved: %w", err)
 		}
 		if err := replaceSymlink(s.resolvConfPath, "/run/systemd/resolve/stub-resolv.conf"); err != nil {
@@ -390,6 +411,45 @@ func (s *Service) FixDNS(ctx context.Context, servers []string) error {
 		return fmt.Errorf("write resolv.conf: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) runDNSCommand(
+	ctx context.Context,
+	timeout time.Duration,
+	fallback time.Duration,
+	name string,
+	args ...string,
+) (string, error) {
+	if timeout <= 0 {
+		timeout = fallback
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := s.runner.Run(commandCtx, name, args...)
+	if commandCtx.Err() != nil {
+		return output, commandCtx.Err()
+	}
+	return output, err
+}
+
+func diagnosticCommandResult(label, output string, err error) string {
+	output = strings.TrimSpace(output)
+	if err == nil {
+		if output == "" {
+			return label + " succeeded"
+		}
+		return output
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return label + " timed out"
+	}
+	if errors.Is(err, context.Canceled) {
+		return label + " canceled"
+	}
+	if output != "" {
+		return output
+	}
+	return label + " failed: " + err.Error()
 }
 
 // Diagnose reports conflicts between netplan and other network managers.
