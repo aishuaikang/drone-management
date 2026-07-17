@@ -403,7 +403,7 @@ func TestServiceStatusIncludesPublishLogs(t *testing.T) {
 	}
 }
 
-func TestServiceStatusRefreshesInterferenceStateBeforeUsingCachedActive(t *testing.T) {
+func TestServiceStatusUsesCachedInterferenceState(t *testing.T) {
 	controller := &cachedActiveInterferenceController{
 		active: true,
 		state:  model.ScreenStrikeState{Active: false},
@@ -425,11 +425,38 @@ func TestServiceStatusRefreshesInterferenceStateBeforeUsingCachedActive(t *testi
 	if ifrStatus == nil {
 		t.Fatalf("IFR device status missing: %#v", status.Devices)
 	}
-	if ifrStatus.WorkState != 0 {
-		t.Fatalf("IFR workState = %d, want 0 from refreshed inactive strike state", ifrStatus.WorkState)
+	if ifrStatus.WorkState != 1 {
+		t.Fatalf("IFR workState = %d, want 1 from cached active strike state", ifrStatus.WorkState)
 	}
-	if controller.stateCalls != 1 {
-		t.Fatalf("ScreenStrikeState calls = %d, want 1", controller.stateCalls)
+	if controller.stateCalls != 0 {
+		t.Fatalf("ScreenStrikeState calls = %d, want 0", controller.stateCalls)
+	}
+}
+
+func TestServiceBackgroundWorkStateRefreshesInterferenceState(t *testing.T) {
+	controller := &cachedActiveInterferenceController{
+		active: true,
+		state:  model.ScreenStrikeState{Active: false},
+	}
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithInterferenceController(controller),
+	)
+	settings := service.settingsSnapshot()
+	device, ok := lingyunDevice(settings, model.LingyunDeviceInterference)
+	if !ok {
+		t.Fatal("interference device missing")
+	}
+
+	if interval := service.statusInterval(settings, device); interval != time.Duration(settings.StatusIntervalSeconds)*time.Second {
+		t.Fatalf("status interval = %s, want configured interval for refreshed inactive state", interval)
+	}
+	if workState := service.currentWorkState(device); workState != 0 {
+		t.Fatalf("work state = %d, want inactive state from relay refresh", workState)
+	}
+	if controller.stateCalls != 2 {
+		t.Fatalf("ScreenStrikeState calls = %d, want one refresh per background status decision", controller.stateCalls)
 	}
 }
 

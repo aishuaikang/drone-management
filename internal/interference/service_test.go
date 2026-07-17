@@ -574,6 +574,52 @@ func TestStatusSnapshotsDoNotWaitForRelayStateRead(t *testing.T) {
 	<-doneReading
 }
 
+func TestAsyncStrikeRefreshDoesNotBlockCachedStateOrOverlap(t *testing.T) {
+	output := &blockingOutput{}
+	service := NewService(store.New(10, 10), DefaultChannels(), func(number int) Output {
+		if number == 1 {
+			return output
+		}
+		return &fakeOutput{}
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	output.blockStateReads(entered, release)
+
+	service.RefreshScreenStrikeStateAsync()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("async refresh did not enter relay read")
+	}
+
+	service.RefreshScreenStrikeStateAsync()
+	startedAt := time.Now()
+	state := service.CachedScreenStrikeState()
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("CachedScreenStrikeState took %s while relay read was blocked", elapsed)
+	}
+	if state.Active {
+		t.Fatalf("cached state = %#v, want initial inactive state", state)
+	}
+
+	close(release)
+	released = true
+	waitUntil(t, time.Second, func() bool {
+		return !service.strikeRefreshBusy.Load()
+	})
+	if reads := output.snapshot().readCount; reads != 1 {
+		t.Fatalf("relay read count = %d, want one non-overlapping refresh", reads)
+	}
+}
+
 func TestUnattendedWaitsForTarget(t *testing.T) {
 	outputs, factory := newFakeOutputFactory()
 	service := NewService(store.New(10, 10), DefaultChannels(), factory)

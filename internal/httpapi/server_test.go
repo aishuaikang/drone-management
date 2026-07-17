@@ -29,6 +29,7 @@ import (
 	"drone-management/internal/interferencereport"
 	"drone-management/internal/intrusion"
 	"drone-management/internal/license"
+	"drone-management/internal/lingyun"
 	"drone-management/internal/model"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
@@ -89,6 +90,69 @@ func TestScreenRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScreenReadRoutesDoNotWaitForBlockedRelayRefresh(t *testing.T) {
+	state := store.New(10, 10)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	blocked := &httpBlockingOutput{entered: entered, release: release}
+	interferenceSvc := interference.NewService(state, interference.DefaultChannels(), func(number int) interference.Output {
+		if number == 1 {
+			return blocked
+		}
+		return &httpTestOutput{}
+	})
+	s := newTestServer(t, state)
+	s.interference = interferenceSvc
+	s.lingyun = lingyun.NewService(
+		state,
+		model.UserSettings{},
+		lingyun.WithInterferenceController(interferenceSvc),
+	)
+
+	serveFast := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			rec := httptest.NewRecorder()
+			s.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			done <- rec
+		}()
+		select {
+		case rec := <-done:
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, body = %s", path, rec.Code, rec.Body.String())
+			}
+			return rec
+		case <-time.After(250 * time.Millisecond):
+			t.Fatalf("GET %s waited for blocked relay refresh", path)
+			return nil
+		}
+	}
+
+	serveFast("/api/v1/screen/status")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("screen status did not start asynchronous relay refresh")
+	}
+	serveFast("/api/v1/screen/status")
+	serveFast("/api/v1/screen/strike")
+	serveFast("/api/v1/user/settings")
+
+	close(release)
+	released = true
+	waitFor(t, time.Second, func() bool {
+		cached := interferenceSvc.CachedScreenStrikeState()
+		return len(cached.Channels) == 8 && cached.Channels[7].ActualLevel == "low"
+	})
 }
 
 func TestClientDisconnectErrorDetection(t *testing.T) {
@@ -1007,8 +1071,14 @@ func TestScreenStrikeRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get expired status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	waitFor(t, time.Second, func() bool {
+		return !s.interference.CachedScreenStrikeState().Active
+	})
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/screen/strike", nil)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
 	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
-		t.Fatalf("decode expired state: %v", err)
+		t.Fatalf("decode refreshed expired state: %v", err)
 	}
 	if state.Active || len(state.ChannelIDs) != 0 {
 		t.Fatalf("expired state = %#v, want inactive from refreshed relay state", state)
@@ -2047,6 +2117,22 @@ func (o *httpTestOutput) GetState() (interference.OutputState, error) {
 }
 
 func (o *httpTestOutput) Cleanup() {
+}
+
+type httpBlockingOutput struct {
+	httpTestOutput
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (o *httpBlockingOutput) GetState() (interference.OutputState, error) {
+	select {
+	case <-o.entered:
+	default:
+		close(o.entered)
+	}
+	<-o.release
+	return o.httpTestOutput.GetState()
 }
 
 type memoryUserSettingsStore struct {

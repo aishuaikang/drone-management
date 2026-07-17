@@ -44,6 +44,10 @@ type interferenceCachedChannelProvider interface {
 	ListChannelsCached() []model.InterferenceChannel
 }
 
+type interferenceCachedActiveProvider interface {
+	ScreenStrikeActive() bool
+}
+
 // WithTransport replaces MQTT transport, primarily for tests.
 func WithTransport(transport transport) Option {
 	return func(s *Service) {
@@ -184,7 +188,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 
 // Status returns a runtime snapshot.
 func (s *Service) Status() model.LingyunStatus {
-	interferenceActive := s.interferenceActive()
+	interferenceActive := s.cachedInterferenceActive()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := s.status
@@ -1194,6 +1198,16 @@ func statusWorkState(device model.LingyunDeviceSettings, reporting bool, interfe
 func (s *Service) interferenceActive() bool {
 	if s.interference == nil {
 		return false
+	}
+	return s.interference.ScreenStrikeState().Active
+}
+
+func (s *Service) cachedInterferenceActive() bool {
+	if s.interference == nil {
+		return false
+	}
+	if provider, ok := s.interference.(interferenceCachedActiveProvider); ok {
+		return provider.ScreenStrikeActive()
 	}
 	return s.interference.ScreenStrikeState().Active
 }

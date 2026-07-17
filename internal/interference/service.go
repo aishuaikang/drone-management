@@ -105,6 +105,7 @@ type Service struct {
 	statusProvider     ConnectionStatusProvider
 	statusProviderMu   sync.RWMutex
 	screenStrikeActive atomic.Bool
+	strikeRefreshBusy  atomic.Bool
 	cachedStrikeMu     sync.RWMutex
 	cachedStrikeState  model.ScreenStrikeState
 	store              *store.Store
@@ -303,6 +304,19 @@ func (s *Service) ScreenStrikeState() model.ScreenStrikeState {
 // ScreenStrikeActive returns the last observed strike activity without reading relay outputs.
 func (s *Service) ScreenStrikeActive() bool {
 	return s.screenStrikeActive.Load()
+}
+
+// RefreshScreenStrikeStateAsync refreshes the physical relay state without
+// making status and settings requests wait for relay I/O. At most one refresh
+// may run at a time so an unavailable relay cannot create an unbounded queue.
+func (s *Service) RefreshScreenStrikeStateAsync() {
+	if s == nil || !s.strikeRefreshBusy.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.strikeRefreshBusy.Store(false)
+		_ = s.ScreenStrikeState()
+	}()
 }
 
 // CachedScreenStrikeState returns the last observed screen strike state without

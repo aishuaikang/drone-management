@@ -501,7 +501,9 @@ func (s *Server) handleScreenStrike(w http.ResponseWriter, _ *http.Request) {
 		respondJSON(w, http.StatusOK, model.ScreenStrikeState{Channels: []model.InterferenceChannel{}})
 		return
 	}
-	respondJSON(w, http.StatusOK, s.interference.ScreenStrikeState())
+	state := s.interference.CachedScreenStrikeState()
+	s.interference.RefreshScreenStrikeStateAsync()
+	respondJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleSetScreenStrike(w http.ResponseWriter, r *http.Request) {
@@ -2292,6 +2294,7 @@ func (s *Server) screenRuntimeStatus() model.ScreenRuntimeStatus {
 	}
 	if s.interference != nil {
 		status.Interference = s.interference.ConnectionStatus()
+		s.interference.RefreshScreenStrikeStateAsync()
 	}
 	if s.lingyun != nil {
 		status.Lingyun = s.lingyun.Status()
