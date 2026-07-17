@@ -104,7 +104,7 @@ const (
 	DefaultLingyunDeviceSNPrefix        = "drone-management-"
 )
 
-// LingyunSettings stores China Mobile Lingyun protocol configuration.
+// LingyunSettings stores generic MQTT protocol configuration.
 type LingyunSettings struct {
 	Enabled                   bool                    `json:"enabled"`
 	Broker                    string                  `json:"broker"`
@@ -233,7 +233,7 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 	return settings
 }
 
-// LingyunSettingsWithDefaults fills optional Lingyun protocol settings.
+// LingyunSettingsWithDefaults fills optional MQTT protocol settings.
 func LingyunSettingsWithDefaults(settings LingyunSettings) LingyunSettings {
 	settings.ClientID = strings.TrimSpace(settings.ClientID)
 	settings.ProtocolVersion = strings.TrimSpace(settings.ProtocolVersion)
@@ -280,7 +280,7 @@ func LingyunSettingsWithGeneratedClientID(settings LingyunSettings) LingyunSetti
 	return settings
 }
 
-// NewLingyunClientID returns a random MQTT client ID for Lingyun connections.
+// NewLingyunClientID returns a random client ID for MQTT connections.
 func NewLingyunClientID() string {
 	var bytes [6]byte
 	if _, err := rand.Read(bytes[:]); err == nil {
@@ -688,7 +688,7 @@ type ScreenRuntimeStatus struct {
 	ServerTime          time.Time         `json:"serverTime"`
 }
 
-// LingyunStatus describes the Lingyun protocol runtime state.
+// LingyunStatus describes the MQTT protocol runtime state.
 type LingyunStatus struct {
 	Enabled    bool                  `json:"enabled"`
 	Configured bool                  `json:"configured"`

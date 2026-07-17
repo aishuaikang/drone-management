@@ -35,6 +35,7 @@ import (
 	"drone-management/internal/intrusion"
 	"drone-management/internal/license"
 	"drone-management/internal/model"
+	networkmanager "drone-management/internal/network"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
 	"drone-management/internal/settings"
@@ -71,7 +72,7 @@ type userSettingsUpdateRequest struct {
 	Whitelist                 *[]model.WhitelistItem `json:"whitelist,omitempty"`
 }
 
-// LingyunService controls the optional Lingyun protocol connector.
+// LingyunService controls the optional generic MQTT protocol connector.
 type LingyunService interface {
 	ApplySettings(model.UserSettings)
 	Status() model.LingyunStatus
@@ -114,6 +115,7 @@ type Server struct {
 	fpvRecords          FPVVideoRecordStore
 	interferenceReports InterferenceReportStore
 	offlineMap          *offlinemap.Service
+	network             *networkmanager.Service
 	license             *license.Service
 
 	fpvVideoStopMu               sync.Mutex
@@ -161,7 +163,7 @@ func WithUserSettingsStore(store UserSettingsStore) Option {
 	}
 }
 
-// WithLingyunService injects the optional Lingyun protocol service.
+// WithLingyunService injects the optional generic MQTT protocol service.
 func WithLingyunService(service LingyunService) Option {
 	return func(s *Server) {
 		s.lingyun = service
@@ -200,6 +202,13 @@ func WithInterferenceService(service *interference.Service) Option {
 func WithOfflineMapService(service *offlinemap.Service) Option {
 	return func(s *Server) {
 		s.offlineMap = service
+	}
+}
+
+// WithNetworkService injects host network management.
+func WithNetworkService(service *networkmanager.Service) Option {
+	return func(s *Server) {
+		s.network = service
 	}
 }
 
@@ -285,6 +294,20 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/license/upload", s.handleUploadLicense)
 	mux.HandleFunc("GET /api/v1/offline-map/status", s.requireLicense(s.handleOfflineMapStatus))
 	mux.HandleFunc("POST /api/v1/offline-map/upload", s.requireLicense(s.handleUploadOfflineMap))
+	mux.HandleFunc("GET /api/v1/network/config", s.requireLicense(s.handleNetworkConfig))
+	mux.HandleFunc("PUT /api/v1/network/config", s.requireLicense(s.handleUpdateNetworkConfig))
+	mux.HandleFunc("POST /api/v1/network/apply", s.requireLicense(s.handleApplyNetworkConfig))
+	mux.HandleFunc("POST /api/v1/network/restart", s.requireLicense(s.handleRestartNetwork))
+	mux.HandleFunc("GET /api/v1/network/interfaces", s.requireLicense(s.handleNetworkInterfaces))
+	mux.HandleFunc("GET /api/v1/network/routes", s.requireLicense(s.handleNetworkRoutes))
+	mux.HandleFunc("GET /api/v1/network/connectivity", s.requireLicense(s.handleNetworkConnectivity))
+	mux.HandleFunc("GET /api/v1/network/dns", s.requireLicense(s.handleNetworkDNS))
+	mux.HandleFunc("PUT /api/v1/network/dns", s.requireLicense(s.handleFixNetworkDNS))
+	mux.HandleFunc("GET /api/v1/network/diagnostics", s.requireLicense(s.handleNetworkDiagnostics))
+	mux.HandleFunc("GET /api/v1/network/backups", s.requireLicense(s.handleNetworkBackups))
+	mux.HandleFunc("GET /api/v1/network/backups/{name}", s.requireLicense(s.handleNetworkBackupContent))
+	mux.HandleFunc("POST /api/v1/network/backups/{name}/restore", s.requireLicense(s.handleRestoreNetworkBackup))
+	mux.HandleFunc("DELETE /api/v1/network/backups/{name}", s.requireLicense(s.handleDeleteNetworkBackup))
 	mux.HandleFunc("GET /api/v1/screen/status", s.requireLicense(s.handleScreenStatus))
 	mux.HandleFunc("GET /api/v1/screen/positions", s.requireLicense(s.handleScreenPositions))
 	mux.HandleFunc("GET /api/v1/screen/fpv", s.requireLicense(s.handleScreenFPV))
@@ -2293,7 +2316,7 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 		}
 	}
 	if s != nil && s.lingyun != nil {
-		if clientID := strings.TrimSpace(s.lingyun.Status().ClientID); clientID != "" {
+		if clientID := strings.TrimSpace(s.lingyun.Status().ClientID); settings.Lingyun.ClientID == "" && clientID != "" {
 			settings.Lingyun.ClientID = clientID
 		}
 	}

@@ -170,6 +170,7 @@ type dataExtension struct {
 	UAVModel   string   `json:"uavModel"`
 	UAVSN      string   `json:"uavSN"`
 	Direction  *float64 `json:"direction,omitempty"`
+	RSSI       *float64 `json:"RSSI,omitempty"`
 	PilotLon   *float64 `json:"pilotLon,omitempty"`
 	PilotLat   *float64 `json:"pilotLat,omitempty"`
 	PilotAlt   *float64 `json:"pilotAlt,omitempty"`

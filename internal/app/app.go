@@ -18,6 +18,7 @@ import (
 	"drone-management/internal/license"
 	"drone-management/internal/lingyun"
 	"drone-management/internal/model"
+	networkmanager "drone-management/internal/network"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
 	"drone-management/internal/settings"
@@ -84,6 +85,7 @@ func New(cfg config.Config) (*App, error) {
 		}
 	}
 	offlineMapSvc := offlinemap.NewService(cfg.OfflineMapPath)
+	networkSvc := networkmanager.NewService()
 	licenseSvc := license.NewService(cfg.LicensePath, func() (string, error) {
 		return model.NewLingyunDeviceSN(), nil
 	})
@@ -147,6 +149,7 @@ func New(cfg config.Config) (*App, error) {
 			httpapi.WithInterferenceService(interferenceSvc),
 			httpapi.WithInterferenceReportStore(interferenceReportStore),
 			httpapi.WithOfflineMapService(offlineMapSvc),
+			httpapi.WithNetworkService(networkSvc),
 			httpapi.WithLicenseService(licenseSvc),
 		),
 		intrusions:          intrusionStore,

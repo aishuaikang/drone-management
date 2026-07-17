@@ -730,7 +730,7 @@ func TestServiceInterferenceRegistrationUsesLocalChannelBands(t *testing.T) {
 	}
 }
 
-func TestServiceApplySettingsUsesRuntimeClientID(t *testing.T) {
+func TestServiceApplySettingsUsesConfiguredClientID(t *testing.T) {
 	service := NewService(
 		store.New(10, 10),
 		model.UserSettings{
@@ -745,11 +745,8 @@ func TestServiceApplySettingsUsesRuntimeClientID(t *testing.T) {
 	)
 
 	first := service.settingsSnapshot().ClientID
-	if !strings.HasPrefix(first, model.DefaultLingyunClientIDPrefix) {
-		t.Fatalf("client ID = %q, want prefix %q", first, model.DefaultLingyunClientIDPrefix)
-	}
-	if first == "persisted-client" {
-		t.Fatal("service must ignore persisted client ID and use runtime client ID")
+	if first != "persisted-client" {
+		t.Fatalf("client ID = %q, want persisted-client", first)
 	}
 	if status := service.Status(); status.ClientID != first {
 		t.Fatalf("status client ID = %q, want %q", status.ClientID, first)
@@ -762,8 +759,24 @@ func TestServiceApplySettingsUsesRuntimeClientID(t *testing.T) {
 			ProviderCode: "DPTEST",
 		},
 	})
-	if second := service.settingsSnapshot().ClientID; second != first {
-		t.Fatalf("client ID changed from %q to %q", first, second)
+	if second := service.settingsSnapshot().ClientID; second != "another-persisted-client" {
+		t.Fatalf("client ID = %q, want another-persisted-client", second)
+	}
+}
+
+func TestServiceApplySettingsGeneratesClientIDWhenMissing(t *testing.T) {
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{},
+		WithTransport(newFakeTransport()),
+	)
+
+	clientID := service.settingsSnapshot().ClientID
+	if !strings.HasPrefix(clientID, model.DefaultLingyunClientIDPrefix) {
+		t.Fatalf("client ID = %q, want prefix %q", clientID, model.DefaultLingyunClientIDPrefix)
+	}
+	if status := service.Status(); status.ClientID != clientID {
+		t.Fatalf("status client ID = %q, want %q", status.ClientID, clientID)
 	}
 }
 

@@ -72,12 +72,12 @@ func (t *pahoTransport) Connect(ctx context.Context, cfg transportConfig) error 
 	if !waitToken(ctx, token) {
 		client.Disconnect(250)
 		t.connected.Store(false)
-		return fmt.Errorf("connect Lingyun MQTT timeout")
+		return fmt.Errorf("connect MQTT timeout")
 	}
 	if err := token.Error(); err != nil {
 		client.Disconnect(250)
 		t.connected.Store(false)
-		return fmt.Errorf("connect Lingyun MQTT: %w", err)
+		return fmt.Errorf("connect MQTT: %w", err)
 	}
 	t.client = client
 	t.connected.Store(true)
@@ -90,16 +90,16 @@ func (t *pahoTransport) Subscribe(ctx context.Context, topic string, handler mes
 	t.mu.Unlock()
 	if client == nil || !client.IsConnected() {
 		t.connected.Store(false)
-		return fmt.Errorf("Lingyun MQTT is not connected")
+		return fmt.Errorf("MQTT is not connected")
 	}
 	token := client.Subscribe(topic, qos, func(_ mqtt.Client, message mqtt.Message) {
 		handler(message.Topic(), message.Payload())
 	})
 	if !waitToken(ctx, token) {
-		return fmt.Errorf("subscribe Lingyun MQTT timeout")
+		return fmt.Errorf("subscribe MQTT timeout")
 	}
 	if err := token.Error(); err != nil {
-		return fmt.Errorf("subscribe Lingyun MQTT: %w", err)
+		return fmt.Errorf("subscribe MQTT: %w", err)
 	}
 	return nil
 }
@@ -110,14 +110,14 @@ func (t *pahoTransport) Publish(ctx context.Context, topic string, payload []byt
 	t.mu.Unlock()
 	if client == nil || !client.IsConnected() {
 		t.connected.Store(false)
-		return fmt.Errorf("Lingyun MQTT is not connected")
+		return fmt.Errorf("MQTT is not connected")
 	}
 	token := client.Publish(topic, qos, false, payload)
 	if !waitToken(ctx, token) {
-		return fmt.Errorf("publish Lingyun MQTT timeout")
+		return fmt.Errorf("publish MQTT timeout")
 	}
 	if err := token.Error(); err != nil {
-		return fmt.Errorf("publish Lingyun MQTT: %w", err)
+		return fmt.Errorf("publish MQTT: %w", err)
 	}
 	return nil
 }

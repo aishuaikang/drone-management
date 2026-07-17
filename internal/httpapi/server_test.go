@@ -667,6 +667,7 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 		"lingyun": {
 			"enabled": true,
 			"broker": "tcp://127.0.0.1:1883",
+			"clientId": "manual-client-id",
 			"username": "user",
 			"password": "plain-secret",
 			"providerCode": "DPTEST",
@@ -691,8 +692,8 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	if saved.Lingyun.Password != "plain-secret" {
 		t.Fatalf("password = %q, want plain-secret", saved.Lingyun.Password)
 	}
-	if !strings.HasPrefix(saved.Lingyun.ClientID, model.DefaultLingyunClientIDPrefix) {
-		t.Fatalf("clientId = %q, want generated prefix %q", saved.Lingyun.ClientID, model.DefaultLingyunClientIDPrefix)
+	if saved.Lingyun.ClientID != "manual-client-id" {
+		t.Fatalf("clientId = %q, want manual-client-id", saved.Lingyun.ClientID)
 	}
 	if settingsStore.settings.Lingyun.ProviderCode != "DPTEST" {
 		t.Fatalf("saved Lingyun = %#v", settingsStore.settings.Lingyun)
@@ -700,12 +701,12 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	if settingsStore.settings.Lingyun.ProtocolVersion != "V2.0" {
 		t.Fatalf("saved protocolVersion = %q, want V2.0", settingsStore.settings.Lingyun.ProtocolVersion)
 	}
-	if !lingyunSvc.applied.Lingyun.Enabled || lingyunSvc.applied.Lingyun.ProviderCode != "DPTEST" || lingyunSvc.applied.Lingyun.ProtocolVersion != "V2.0" {
+	if !lingyunSvc.applied.Lingyun.Enabled || lingyunSvc.applied.Lingyun.ClientID != "manual-client-id" || lingyunSvc.applied.Lingyun.ProviderCode != "DPTEST" || lingyunSvc.applied.Lingyun.ProtocolVersion != "V2.0" {
 		t.Fatalf("applied settings = %#v", lingyunSvc.applied.Lingyun)
 	}
 }
 
-func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomDeviceID(t *testing.T) {
+func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomSettings(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
 	s := newTestServer(t, state)
@@ -746,8 +747,8 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverrid
 	if len(body.Lingyun.Devices) != 4 {
 		t.Fatalf("devices = %#v, want 4", body.Lingyun.Devices)
 	}
-	if body.Lingyun.ClientID != "runtime-client" {
-		t.Fatalf("clientId = %q, want runtime-client", body.Lingyun.ClientID)
+	if body.Lingyun.ClientID != "client-1" {
+		t.Fatalf("clientId = %q, want client-1", body.Lingyun.ClientID)
 	}
 	for _, device := range body.Lingyun.Devices {
 		if device.DeviceLongitude != 116.5678 || device.DeviceLatitude != 39.1234 {
@@ -766,6 +767,28 @@ func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverrid
 				t.Fatalf("device %s identity = %q/%q, want %q", device.Type, device.DeviceID, device.DeviceSpec.DevSN, identity)
 			}
 		}
+	}
+}
+
+func TestUserSettingsRouteUsesRuntimeLingyunClientIDWhenNotPersisted(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	s.userSettings = &memoryUserSettingsStore{ok: true}
+	s.lingyun = &memoryLingyunService{
+		status: model.LingyunStatus{ClientID: "runtime-client"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/user/settings", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body model.UserSettings
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Lingyun.ClientID != "runtime-client" {
+		t.Fatalf("clientId = %q, want runtime-client", body.Lingyun.ClientID)
 	}
 }
 
@@ -2027,15 +2050,20 @@ func (o *httpTestOutput) Cleanup() {
 }
 
 type memoryUserSettingsStore struct {
+	mu       sync.RWMutex
 	settings model.UserSettings
 	ok       bool
 }
 
 func (s *memoryUserSettingsStore) LoadUser() (model.UserSettings, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.settings, s.ok, nil
 }
 
 func (s *memoryUserSettingsStore) SaveEditableUser(settings model.UserSettings) (model.UserSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.settings = settings
 	s.ok = true
 	return settings, nil

@@ -18,6 +18,7 @@ import {
   MapPinned,
   Maximize2,
   MapPin,
+  Network,
   Palette,
   Play,
   FileVideo,
@@ -77,6 +78,7 @@ import {
 } from "./api";
 import type { InterferenceReportQuery, IntrusionQuery, LicenseUploadError, OfflineMapUploadError } from "./api";
 import { VirtualKeyboard } from "./components/VirtualKeyboard";
+import { NetworkManagement } from "./components/NetworkManagement";
 import centerPointIcon from "./assets/images/centerPoint.svg";
 import detectionDeviceIconOnlineUrl from "./assets/images/detectionDeviceIconOnline.svg";
 import screenAlarmAudio from "./assets/images/screen/audio.mp3";
@@ -121,7 +123,7 @@ import { installLeafletCoordConverter } from "./utils/leafletCoordConverter";
 
 type Locale = "zh-CN" | "en-US";
 type Tab = "positions" | "fpv";
-type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "offlineMap" | "lingyun" | "about";
+type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "offlineMap" | "network" | "lingyun" | "about";
 type ThemeColor = "cyan" | "amber" | "blue" | "rose";
 type CSVCell = string | number | null | undefined;
 type NavigationMapProvider = "amap" | "google";
@@ -388,7 +390,8 @@ const labels: Record<Locale, Record<string, string>> = {
     whitelistView: "白名单",
     settingsView: "设置",
     offlineMapView: "离线地图",
-    lingyunView: "凌云协议",
+    networkView: "网络管理",
+    lingyunView: "通用MQTT协议",
     aboutView: "关于",
     settingsTitle: "大屏设置",
     displaySettings: "显示设置",
@@ -399,12 +402,12 @@ const labels: Record<Locale, Record<string, string>> = {
     positionTCPPort: "定位模块端口",
     fpvTCPPort: "FPV 模块端口",
     tcpPortInvalid: "请输入 1 到 65535 之间且不重复的端口",
-    lingyunSettings: "中移凌云协议",
-    lingyunSettingsHint: "控制四类逻辑设备向凌云平台注册、上报和响应控制命令。",
+    lingyunSettings: "通用MQTT协议",
+    lingyunSettingsHint: "控制四类逻辑设备通过 MQTT 注册、上报和响应控制命令。",
     lingyunConnectionSettings: "连接配置",
     lingyunDeviceSettings: "逻辑设备",
-    lingyunEnabled: "凌云上报已开启",
-    lingyunDisabled: "凌云上报已关闭",
+    lingyunEnabled: "MQTT 上报已开启",
+    lingyunDisabled: "MQTT 上报已关闭",
     lingyunBroker: "MQTT Broker",
     lingyunProviderCode: "Provider Code",
     lingyunClientId: "Client ID",
@@ -487,7 +490,7 @@ const labels: Record<Locale, Record<string, string>> = {
     licenseErrorVerificationFailed: "授权校验失败",
     copied: "已复制",
     locationUnavailable: "暂无有效位置",
-    lingyunInvalid: "开启凌云协议时必须填写 Broker、Provider Code，并成功获取软件唯一 SN",
+    lingyunInvalid: "开启通用MQTT协议时必须填写 Broker、Provider Code，并成功获取软件唯一 SN",
     lingyunUnconfigured: "未配置",
     lingyunReportingStopped: "上报停止",
     lingyunReporting: "上报中",
@@ -789,7 +792,8 @@ const labels: Record<Locale, Record<string, string>> = {
     whitelistView: "Whitelist",
     settingsView: "Settings",
     offlineMapView: "Offline Map",
-    lingyunView: "Lingyun",
+    networkView: "Network",
+    lingyunView: "General MQTT Protocol",
     aboutView: "About",
     settingsTitle: "Screen Settings",
     displaySettings: "Display",
@@ -800,12 +804,12 @@ const labels: Record<Locale, Record<string, string>> = {
     positionTCPPort: "Position module port",
     fpvTCPPort: "FPV module port",
     tcpPortInvalid: "Enter unique ports from 1 to 65535",
-    lingyunSettings: "China Mobile Lingyun",
-    lingyunSettingsHint: "Registers four logical devices, publishes targets, and responds to platform controls.",
+    lingyunSettings: "General MQTT Protocol",
+    lingyunSettingsHint: "Registers four logical devices through MQTT, publishes targets, and responds to platform controls.",
     lingyunConnectionSettings: "Connection",
     lingyunDeviceSettings: "Logical Devices",
-    lingyunEnabled: "Lingyun reporting enabled",
-    lingyunDisabled: "Lingyun reporting disabled",
+    lingyunEnabled: "MQTT reporting enabled",
+    lingyunDisabled: "MQTT reporting disabled",
     lingyunBroker: "MQTT Broker",
     lingyunProviderCode: "Provider Code",
     lingyunClientId: "Client ID",
@@ -888,7 +892,7 @@ const labels: Record<Locale, Record<string, string>> = {
     licenseErrorVerificationFailed: "License verification failed",
     copied: "Copied",
     locationUnavailable: "No valid location",
-    lingyunInvalid: "When Lingyun is enabled, Broker, Provider Code, and a valid software SN are required",
+    lingyunInvalid: "When the general MQTT protocol is enabled, Broker, Provider Code, and a valid software SN are required",
     lingyunUnconfigured: "Unconfigured",
     lingyunReportingStopped: "Reporting stopped",
     lingyunReporting: "Reporting",
@@ -2469,6 +2473,7 @@ function ViewSwitch({
     { id: "interferenceReports", label: t.interferenceReportsView, icon: <Zap size={14} aria-hidden="true" /> },
     { id: "whitelist", label: t.whitelistView, icon: <ShieldCheck size={14} aria-hidden="true" /> },
     { id: "offlineMap", label: t.offlineMapView, icon: <HardDriveUpload size={14} aria-hidden="true" /> },
+    { id: "network", label: t.networkView, icon: <Network size={14} aria-hidden="true" /> },
     { id: "lingyun", label: t.lingyunView, icon: <Globe2 size={14} aria-hidden="true" /> },
     { id: "settings", label: t.settingsView, icon: <Settings size={14} aria-hidden="true" /> },
     { id: "about", label: t.aboutView, icon: <Info size={14} aria-hidden="true" /> },
@@ -2889,8 +2894,9 @@ function ManagementView({
 }) {
   const panelClassName = [
     "screen-management-panel",
-    view === "settings" || view === "offlineMap" || view === "lingyun" || view === "about" ? "screen-management-panel--settings" : "",
+    view === "settings" || view === "offlineMap" || view === "network" || view === "lingyun" || view === "about" ? "screen-management-panel--settings" : "",
     view === "offlineMap" ? "screen-management-panel--offline-map" : "",
+    view === "network" ? "screen-management-panel--network" : "",
     view === "lingyun" ? "screen-management-panel--lingyun" : "",
     view === "about" ? "screen-management-panel--about" : "",
   ].filter(Boolean).join(" ");
@@ -2931,6 +2937,8 @@ function ManagementView({
           state={offlineMapState}
           onStateChange={onOfflineMapStateChange}
         />
+      ) : view === "network" ? (
+        <NetworkManagement locale={locale} />
       ) : view === "about" ? (
         <AboutManagement t={t} locale={locale} licenseInfo={licenseInfo} deviceLocation={deviceLocation} onLicenseInfoChange={onLicenseInfoChange} />
       ) : (
@@ -3603,7 +3611,6 @@ function LingyunSettingsManagement({
   const savedLingyunWithRuntimeLocation = resolveLingyunSettingsWithDeviceLocation(savedLingyun, deviceLocation);
   const changed = JSON.stringify(draftLingyunWithRuntimeLocation) !== JSON.stringify(savedLingyunWithRuntimeLocation);
   const softwareSN = lingyunDeviceIdentity(draftLingyunWithRuntimeLocation) || "-";
-  const runtimeClientId = status?.lingyun?.clientId?.trim() || draftLingyunWithRuntimeLocation.clientId || "-";
   const interferenceBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
   const [expandedTopicTypes, setExpandedTopicTypes] = useState<Record<string, boolean>>({});
   const settingsPending = !settingsLoaded;
@@ -3724,7 +3731,12 @@ function LingyunSettingsManagement({
               </label>
               <label>
                 <span>{t.lingyunClientId}</span>
-                <LingyunStaticValue value={runtimeClientId} />
+                <input
+                  value={draftLingyunWithRuntimeLocation.clientId ?? ""}
+                  maxLength={128}
+                  autoComplete="off"
+                  onChange={(event) => updateLingyun({ clientId: event.target.value })}
+                />
               </label>
               <label>
                 <span>{t.lingyunSoftwareSN}</span>

@@ -12,6 +12,21 @@ type TextLanguagePolicy = "auto" | "ascii";
 const supportedInputTypes = new Set(["", "email", "number", "password", "search", "tel", "text", "url"]);
 const emptyCandidates: string[] = [];
 const keyboardViewportGap = 16;
+const mobileOrTabletMaxScreenDimension = 1366;
+
+function isPhoneOrTabletScreen() {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return false;
+  }
+  const screenWidth = window.screen?.width || window.innerWidth;
+  const screenHeight = window.screen?.height || window.innerHeight;
+  const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const hasNoHover = window.matchMedia("(hover: none)").matches;
+  const hasTouch = navigator.maxTouchPoints > 0 || hasCoarsePointer;
+  return Math.max(screenWidth, screenHeight) <= mobileOrTabletMaxScreenDimension
+    && hasTouch
+    && (hasCoarsePointer || hasNoHover);
+}
 
 const textLayouts: Record<LayoutName, string[][]> = {
   default: [
@@ -313,6 +328,7 @@ export function VirtualKeyboard({
   const [pinyinBuffer, setPinyinBuffer] = useState("");
   const [pinyinCandidates, setPinyinCandidates] = useState<string[]>(emptyCandidates);
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
+  const [virtualKeyboardEnabled, setVirtualKeyboardEnabled] = useState(isPhoneOrTabletScreen);
 
   const label = useCallback((key: string) => labels[key] ?? key, [labels]);
 
@@ -332,6 +348,30 @@ export function VirtualKeyboard({
     setPinyinCandidates(emptyCandidates);
     activeElementRef.current = null;
   }, [cancelClose]);
+
+  useEffect(() => {
+    const pointerQuery = window.matchMedia("(pointer: coarse)");
+    const hoverQuery = window.matchMedia("(hover: none)");
+    const updateAvailability = () => {
+      const enabled = isPhoneOrTabletScreen();
+      setVirtualKeyboardEnabled(enabled);
+      if (!enabled) {
+        hideKeyboard();
+      }
+    };
+
+    updateAvailability();
+    window.addEventListener("resize", updateAvailability);
+    window.addEventListener("orientationchange", updateAvailability);
+    pointerQuery.addEventListener("change", updateAvailability);
+    hoverQuery.addEventListener("change", updateAvailability);
+    return () => {
+      window.removeEventListener("resize", updateAvailability);
+      window.removeEventListener("orientationchange", updateAvailability);
+      pointerQuery.removeEventListener("change", updateAvailability);
+      hoverQuery.removeEventListener("change", updateAvailability);
+    };
+  }, [hideKeyboard]);
 
   const syncKeyboardViewport = useCallback(() => {
     if (!visible) {
@@ -381,6 +421,9 @@ export function VirtualKeyboard({
   );
 
   useEffect(() => {
+    if (!virtualKeyboardEnabled) {
+      return;
+    }
     const handleFocusIn = (event: FocusEvent) => {
       if (isEditableElement(event.target)) {
         showForElement(event.target);
@@ -430,7 +473,7 @@ export function VirtualKeyboard({
       window.removeEventListener("hashchange", hideKeyboard);
       cancelClose();
     };
-  }, [cancelClose, hideKeyboard, showForElement, visible]);
+  }, [cancelClose, hideKeyboard, showForElement, virtualKeyboardEnabled, visible]);
 
   useLayoutEffect(() => {
     const update = () => {
@@ -606,7 +649,7 @@ export function VirtualKeyboard({
     [canSwitchLanguage, commitCandidate, hideKeyboard, languageMode, layoutName, pinyinBuffer, pinyinCandidates, textLanguagePolicy],
   );
 
-  if (!visible) {
+  if (!virtualKeyboardEnabled || !visible) {
     return null;
   }
 

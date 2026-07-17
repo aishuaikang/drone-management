@@ -478,3 +478,73 @@ export interface ListResponse<T> {
   hasMore?: boolean;
   nextOffset?: number;
 }
+
+export interface NetworkConfig {
+  content: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface NetworkInterfaceStatus {
+  name: string;
+  state: string;
+  isUp: boolean;
+  mac: string;
+  ip: string;
+  gateway: string;
+  metric: string;
+}
+
+export interface NetworkRoute {
+  destination: string;
+  gateway?: string;
+  metric?: string;
+  interface?: string;
+  protocol?: string;
+  scope?: string;
+}
+
+export interface NetworkConnectivity {
+  defaultGateway: string;
+  gatewayReachable: boolean;
+  internetReachable: boolean;
+  dnsWorking: boolean;
+}
+
+export interface NetworkDNSDiagnostics {
+  resolvConf: string;
+  systemdResolved: boolean;
+  resolvectlStatus?: string;
+  dnsServers: string;
+  testResult: string;
+  pingTest: string;
+  resolvConfLink: string;
+}
+
+export interface NetworkServiceStatus {
+  name: string;
+  displayName: string;
+  active: boolean;
+  enabled: boolean;
+  masked: boolean;
+  shouldRun: boolean;
+  isCorrect: boolean;
+}
+
+export interface NetworkDiagnostics {
+  cloudInitEnabled: boolean;
+  networkManagerActive: boolean;
+  systemdNetworkdActive: boolean;
+  ifupdownConfigured: boolean;
+  netplanFiles: string[];
+  activeRenderer: string;
+  conflicts: string[];
+  recommendations: string[];
+  serviceStatuses: NetworkServiceStatus[];
+}
+
+export interface NetworkBackup {
+  name: string;
+  createdAt: string;
+  size: number;
+}

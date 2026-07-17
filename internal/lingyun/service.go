@@ -31,7 +31,7 @@ const (
 
 var _ protocol.Connector = (*Service)(nil)
 
-// Option configures a Lingyun protocol service.
+// Option configures the generic MQTT protocol service.
 type Option func(*Service)
 
 type interferenceController interface {
@@ -62,7 +62,7 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
-// WithInterferenceController connects Lingyun interference controls to local hardware control.
+// WithInterferenceController connects MQTT interference controls to local hardware control.
 func WithInterferenceController(controller interferenceController) Option {
 	return func(s *Service) {
 		s.interference = controller
@@ -92,7 +92,7 @@ type devicePublishJob struct {
 	data        bool
 }
 
-// Service publishes local targets to China Mobile Lingyun and handles controls.
+// Service publishes local targets over MQTT and handles controls.
 type Service struct {
 	store        *store.Store
 	transport    transport
@@ -105,14 +105,13 @@ type Service struct {
 	pending              map[string]map[string]senseDataObject
 	status               model.LingyunStatus
 	settingsKey          string
-	clientID             string
 	subscribed           bool
 	seeded               bool
 	nextConnectAttemptAt time.Time
 	wake                 chan struct{}
 }
 
-// NewService creates a Lingyun protocol integration.
+// NewService creates the generic MQTT protocol integration.
 func NewService(state *store.Store, settings model.UserSettings, opts ...Option) *Service {
 	s := &Service{
 		store:     state,
@@ -120,7 +119,6 @@ func NewService(state *store.Store, settings model.UserSettings, opts ...Option)
 		now:       time.Now,
 		states:    map[string]*deviceRuntimeState{},
 		pending:   map[string]map[string]senseDataObject{},
-		clientID:  model.NewLingyunClientID(),
 		wake:      make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
@@ -137,14 +135,10 @@ func (s *Service) Name() string {
 
 // ApplySettings updates Lingyun runtime configuration.
 func (s *Service) ApplySettings(settings model.UserSettings) {
-	next := model.UserSettingsWithDefaults(settings).Lingyun
+	next := model.LingyunSettingsWithGeneratedClientID(model.UserSettingsWithDefaults(settings).Lingyun)
 	now := s.now()
 
 	s.mu.Lock()
-	if strings.TrimSpace(s.clientID) == "" {
-		s.clientID = model.NewLingyunClientID()
-	}
-	next.ClientID = s.clientID
 	key := settingsFingerprint(next)
 	changed := s.settingsKey != key
 	s.settings = next
@@ -234,7 +228,7 @@ func (s *Service) tick(ctx context.Context) {
 	}
 	if !lingyunConfigured(settings) {
 		s.clearNextConnectAttempt()
-		s.setConnected(false, "Lingyun MQTT/provider/device config is incomplete")
+		s.setConnected(false, "MQTT provider/device config is incomplete")
 		return
 	}
 	if !s.transport.Connected() && s.connectRetryPending(s.now()) {
@@ -463,7 +457,7 @@ func completeDataObjectsForPublish(deviceType string, objects []senseDataObject)
 func (s *Service) publishJSON(ctx context.Context, topic string, payload any) (string, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshal Lingyun payload: %w", err)
+		return "", fmt.Errorf("marshal MQTT payload: %w", err)
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
 	defer cancel()
@@ -1004,7 +998,7 @@ func (s *Service) setDeviceError(deviceType string, message string) {
 	s.status.LastError = message
 	s.status.UpdatedAt = cloneTime(s.now())
 	if message != "" {
-		slog.Warn("Lingyun protocol error", "deviceType", deviceType, "error", message)
+		slog.Warn("MQTT protocol error", "deviceType", deviceType, "error", message)
 	}
 }
 

@@ -1,6 +1,7 @@
 package lingyun
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ func TestProjectPositionRoutesAndFillsRequiredTelemetry(t *testing.T) {
 		t.Fatalf("extension = %#v", object.Extension)
 	}
 	if object.Extension.Direction != nil ||
+		object.Extension.RSSI != nil ||
 		object.Extension.PilotAlt != nil ||
 		object.Extension.Angle != nil ||
 		object.Extension.VSpeed != nil ||
@@ -181,7 +183,24 @@ func TestProjectAOAUsesPlaceholders(t *testing.T) {
 	if object.Longitude != nil || object.Latitude != nil || object.Extension.Direction == nil || *object.Extension.Direction != 0 {
 		t.Fatalf("AOA optional fields = %#v", object)
 	}
+	if object.Extension.RSSI == nil || *object.Extension.RSSI != target.RSSI {
+		t.Fatalf("AOA RSSI = %v, want %v", object.Extension.RSSI, target.RSSI)
+	}
 	if object.Extension.Channel != "5.75GHz" || object.Extension.BandWidth != model.DefaultLingyunBandWidth {
 		t.Fatalf("radio extension = %#v", object.Extension)
+	}
+	data, err := json.Marshal(object.Extension)
+	if err != nil {
+		t.Fatalf("marshal AOA extension: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("decode AOA extension: %v", err)
+	}
+	if payload["RSSI"] != target.RSSI {
+		t.Fatalf("AOA RSSI JSON field = %#v, want %v; payload = %s", payload["RSSI"], target.RSSI, data)
+	}
+	if _, ok := payload["rssi"]; ok {
+		t.Fatalf("AOA extension used lowercase rssi key: %s", data)
 	}
 }

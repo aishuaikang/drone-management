@@ -14,6 +14,13 @@ import type {
   LicenseInfo,
   LicenseUploadResponse,
   ListResponse,
+  NetworkBackup,
+  NetworkConfig,
+  NetworkConnectivity,
+  NetworkDNSDiagnostics,
+  NetworkDiagnostics,
+  NetworkInterfaceStatus,
+  NetworkRoute,
   OfflineMapStatus,
   OfflineMapUploadLog,
   OfflineMapUploadResponse,
@@ -350,6 +357,76 @@ function isOfflineMapUploadLog(value: unknown): value is OfflineMapUploadLog {
 
 export function getUserSettings() {
   return requestJson<UserSettings>("/user/settings", { timeoutMs: 5000 });
+}
+
+export function getNetworkConfig() {
+  return requestJson<NetworkConfig>("/network/config", { timeoutMs: 5000 });
+}
+
+export function updateNetworkConfig(content: string) {
+  return requestJson<NetworkConfig>("/network/config", {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+    timeoutMs: 15000,
+  });
+}
+
+export function applyNetworkConfig() {
+  return requestJson<{ message: string }>("/network/apply", { method: "POST", timeoutMs: 15000 });
+}
+
+export function restartNetwork() {
+  return requestJson<{ message: string }>("/network/restart", { method: "POST", timeoutMs: 15000 });
+}
+
+export function getNetworkInterfaces() {
+  return requestJson<ListResponse<NetworkInterfaceStatus>>("/network/interfaces", { timeoutMs: 5000 });
+}
+
+export function getNetworkRoutes() {
+  return requestJson<ListResponse<NetworkRoute>>("/network/routes", { timeoutMs: 5000 });
+}
+
+export function testNetworkConnectivity() {
+  return requestJson<NetworkConnectivity>("/network/connectivity", { timeoutMs: 15000 });
+}
+
+export function getNetworkDNSDiagnostics() {
+  return requestJson<NetworkDNSDiagnostics>("/network/dns", { timeoutMs: 15000 });
+}
+
+export function fixNetworkDNS(servers: string[]) {
+  return requestJson<{ message: string }>("/network/dns", {
+    method: "PUT",
+    body: JSON.stringify({ servers }),
+    timeoutMs: 15000,
+  });
+}
+
+export function getNetworkDiagnostics() {
+  return requestJson<NetworkDiagnostics>("/network/diagnostics", { timeoutMs: 15000 });
+}
+
+export function getNetworkBackups() {
+  return requestJson<ListResponse<NetworkBackup>>("/network/backups", { timeoutMs: 5000 });
+}
+
+export function getNetworkBackupContent(name: string) {
+  return requestJson<{ content: string }>(`/network/backups/${encodeURIComponent(name)}`, { timeoutMs: 5000 });
+}
+
+export function restoreNetworkBackup(name: string) {
+  return requestJson<{ message: string }>(`/network/backups/${encodeURIComponent(name)}/restore`, {
+    method: "POST",
+    timeoutMs: 15000,
+  });
+}
+
+export function deleteNetworkBackup(name: string) {
+  return requestJson<{ message: string }>(`/network/backups/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    timeoutMs: 5000,
+  });
 }
 
 export function updateUserSettings(payload: UserSettings) {

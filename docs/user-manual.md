@@ -77,7 +77,7 @@ http://192.168.100.101:18080/
 | 干扰报告 | 查看手动干扰和无人值守干扰记录 |
 | 白名单 | 新增、编辑、删除可信目标序列号 |
 | 离线地图 | 查看离线地图状态，上传地图 ZIP 包 |
-| 凌云协议 | 配置中移凌云 MQTT 上报和逻辑设备信息 |
+| 通用MQTT协议 | 配置通用 MQTT 上报和逻辑设备信息 |
 | 设置 | 配置大屏标题、预警圈、TCP 端口、定位过期、干扰通道标签 |
 | 关于 | 查看软件信息、设备位置、软件 SN 和授权状态 |
 
@@ -93,7 +93,7 @@ http://192.168.100.101:18080/
 | 图 4 | 干扰报告 | `docs/images/user-manual/04-interference-reports.png` |
 | 图 5 | 白名单 | `docs/images/user-manual/05-whitelist.png` |
 | 图 6 | 离线地图 | `docs/images/user-manual/06-offline-map.png` |
-| 图 7 | 凌云协议 | `docs/images/user-manual/07-lingyun.png` |
+| 图 7 | 通用MQTT协议 | `docs/images/user-manual/07-lingyun.png` |
 | 图 8 | 设置 | `docs/images/user-manual/08-settings.png` |
 | 图 9 | 关于与授权 | `docs/images/user-manual/09-about-license.png` |
 
@@ -442,13 +442,13 @@ http://192.168.100.101:18080/
 - 默认上传大小上限为 2048 MB。
 - 上传过程中不要刷新页面或关闭浏览器。
 
-## 11. 凌云协议配置
+## 11. 通用MQTT协议配置
 
-![图 7 凌云协议配置页面](images/user-manual/07-lingyun.png)
+![图 7 通用MQTT协议配置页面](images/user-manual/07-lingyun.png)
 
-图 7 展示凌云协议配置页面。截图中的 Broker、Provider Code、账号、设备身份和位置等运行环境信息已遮挡。
+图 7 展示通用MQTT协议配置页面。截图中的 Broker、Provider Code、账号、设备身份和位置等运行环境信息已遮挡。
 
-“凌云协议”页面用于配置中移凌云平台 MQTT 上报。
+“通用MQTT协议”页面用于配置 MQTT 上报。
 
 ### 11.1 连接配置
 
@@ -456,6 +456,7 @@ http://192.168.100.101:18080/
 
 - 是否开启凌云上报。
 - MQTT Broker。
+- Client ID；首次使用时系统会自动生成，也可以手动修改，保存后按新 Client ID 重新连接。
 - Provider Code。
 - 用户名。
 - 密码。
@@ -465,13 +466,12 @@ http://192.168.100.101:18080/
 
 页面会显示：
 
-- Client ID。
 - 软件唯一 SN。
 - 协议版本。
 - 当前连接状态。
 - 最近错误。
 
-开启凌云协议时，必须填写 Broker、Provider Code，并确保软件 SN 可用。
+开启通用MQTT协议时，必须填写 Broker、Provider Code，并确保软件 SN 可用。
 
 ### 11.2 逻辑设备配置
 

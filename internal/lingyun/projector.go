@@ -86,6 +86,7 @@ func projectAOA(
 		seenAt = now
 	}
 	direction := 0.0
+	rssi := target.RSSI
 	return senseDataObject{
 		ObjectID: objectID,
 		Time:     seenAt.UnixMilli(),
@@ -96,6 +97,7 @@ func projectAOA(
 			UAVModel:   firstNonEmpty(target.SignalType, "FPV"),
 			UAVSN:      objectID,
 			Direction:  &direction,
+			RSSI:       &rssi,
 		},
 	}, true
 }
