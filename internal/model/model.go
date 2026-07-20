@@ -850,6 +850,7 @@ type ScreenFPVTarget struct {
 	LastSeen   time.Time           `json:"lastSeen"`
 	HitCount   int                 `json:"hitCount"`
 	LastRecord ScreenFPVLastRecord `json:"lastRecord"`
+	EverValid  bool                `json:"-"`
 }
 
 // FPVVideoRecordStatus describes whether a recorded FPV video file is ready.
@@ -1010,9 +1011,10 @@ type IntrusionTargetType string
 
 const (
 	IntrusionTargetTypePosition IntrusionTargetType = "position"
+	IntrusionTargetTypeFPV      IntrusionTargetType = "fpv"
 )
 
-// IntrusionRecord stores a disappeared positioning target.
+// IntrusionRecord stores a disappeared positioning or FPV target.
 type IntrusionRecord struct {
 	ID                 string                        `json:"id"`
 	TargetID           string                        `json:"targetId"`
@@ -1022,6 +1024,10 @@ type IntrusionRecord struct {
 	Device             string                        `json:"device,omitempty"`
 	Frequency          float64                       `json:"frequency,omitempty"`
 	RSSI               float64                       `json:"rssi,omitempty"`
+	SignalType         string                        `json:"signalType,omitempty"`
+	DeviceSN           string                        `json:"deviceSn,omitempty"`
+	Valid              bool                          `json:"valid"`
+	Format             string                        `json:"format,omitempty"`
 	FirstSeen          time.Time                     `json:"firstSeen"`
 	LastSeen           time.Time                     `json:"lastSeen"`
 	DurationSeconds    int64                         `json:"durationSeconds"`
@@ -1042,7 +1048,8 @@ type IntrusionRecord struct {
 	Height             *float64                      `json:"height,omitempty"`
 	Altitude           *float64                      `json:"altitude,omitempty"`
 	Speed              *float64                      `json:"speed,omitempty"`
-	LastRecord         ScreenPositionLastRecord      `json:"lastRecord"`
+	LastRecord         *ScreenPositionLastRecord     `json:"lastRecord,omitempty"`
+	FPVLastRecord      *ScreenFPVLastRecord          `json:"fpvLastRecord,omitempty"`
 	ArchivedAt         time.Time                     `json:"archivedAt"`
 }
 

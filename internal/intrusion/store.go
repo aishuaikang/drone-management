@@ -1,4 +1,4 @@
-// Package intrusion persists disappeared positioning targets.
+// Package intrusion persists disappeared positioning and FPV targets.
 package intrusion
 
 import (
@@ -37,8 +37,23 @@ type QueryOptions struct {
 	TargetType model.IntrusionTargetType
 	Model      string
 	Serial     string
+	SignalType string
+	DeviceSN   string
 	DateFrom   time.Time
 	DateTo     time.Time
+}
+
+type schemaColumn struct {
+	name      string
+	statement string
+}
+
+var fpvSchemaColumns = []schemaColumn{
+	{name: "signal_type", statement: `ALTER TABLE intrusion_records ADD COLUMN signal_type TEXT NOT NULL DEFAULT ''`},
+	{name: "device_sn", statement: `ALTER TABLE intrusion_records ADD COLUMN device_sn TEXT NOT NULL DEFAULT ''`},
+	{name: "valid", statement: `ALTER TABLE intrusion_records ADD COLUMN valid INTEGER NOT NULL DEFAULT 0`},
+	{name: "format", statement: `ALTER TABLE intrusion_records ADD COLUMN format TEXT NOT NULL DEFAULT ''`},
+	{name: "fpv_last_record_json", statement: `ALTER TABLE intrusion_records ADD COLUMN fpv_last_record_json TEXT`},
 }
 
 // NewStore opens and initializes an intrusion SQLite database.
@@ -99,6 +114,10 @@ CREATE TABLE IF NOT EXISTS intrusion_records (
 	device TEXT NOT NULL DEFAULT '',
 	frequency REAL NOT NULL DEFAULT 0,
 	rssi REAL NOT NULL DEFAULT 0,
+	signal_type TEXT NOT NULL DEFAULT '',
+	device_sn TEXT NOT NULL DEFAULT '',
+	valid INTEGER NOT NULL DEFAULT 0,
+	format TEXT NOT NULL DEFAULT '',
 	first_seen TEXT NOT NULL,
 	last_seen TEXT NOT NULL,
 	duration_seconds INTEGER NOT NULL DEFAULT 0,
@@ -120,14 +139,55 @@ CREATE TABLE IF NOT EXISTS intrusion_records (
 	altitude REAL,
 	speed REAL,
 	last_record_json TEXT,
+	fpv_last_record_json TEXT,
 	archived_at TEXT NOT NULL,
 	UNIQUE(target_type, target_id, first_seen)
 );
 CREATE INDEX IF NOT EXISTS idx_intrusion_records_last_seen ON intrusion_records(last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_intrusion_records_target_type_last_seen ON intrusion_records(target_type, last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_intrusion_records_archived_at ON intrusion_records(archived_at);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize intrusion database: %w", err)
+	}
+	if err := s.ensureFPVColumns(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureFPVColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(intrusion_records)`)
+	if err != nil {
+		return fmt.Errorf("inspect intrusion_records schema: %w", err)
+	}
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan intrusion_records schema: %w", err)
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read intrusion_records schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close intrusion_records schema rows: %w", err)
+	}
+
+	for _, column := range fpvSchemaColumns {
+		if _, ok := existing[column.name]; ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, column.statement); err != nil {
+			return fmt.Errorf("add intrusion_records.%s column: %w", column.name, err)
+		}
 	}
 	return nil
 }
@@ -154,8 +214,21 @@ func (s *Store) ArchivePositionContext(ctx context.Context, target model.ScreenP
 	return s.insert(ctx, record)
 }
 
+// ArchiveFPVContext persists an expired FPV target that was valid at least once.
+func (s *Store) ArchiveFPVContext(ctx context.Context, target model.ScreenFPVTarget) error {
+	if s == nil || s.db == nil || strings.TrimSpace(target.ID) == "" || !target.EverValid {
+		return nil
+	}
+	record := s.recordFromFPV(target)
+	if record.FirstSeen.IsZero() || record.LastSeen.IsZero() {
+		return nil
+	}
+	return s.insert(ctx, record)
+}
+
 func (s *Store) recordFromPosition(target model.ScreenPositionTarget) model.IntrusionRecord {
 	deviceLocation := s.currentDeviceLocation()
+	lastRecord := target.LastRecord
 	record := model.IntrusionRecord{
 		ID:                intrusionRecordID(model.IntrusionTargetTypePosition, target.ID, target.FirstSeen),
 		TargetID:          strings.TrimSpace(target.ID),
@@ -181,7 +254,7 @@ func (s *Store) recordFromPosition(target model.ScreenPositionTarget) model.Intr
 		Height:            cloneFloat(target.Height),
 		Altitude:          cloneFloat(target.Altitude),
 		Speed:             cloneFloat(target.Speed),
-		LastRecord:        target.LastRecord,
+		LastRecord:        &lastRecord,
 		ArchivedAt:        time.Now(),
 		PilotDistanceM:    cloneFloat(target.PilotDistanceM),
 		DroneDistanceM:    cloneFloat(target.DroneDistanceM),
@@ -189,6 +262,28 @@ func (s *Store) recordFromPosition(target model.ScreenPositionTarget) model.Intr
 	}
 	applyDeviceRelations(&record)
 	return record
+}
+
+func (s *Store) recordFromFPV(target model.ScreenFPVTarget) model.IntrusionRecord {
+	lastRecord := target.LastRecord
+	return model.IntrusionRecord{
+		ID:              intrusionRecordID(model.IntrusionTargetTypeFPV, target.ID, target.FirstSeen),
+		TargetID:        strings.TrimSpace(target.ID),
+		TargetType:      model.IntrusionTargetTypeFPV,
+		Frequency:       target.Frequency,
+		RSSI:            target.RSSI,
+		SignalType:      strings.TrimSpace(target.SignalType),
+		DeviceSN:        strings.TrimSpace(target.DeviceSN),
+		Valid:           target.EverValid,
+		Format:          strings.TrimSpace(target.Format),
+		FirstSeen:       target.FirstSeen,
+		LastSeen:        target.LastSeen,
+		DurationSeconds: durationSeconds(target.FirstSeen, target.LastSeen),
+		HitCount:        target.HitCount,
+		DeviceLocation:  s.currentDeviceLocation(),
+		FPVLastRecord:   &lastRecord,
+		ArchivedAt:      time.Now(),
+	}
 }
 
 func (s *Store) currentDeviceLocation() *model.ScreenDeviceLocationResponse {
@@ -236,11 +331,12 @@ func (s *Store) insert(ctx context.Context, record model.IntrusionRecord) error 
 		ctx,
 		`INSERT OR IGNORE INTO intrusion_records (
 			id, target_id, target_type, model, serial, device, frequency, rssi,
+			signal_type, device_sn, valid, format,
 			first_seen, last_seen, duration_seconds, hit_count, source, sources_json, cracked,
 			device_location_json, drone_json, pilot_json, home_json, drone_trajectory_json, pilot_trajectory_json,
 			pilot_distance_m, drone_distance_m, drone_direction_deg, device_direction_deg,
-			height, altitude, speed, last_record_json, archived_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			height, altitude, speed, last_record_json, fpv_last_record_json, archived_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID,
 		record.TargetID,
 		string(record.TargetType),
@@ -249,6 +345,10 @@ func (s *Store) insert(ctx context.Context, record model.IntrusionRecord) error 
 		record.Device,
 		record.Frequency,
 		record.RSSI,
+		record.SignalType,
+		record.DeviceSN,
+		boolInt(record.Valid),
+		record.Format,
 		formatTime(record.FirstSeen),
 		formatTime(record.LastSeen),
 		record.DurationSeconds,
@@ -270,6 +370,7 @@ func (s *Store) insert(ctx context.Context, record model.IntrusionRecord) error 
 		nullableFloat(record.Altitude),
 		nullableFloat(record.Speed),
 		jsonString(record.LastRecord),
+		jsonString(record.FPVLastRecord),
 		formatTime(record.ArchivedAt),
 	)
 	if err != nil {
@@ -293,10 +394,11 @@ func (s *Store) List(ctx context.Context, options QueryOptions) ([]model.Intrusi
 	}
 
 	query := `SELECT id, target_id, target_type, model, serial, device, frequency, rssi,
+		signal_type, device_sn, valid, format,
 		first_seen, last_seen, duration_seconds, hit_count, source, sources_json, cracked,
 		device_location_json, drone_json, pilot_json, home_json, drone_trajectory_json, pilot_trajectory_json,
 		pilot_distance_m, drone_distance_m, drone_direction_deg, device_direction_deg,
-		height, altitude, speed, last_record_json, archived_at
+		height, altitude, speed, last_record_json, fpv_last_record_json, archived_at
 		FROM intrusion_records`
 	args := []any{}
 	conditions := []string{`NOT (lower(model) = ? AND cracked = 0)`}
@@ -312,6 +414,14 @@ func (s *Store) List(ctx context.Context, options QueryOptions) ([]model.Intrusi
 	if serialQuery := strings.TrimSpace(options.Serial); serialQuery != "" {
 		conditions = append(conditions, `lower(serial) LIKE ? ESCAPE '\'`)
 		args = append(args, likePattern(serialQuery))
+	}
+	if signalType := strings.TrimSpace(options.SignalType); signalType != "" {
+		conditions = append(conditions, `lower(signal_type) LIKE ? ESCAPE '\'`)
+		args = append(args, likePattern(signalType))
+	}
+	if deviceSN := strings.TrimSpace(options.DeviceSN); deviceSN != "" {
+		conditions = append(conditions, `lower(device_sn) LIKE ? ESCAPE '\'`)
+		args = append(args, likePattern(deviceSN))
 	}
 	if !options.DateFrom.IsZero() {
 		conditions = append(conditions, `last_seen >= ?`)
@@ -399,7 +509,7 @@ func (s *Store) PruneRetention(ctx context.Context, days int, now time.Time) (in
 func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 	var record model.IntrusionRecord
 	var targetType string
-	var cracked int
+	var cracked, valid int
 	var firstSeen, lastSeen, archivedAt string
 	var sourcesJSON sql.NullString
 	var deviceLocationJSON sql.NullString
@@ -407,7 +517,7 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 	var droneTrajectoryJSON, pilotTrajectoryJSON sql.NullString
 	var pilotDistanceM, droneDistanceM, droneDirectionDeg, deviceDirectionDeg sql.NullFloat64
 	var height, altitude, speed sql.NullFloat64
-	var lastRecordJSON sql.NullString
+	var lastRecordJSON, fpvLastRecordJSON sql.NullString
 
 	err := rows.Scan(
 		&record.ID,
@@ -418,6 +528,10 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 		&record.Device,
 		&record.Frequency,
 		&record.RSSI,
+		&record.SignalType,
+		&record.DeviceSN,
+		&valid,
+		&record.Format,
 		&firstSeen,
 		&lastSeen,
 		&record.DurationSeconds,
@@ -439,6 +553,7 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 		&altitude,
 		&speed,
 		&lastRecordJSON,
+		&fpvLastRecordJSON,
 		&archivedAt,
 	)
 	if err != nil {
@@ -447,6 +562,7 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 
 	record.TargetType = model.IntrusionTargetType(targetType)
 	record.Cracked = cracked != 0
+	record.Valid = valid != 0
 	record.FirstSeen = parseStoredTime(firstSeen)
 	record.LastSeen = parseStoredTime(lastSeen)
 	record.ArchivedAt = parseStoredTime(archivedAt)
@@ -464,7 +580,8 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 	record.Height = floatPtr(height)
 	record.Altitude = floatPtr(altitude)
 	record.Speed = floatPtr(speed)
-	record.LastRecord = decodeJSONValue[model.ScreenPositionLastRecord](lastRecordJSON)
+	record.LastRecord = decodeJSONPtr[model.ScreenPositionLastRecord](lastRecordJSON)
+	record.FPVLastRecord = decodeJSONPtr[model.ScreenFPVLastRecord](fpvLastRecordJSON)
 	return record, nil
 }
 
@@ -472,7 +589,7 @@ func scanRecord(rows *sql.Rows) (model.IntrusionRecord, error) {
 func ParseTargetType(value string) (model.IntrusionTargetType, error) {
 	targetType := model.IntrusionTargetType(strings.TrimSpace(value))
 	switch targetType {
-	case "", model.IntrusionTargetTypePosition:
+	case "", model.IntrusionTargetTypePosition, model.IntrusionTargetTypeFPV:
 		return targetType, nil
 	default:
 		return "", errors.New("invalid intrusion target type")

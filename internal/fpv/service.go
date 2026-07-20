@@ -71,6 +71,9 @@ func NewService(store *store.Store, options Options) *Service {
 
 // Run keeps the TCP server alive until ctx is cancelled.
 func (s *Service) Run(ctx context.Context) {
+	var connections sync.WaitGroup
+	defer connections.Wait()
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -88,7 +91,7 @@ func (s *Service) Run(ctx context.Context) {
 		}
 
 		s.setListenerState(true, "")
-		err = s.serveListener(ctx, listener)
+		err = s.serveListener(ctx, listener, &connections)
 		if ctx.Err() != nil {
 			return
 		}
@@ -181,7 +184,7 @@ func (s *Service) StopVideo(ctx context.Context) error {
 	return fmt.Errorf("stop fpv video: %w", lastErr)
 }
 
-func (s *Service) serveListener(ctx context.Context, listener net.Listener) error {
+func (s *Service) serveListener(ctx context.Context, listener net.Listener, connections *sync.WaitGroup) error {
 	listenerDone := make(chan struct{})
 	defer func() {
 		close(listenerDone)
@@ -204,7 +207,11 @@ func (s *Service) serveListener(ctx context.Context, listener net.Listener) erro
 			}
 			return fmt.Errorf("accept A3-F9 FPV connection: %w", err)
 		}
-		go s.handleConnection(ctx, conn)
+		connections.Add(1)
+		go func(conn net.Conn) {
+			defer connections.Done()
+			s.handleConnection(ctx, conn)
+		}(conn)
 	}
 }
 
@@ -217,14 +224,19 @@ func (s *Service) handleConnection(ctx context.Context, conn net.Conn) {
 	}()
 
 	done := make(chan struct{})
+	closerDone := make(chan struct{})
 	go func() {
+		defer close(closerDone)
 		select {
 		case <-ctx.Done():
 			_ = conn.Close()
 		case <-done:
 		}
 	}()
-	defer close(done)
+	defer func() {
+		close(done)
+		<-closerDone
+	}()
 
 	var buffer []byte
 	chunk := make([]byte, 4096)

@@ -79,7 +79,7 @@ type LingyunService interface {
 	Status() model.LingyunStatus
 }
 
-// IntrusionStore persists disappeared positioning targets.
+// IntrusionStore persists disappeared positioning and FPV targets.
 type IntrusionStore interface {
 	List(context.Context, intrusion.QueryOptions) ([]model.IntrusionRecord, error)
 	Delete(context.Context, []string) (int64, error)
@@ -867,6 +867,8 @@ func (s *Server) handleIntrusions(w http.ResponseWriter, r *http.Request) {
 		TargetType: targetType,
 		Model:      r.URL.Query().Get("model"),
 		Serial:     r.URL.Query().Get("serial"),
+		SignalType: r.URL.Query().Get("signalType"),
+		DeviceSN:   r.URL.Query().Get("deviceSn"),
 		DateFrom:   dateFrom,
 		DateTo:     dateTo,
 	})
@@ -2533,6 +2535,7 @@ func isScreenEvent(eventType string) bool {
 	case "screen.position.updated",
 		"screen.position.removed",
 		"screen.fpv.updated",
+		"screen.fpv.removed",
 		"screen.device_location.updated",
 		"screen.strike.updated":
 		return true

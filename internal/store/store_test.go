@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -831,6 +833,472 @@ func TestFPVExpiresAfterTenSeconds(t *testing.T) {
 	}
 }
 
+func TestFPVAggregationUsesDeviceSNAndMonotonicTimes(t *testing.T) {
+	state := New(10, 10)
+	base := time.Now().UTC()
+
+	initial, ok := state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1360,
+		RSSI:       -80,
+		SignalType: "FPV",
+		Valid:      false,
+		FirstSeen:  base,
+		LastSeen:   base,
+		Format:     "initial",
+		LastRecord: model.ScreenFPVLastRecord{Raw: "initial"},
+	})
+	if !ok {
+		t.Fatal("AddFPV(initial) rejected a valid target")
+	}
+
+	upgraded, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1360.2,
+		RSSI:       -60,
+		SignalType: "fpv",
+		DeviceSN:   "  SN-01  ",
+		Valid:      true,
+		FirstSeen:  base.Add(2 * time.Second),
+		LastSeen:   base.Add(2 * time.Second),
+		Format:     "current",
+		LastRecord: model.ScreenFPVLastRecord{Raw: "current"},
+	})
+	if upgraded.ID != initial.ID || upgraded.DeviceSN != "SN-01" {
+		t.Fatalf("anonymous upgrade = %#v, want id %q and normalized SN", upgraded, initial.ID)
+	}
+
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1500,
+		RSSI:       -10,
+		SignalType: "FPV",
+		DeviceSN:   "sn-01",
+		Valid:      false,
+		FirstSeen:  base.Add(-time.Second),
+		LastSeen:   base.Add(time.Second),
+		Format:     "stale",
+		LastRecord: model.ScreenFPVLastRecord{Raw: "stale"},
+	})
+	latest, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1360.3,
+		RSSI:       -55,
+		SignalType: "FPV",
+		DeviceSN:   "SN-01",
+		Valid:      false,
+		FirstSeen:  base.Add(3 * time.Second),
+		LastSeen:   base.Add(3 * time.Second),
+		Format:     "latest",
+		LastRecord: model.ScreenFPVLastRecord{Raw: "latest"},
+	})
+
+	if !latest.FirstSeen.Equal(base.Add(-time.Second)) {
+		t.Fatalf("first seen = %v, want earliest observation", latest.FirstSeen)
+	}
+	if !latest.LastSeen.Equal(base.Add(3*time.Second)) || latest.RSSI != -55 || latest.Format != "latest" {
+		t.Fatalf("latest fields were overwritten by an out-of-order frame: %#v", latest)
+	}
+	if latest.LastRecord.Raw != "latest" || latest.HitCount != 4 || !latest.EverValid || latest.Valid {
+		t.Fatalf("merged episode = %#v", latest)
+	}
+
+	other, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1360.3,
+		RSSI:       -40,
+		SignalType: "FPV",
+		DeviceSN:   "SN-02",
+		Valid:      true,
+		FirstSeen:  base.Add(4 * time.Second),
+		LastSeen:   base.Add(4 * time.Second),
+	})
+	otherUpdated, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency:  1500,
+		RSSI:       -35,
+		SignalType: "FPV",
+		DeviceSN:   "sn-02",
+		Valid:      true,
+		FirstSeen:  base.Add(5 * time.Second),
+		LastSeen:   base.Add(5 * time.Second),
+	})
+	if otherUpdated.ID != other.ID {
+		t.Fatalf("same SN created a second target: first=%q second=%q", other.ID, otherUpdated.ID)
+	}
+	if items := state.FPV(10); len(items) != 2 {
+		t.Fatalf("different non-empty SNs merged: %#v", items)
+	}
+}
+
+func TestSweepFPVArchivesOnlyEpisodesThatWereEverValid(t *testing.T) {
+	state := New(10, 10)
+	archiver := &memoryFPVArchiver{}
+	state.SetFPVArchiver(archiver)
+	events, unsubscribe := state.Subscribe(16)
+	defer unsubscribe()
+	base := time.Now().UTC()
+
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1360, RSSI: -80, SignalType: "FPV", Valid: false,
+		FirstSeen: base, LastSeen: base,
+	})
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1400, RSSI: -70, SignalType: "FPV", Valid: false,
+		FirstSeen: base, LastSeen: base,
+	})
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1400, RSSI: -60, SignalType: "FPV", Valid: true,
+		FirstSeen: base.Add(time.Second), LastSeen: base.Add(time.Second),
+	})
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1400, RSSI: -65, SignalType: "FPV", Valid: false,
+		FirstSeen: base.Add(2 * time.Second), LastSeen: base.Add(2 * time.Second),
+	})
+
+	if err := state.SweepFPV(context.Background(), base.Add(fpvTTL+3*time.Second)); err != nil {
+		t.Fatalf("SweepFPV() error = %v", err)
+	}
+	archived := archiver.Items()
+	if len(archived) != 1 {
+		t.Fatalf("archived targets = %#v, want one ever-valid episode", archived)
+	}
+	if archived[0].Frequency != 1400 || !archived[0].EverValid || archived[0].Valid || archived[0].HitCount != 3 {
+		t.Fatalf("archived target = %#v", archived[0])
+	}
+	if items := state.FPV(10); len(items) != 0 {
+		t.Fatalf("live targets after sweep = %#v, want empty", items)
+	}
+
+	removed := 0
+	for _, event := range drainStoreEvents(events) {
+		if event.Type == screenFPVRemovedType {
+			removed++
+		}
+	}
+	if removed != 2 {
+		t.Fatalf("removed events = %d, want 2", removed)
+	}
+}
+
+func TestFPVCapacityEvictionArchivesAndPublishesRemoval(t *testing.T) {
+	state := New(10, 1)
+	archiver := &memoryFPVArchiver{}
+	state.SetFPVArchiver(archiver)
+	events, unsubscribe := state.Subscribe(8)
+	defer unsubscribe()
+	base := time.Now().UTC()
+
+	first, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1360, RSSI: -80, SignalType: "FPV", Valid: true,
+		FirstSeen: base, LastSeen: base,
+	})
+	second, _ := state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1400, RSSI: -70, SignalType: "FPV", Valid: true,
+		FirstSeen: base.Add(time.Second), LastSeen: base.Add(time.Second),
+	})
+	if err := state.FlushFPVArchives(context.Background()); err != nil {
+		t.Fatalf("FlushFPVArchives() error = %v", err)
+	}
+
+	archived := archiver.Items()
+	if len(archived) != 1 || archived[0].ID != first.ID {
+		t.Fatalf("capacity archive = %#v, want first target", archived)
+	}
+	items := state.FPV(10)
+	if len(items) != 1 || items[0].ID != second.ID {
+		t.Fatalf("live targets = %#v, want second target", items)
+	}
+	gotEvents := drainStoreEvents(events)
+	if len(gotEvents) != 3 || gotEvents[0].Type != screenFPVUpdatedType ||
+		gotEvents[1].Type != screenFPVRemovedType || gotEvents[2].Type != screenFPVUpdatedType {
+		t.Fatalf("event order = %#v", gotEvents)
+	}
+	removedTarget, ok := gotEvents[1].Payload.(model.ScreenFPVTarget)
+	if !ok || removedTarget.ID != first.ID {
+		t.Fatalf("removed payload = %#v, want first target", gotEvents[1].Payload)
+	}
+}
+
+func TestConcurrentFPVCapacityEvictionNeverPublishesUpdateAfterRemoval(t *testing.T) {
+	const workers = 256
+	state := New(10, 1)
+	events, unsubscribe := state.Subscribe(workers * 3)
+	base := time.Now().UTC()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for index := 0; index < workers; index++ {
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			_, _ = state.AddFPV(model.ScreenFPVTarget{
+				Frequency:  float64(1000 + index),
+				RSSI:       -80,
+				SignalType: "FPV",
+				Valid:      true,
+				FirstSeen:  base.Add(time.Duration(index) * time.Nanosecond),
+				LastSeen:   base.Add(time.Duration(index) * time.Nanosecond),
+			})
+		}(index)
+	}
+	close(start)
+	wg.Wait()
+	unsubscribe()
+
+	removed := make(map[string]struct{})
+	for event := range events {
+		target, ok := event.Payload.(model.ScreenFPVTarget)
+		if !ok {
+			continue
+		}
+		switch event.Type {
+		case screenFPVRemovedType:
+			removed[target.ID] = struct{}{}
+		case screenFPVUpdatedType:
+			if _, wasRemoved := removed[target.ID]; wasRemoved {
+				t.Fatalf("target %q was updated after its removal event", target.ID)
+			}
+		}
+	}
+}
+
+func TestFPVArchiveQueueKeepsNewestCandidatesAtCapacity(t *testing.T) {
+	state := New(10, 1)
+	targets := addCapacityRetiredFPVTargets(t, state, fpvArchiveQueueLimit+3, time.Now().UTC())
+
+	state.mu.RLock()
+	dropped := state.fpvArchiveDropped
+	state.mu.RUnlock()
+	pending := state.nextFPVArchiveBatch(fpvArchiveQueueLimit)
+	if len(pending) != fpvArchiveQueueLimit {
+		t.Fatalf("pending archives = %d, want capacity %d", len(pending), fpvArchiveQueueLimit)
+	}
+	if dropped != 2 {
+		t.Fatalf("dropped archives = %d, want 2", dropped)
+	}
+	if pending[0].ID != targets[2].ID || pending[len(pending)-1].ID != targets[len(targets)-2].ID {
+		t.Fatalf("queue did not retain the newest retired candidates: first=%q last=%q", pending[0].ID, pending[len(pending)-1].ID)
+	}
+
+	archiver := &memoryFPVArchiver{}
+	state.SetFPVArchiver(archiver)
+	if err := state.FlushFPVArchives(context.Background()); err != nil {
+		t.Fatalf("FlushFPVArchives() error = %v", err)
+	}
+	archived := archiver.Items()
+	if len(archived) != fpvArchiveBatchSize {
+		t.Fatalf("archived batch = %d, want %d", len(archived), fpvArchiveBatchSize)
+	}
+	for index, target := range archived {
+		if target.ID != targets[index+2].ID {
+			t.Fatalf("archived[%d] = %q, want retained queue order %q", index, target.ID, targets[index+2].ID)
+		}
+	}
+}
+
+func TestFlushFPVArchivesProcessesOneBoundedBatch(t *testing.T) {
+	state := New(10, 1)
+	archiver := &memoryFPVArchiver{}
+	state.SetFPVArchiver(archiver)
+	addCapacityRetiredFPVTargets(t, state, fpvArchiveBatchSize+2, time.Now().UTC())
+
+	if err := state.FlushFPVArchives(context.Background()); err != nil {
+		t.Fatalf("first FlushFPVArchives() error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != fpvArchiveBatchSize {
+		t.Fatalf("first batch attempts = %d, want %d", attempts, fpvArchiveBatchSize)
+	}
+	state.mu.RLock()
+	pending := len(state.pendingFPV)
+	state.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("pending archives after first batch = %d, want 1", pending)
+	}
+
+	if err := state.FlushFPVArchives(context.Background()); err != nil {
+		t.Fatalf("second FlushFPVArchives() error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != fpvArchiveBatchSize+1 {
+		t.Fatalf("total attempts = %d, want %d", attempts, fpvArchiveBatchSize+1)
+	}
+}
+
+func TestFPVArchiveFailureUsesExponentialBackoffWithoutDuplicates(t *testing.T) {
+	state := New(10, 10)
+	archiver := &memoryFPVArchiver{failRemaining: 3}
+	state.SetFPVArchiver(archiver)
+	base := time.Now().UTC()
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1360, RSSI: -80, SignalType: "FPV", Valid: true,
+		FirstSeen: base, LastSeen: base,
+	})
+
+	failureAt := base.Add(fpvTTL + time.Second)
+	if err := state.SweepFPV(context.Background(), failureAt); err == nil {
+		t.Fatal("SweepFPV() error = nil, want injected archive failure")
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(fpvArchiveRetryBase/2)); err != nil {
+		t.Fatalf("SweepFPV() during first backoff error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != 1 {
+		t.Fatalf("attempts during first backoff = %d, want 1", attempts)
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(fpvArchiveRetryBase)); err == nil {
+		t.Fatal("second eligible SweepFPV() error = nil, want injected failure")
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(2*fpvArchiveRetryBase)); err != nil {
+		t.Fatalf("SweepFPV() during second backoff error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != 2 {
+		t.Fatalf("attempts during second backoff = %d, want 2", attempts)
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(3*fpvArchiveRetryBase)); err == nil {
+		t.Fatal("third eligible SweepFPV() error = nil, want injected failure")
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(6*fpvArchiveRetryBase)); err != nil {
+		t.Fatalf("SweepFPV() during third backoff error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != 3 {
+		t.Fatalf("attempts during third backoff = %d, want 3", attempts)
+	}
+	if err := state.SweepFPV(context.Background(), failureAt.Add(7*fpvArchiveRetryBase)); err != nil {
+		t.Fatalf("successful retry SweepFPV() error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != 4 {
+		t.Fatalf("archive attempts = %d, want three failures and one success", attempts)
+	}
+	if archived := archiver.Items(); len(archived) != 1 {
+		t.Fatalf("archived targets = %#v, want one non-duplicate record", archived)
+	}
+}
+
+func TestFPVArchiveRetryDelayIsCapped(t *testing.T) {
+	tests := []struct {
+		name     string
+		failures int
+		want     time.Duration
+	}{
+		{name: "first", failures: 1, want: time.Second},
+		{name: "second", failures: 2, want: 2 * time.Second},
+		{name: "sixth", failures: 6, want: 32 * time.Second},
+		{name: "capped", failures: 100, want: time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := fpvArchiveRetryDelay(test.failures); got != test.want {
+				t.Fatalf("fpvArchiveRetryDelay(%d) = %v, want %v", test.failures, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDrainFPVForceFlushIgnoresBackoffAndDrainsAllBatches(t *testing.T) {
+	state := New(10, 1)
+	archiver := &memoryFPVArchiver{failRemaining: fpvArchiveBatchSize}
+	state.SetFPVArchiver(archiver)
+	retiredCount := 2*fpvArchiveBatchSize + 4
+	addCapacityRetiredFPVTargets(t, state, retiredCount+1, time.Now().UTC())
+
+	if err := state.FlushFPVArchives(context.Background()); err == nil {
+		t.Fatal("initial FlushFPVArchives() error = nil, want injected batch failure")
+	}
+	if attempts := archiver.Attempts(); attempts != fpvArchiveBatchSize {
+		t.Fatalf("initial attempts = %d, want %d", attempts, fpvArchiveBatchSize)
+	}
+	if err := state.DrainFPV(context.Background()); err != nil {
+		t.Fatalf("DrainFPV() force flush error = %v", err)
+	}
+	if attempts := archiver.Attempts(); attempts != fpvArchiveBatchSize+retiredCount+1 {
+		t.Fatalf("force flush attempts = %d, want %d", attempts, fpvArchiveBatchSize+retiredCount+1)
+	}
+	if archived := archiver.Items(); len(archived) != retiredCount+1 {
+		t.Fatalf("force flush archived = %d, want %d", len(archived), retiredCount+1)
+	}
+	state.mu.RLock()
+	pending := len(state.pendingFPV)
+	state.mu.RUnlock()
+	if pending != 0 {
+		t.Fatalf("pending archives after force flush = %d, want 0", pending)
+	}
+}
+
+func TestDrainFPVForceFlushRetainsFailures(t *testing.T) {
+	state := New(10, 1)
+	archiver := &memoryFPVArchiver{failRemaining: 1}
+	state.SetFPVArchiver(archiver)
+	addCapacityRetiredFPVTargets(t, state, 2, time.Now().UTC())
+
+	if err := state.DrainFPV(context.Background()); err == nil {
+		t.Fatal("DrainFPV() error = nil, want injected archive failure")
+	}
+	state.mu.RLock()
+	pending := len(state.pendingFPV)
+	state.mu.RUnlock()
+	if pending != 1 {
+		t.Fatalf("pending archives after failed force flush = %d, want 1", pending)
+	}
+	if err := state.DrainFPV(context.Background()); err != nil {
+		t.Fatalf("retry DrainFPV() error = %v", err)
+	}
+	if archived := archiver.Items(); len(archived) != 2 {
+		t.Fatalf("archived targets after force retry = %d, want 2", len(archived))
+	}
+}
+
+func TestDrainFPVArchivesActiveEverValidTargets(t *testing.T) {
+	state := New(10, 10)
+	archiver := &memoryFPVArchiver{}
+	state.SetFPVArchiver(archiver)
+	base := time.Now().UTC()
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1360, RSSI: -80, SignalType: "FPV", Valid: true,
+		FirstSeen: base, LastSeen: base,
+	})
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1400, RSSI: -70, SignalType: "FPV", Valid: false,
+		FirstSeen: base, LastSeen: base,
+	})
+
+	if err := state.DrainFPV(context.Background()); err != nil {
+		t.Fatalf("DrainFPV() error = %v", err)
+	}
+	if archived := archiver.Items(); len(archived) != 1 || archived[0].Frequency != 1360 {
+		t.Fatalf("drained archive = %#v, want only ever-valid target", archived)
+	}
+	if items := state.FPV(10); len(items) != 0 {
+		t.Fatalf("live targets after drain = %#v, want empty", items)
+	}
+}
+
+func TestDrainFPVWaitForArchiveIsContextAware(t *testing.T) {
+	state := New(10, 10)
+	archiver := &blockingFPVArchiver{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	state.SetFPVArchiver(archiver)
+	base := time.Now().UTC()
+	_, _ = state.AddFPV(model.ScreenFPVTarget{
+		Frequency: 1360, RSSI: -80, SignalType: "FPV", Valid: true,
+		FirstSeen: base, LastSeen: base,
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- state.SweepFPV(context.Background(), base.Add(fpvTTL+time.Second))
+	}()
+	select {
+	case <-archiver.started:
+	case <-time.After(time.Second):
+		t.Fatal("first archive did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := state.DrainFPV(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("DrainFPV() error = %v, want context deadline", err)
+	}
+	close(archiver.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first SweepFPV() error = %v", err)
+	}
+}
+
 func TestExpiredPositionIsArchived(t *testing.T) {
 	state := New(10, 10)
 	archiver := &memoryPositionArchiver{}
@@ -888,6 +1356,88 @@ func TestActivePositionAndFPVAreNotArchived(t *testing.T) {
 type memoryPositionArchiver struct {
 	mu    sync.Mutex
 	items []model.ScreenPositionTarget
+}
+
+type memoryFPVArchiver struct {
+	mu            sync.Mutex
+	items         []model.ScreenFPVTarget
+	attempts      int
+	failRemaining int
+}
+
+func (a *memoryFPVArchiver) ArchiveFPVContext(_ context.Context, target model.ScreenFPVTarget) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attempts++
+	if a.failRemaining > 0 {
+		a.failRemaining--
+		return errors.New("injected archive failure")
+	}
+	a.items = append(a.items, target)
+	return nil
+}
+
+func (a *memoryFPVArchiver) Items() []model.ScreenFPVTarget {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]model.ScreenFPVTarget(nil), a.items...)
+}
+
+func (a *memoryFPVArchiver) Attempts() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.attempts
+}
+
+type blockingFPVArchiver struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *blockingFPVArchiver) ArchiveFPVContext(ctx context.Context, _ model.ScreenFPVTarget) error {
+	select {
+	case a.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-a.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func drainStoreEvents(events <-chan model.Event) []model.Event {
+	var drained []model.Event
+	for {
+		select {
+		case event := <-events:
+			drained = append(drained, event)
+		default:
+			return drained
+		}
+	}
+}
+
+func addCapacityRetiredFPVTargets(t *testing.T, state *Store, count int, base time.Time) []model.ScreenFPVTarget {
+	t.Helper()
+	targets := make([]model.ScreenFPVTarget, 0, count)
+	for index := 0; index < count; index++ {
+		seenAt := base.Add(time.Duration(index) * time.Nanosecond)
+		target, ok := state.AddFPV(model.ScreenFPVTarget{
+			Frequency:  float64(1000 + index),
+			RSSI:       -80,
+			SignalType: "FPV",
+			Valid:      true,
+			FirstSeen:  seenAt,
+			LastSeen:   seenAt,
+		})
+		if !ok {
+			t.Fatalf("AddFPV(%d) rejected a valid test target", index)
+		}
+		targets = append(targets, target)
+	}
+	return targets
 }
 
 func (a *memoryPositionArchiver) ArchivePosition(target model.ScreenPositionTarget) error {

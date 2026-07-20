@@ -2,6 +2,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -16,13 +18,22 @@ import (
 const (
 	defaultPositionTTL        = 20 * time.Second
 	fpvTTL                    = 10 * time.Second
+	fpvArchiveQueueLimit      = 4096
+	fpvArchiveBatchSize       = 64
+	fpvArchiveRetryBase       = time.Second
+	fpvArchiveRetryMax        = time.Minute
+	fpvArchiveDropLogInterval = time.Minute
 	screenPositionUpdatedType = "screen.position.updated"
 	screenPositionRemovedType = "screen.position.removed"
+	screenFPVUpdatedType      = "screen.fpv.updated"
+	screenFPVRemovedType      = "screen.fpv.removed"
 )
 
 // Store owns runtime records and event subscribers.
 type Store struct {
-	mu sync.RWMutex
+	mu             sync.RWMutex
+	fpvEventMu     sync.Mutex
+	fpvArchiveGate chan struct{}
 
 	maxPositions int
 	maxFPV       int
@@ -34,11 +45,19 @@ type Store struct {
 	manual    *model.GeoPoint
 	manualAt  *time.Time
 
-	positionArchiver PositionArchiver
-	expiredPositions []model.ScreenPositionTarget
-	positionSeq      uint64
-	fpvSeq           uint64
-	subscribers      map[chan model.Event]struct{}
+	positionArchiver        PositionArchiver
+	expiredPositions        []model.ScreenPositionTarget
+	fpvArchiver             FPVArchiver
+	pendingFPV              []model.ScreenFPVTarget
+	pendingFPVHead          int
+	fpvArchiveFailures      int
+	fpvArchiveRetryAt       time.Time
+	fpvArchiveDropped       uint64
+	fpvArchiveDropsSinceLog uint64
+	fpvArchiveLastDropLog   time.Time
+	positionSeq             uint64
+	fpvSeq                  uint64
+	subscribers             map[chan model.Event]struct{}
 }
 
 // PositionArchiver persists positioning targets that disappeared from the live list.
@@ -46,13 +65,24 @@ type PositionArchiver interface {
 	ArchivePosition(model.ScreenPositionTarget) error
 }
 
+// FPVArchiver persists FPV targets that disappeared from the live list.
+type FPVArchiver interface {
+	ArchiveFPVContext(context.Context, model.ScreenFPVTarget) error
+}
+
+type fpvArchiveKey struct {
+	id        string
+	firstSeen int64
+}
+
 // New creates a bounded runtime store.
 func New(maxPositions, maxFPV int) *Store {
 	return &Store{
-		maxPositions: max(1, maxPositions),
-		maxFPV:       max(1, maxFPV),
-		positionTTL:  defaultPositionTTL,
-		subscribers:  map[chan model.Event]struct{}{},
+		maxPositions:   max(1, maxPositions),
+		maxFPV:         max(1, maxFPV),
+		positionTTL:    defaultPositionTTL,
+		fpvArchiveGate: make(chan struct{}, 1),
+		subscribers:    map[chan model.Event]struct{}{},
 		location: model.ScreenDeviceLocationResponse{
 			Source: "none",
 			Valid:  false,
@@ -87,6 +117,15 @@ func (s *Store) SetPositionArchiver(archiver PositionArchiver) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.positionArchiver = archiver
+}
+
+// SetFPVArchiver sets the archiver used when FPV targets retire.
+func (s *Store) SetFPVArchiver(archiver FPVArchiver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fpvArchiver = archiver
+	s.fpvArchiveFailures = 0
+	s.fpvArchiveRetryAt = time.Time{}
 }
 
 // UpdateDeviceLocation stores the latest receiver/device position.
@@ -326,6 +365,7 @@ func (s *Store) Positions(limit int) []model.ScreenPositionTarget {
 // AddFPV merges an FPV signal and publishes an update.
 func (s *Store) AddFPV(target model.ScreenFPVTarget) (model.ScreenFPVTarget, bool) {
 	target.SignalType = strings.TrimSpace(target.SignalType)
+	target.DeviceSN = strings.TrimSpace(target.DeviceSN)
 	if target.Frequency <= 0 || target.SignalType == "" {
 		return model.ScreenFPVTarget{}, false
 	}
@@ -335,43 +375,68 @@ func (s *Store) AddFPV(target model.ScreenFPVTarget) (model.ScreenFPVTarget, boo
 	if target.FirstSeen.IsZero() {
 		target.FirstSeen = target.LastSeen
 	}
+	target.EverValid = target.EverValid || target.Valid
 
+	s.fpvEventMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.pruneFPVLocked(target.LastSeen)
+	retired := s.pruneFPVLocked(time.Now())
 	index := s.findFPVLocked(target)
 	if index == -1 {
 		s.fpvSeq++
 		target.ID = fmt.Sprintf("fpv-%d-%d", target.LastSeen.UnixNano(), s.fpvSeq)
 		target.HitCount = 1
 		s.fpv = append(s.fpv, target)
-		trimNewestFPV(&s.fpv, s.maxFPV)
+		retired = append(retired, s.retireFPVLocked(trimNewestFPV(&s.fpv, s.maxFPV))...)
 		result := cloneFPV(target)
-		go s.Publish(model.Event{Type: "screen.fpv.updated", Time: result.LastSeen, Payload: result})
+		live := s.hasFPVLocked(result.ID)
+		s.mu.Unlock()
+		s.publishRetiredFPV(retired)
+		if live {
+			s.Publish(model.Event{Type: screenFPVUpdatedType, Time: result.LastSeen, Payload: result})
+		}
+		s.fpvEventMu.Unlock()
+		s.reportFPVArchiveDrops(false)
 		return result, true
 	}
 
 	merged := s.fpv[index]
-	merged.RSSI = target.RSSI
-	merged.Valid = target.Valid
-	merged.DeviceSN = firstNonEmpty(target.DeviceSN, merged.DeviceSN)
-	merged.Format = target.Format
-	merged.LastSeen = target.LastSeen
+	if target.FirstSeen.Before(merged.FirstSeen) {
+		merged.FirstSeen = target.FirstSeen
+	}
+	if merged.DeviceSN == "" && target.DeviceSN != "" {
+		merged.DeviceSN = target.DeviceSN
+	}
+	merged.EverValid = merged.EverValid || target.EverValid || target.Valid
 	merged.HitCount++
-	merged.LastRecord = target.LastRecord
+	if !target.LastSeen.Before(merged.LastSeen) {
+		merged.Frequency = target.Frequency
+		merged.RSSI = target.RSSI
+		merged.SignalType = target.SignalType
+		merged.Valid = target.Valid
+		merged.Format = target.Format
+		merged.LastSeen = target.LastSeen
+		merged.LastRecord = target.LastRecord
+	}
 	s.fpv[index] = merged
 	result := cloneFPV(merged)
-	go s.Publish(model.Event{Type: "screen.fpv.updated", Time: result.LastSeen, Payload: result})
+	s.mu.Unlock()
+	s.publishRetiredFPV(retired)
+	s.Publish(model.Event{Type: screenFPVUpdatedType, Time: result.LastSeen, Payload: result})
+	s.fpvEventMu.Unlock()
+	s.reportFPVArchiveDrops(false)
 	return result, true
 }
 
 // FPV returns latest FPV targets.
 func (s *Store) FPV(limit int) []model.ScreenFPVTarget {
+	s.fpvEventMu.Lock()
 	s.mu.Lock()
-	s.pruneFPVLocked(time.Now())
+	retired := s.pruneFPVLocked(time.Now())
 	items := latestByFPVLastSeen(s.fpv, limit)
 	s.mu.Unlock()
+	s.publishRetiredFPV(retired)
+	s.fpvEventMu.Unlock()
+	s.reportFPVArchiveDrops(false)
 	return items
 }
 
@@ -381,15 +446,196 @@ func (s *Store) FPVTarget(id string) (model.ScreenFPVTarget, bool) {
 	if id == "" {
 		return model.ScreenFPVTarget{}, false
 	}
+	s.fpvEventMu.Lock()
 	s.mu.Lock()
-	s.pruneFPVLocked(time.Now())
-	defer s.mu.Unlock()
+	retired := s.pruneFPVLocked(time.Now())
+	var result model.ScreenFPVTarget
+	found := false
 	for _, item := range s.fpv {
 		if item.ID == id {
-			return cloneFPV(item), true
+			result = cloneFPV(item)
+			found = true
+			break
 		}
 	}
-	return model.ScreenFPVTarget{}, false
+	s.mu.Unlock()
+	s.publishRetiredFPV(retired)
+	s.fpvEventMu.Unlock()
+	s.reportFPVArchiveDrops(false)
+	return result, found
+}
+
+// SweepFPV retires expired FPV targets and retries one bounded archive batch.
+func (s *Store) SweepFPV(ctx context.Context, now time.Time) error {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.fpvEventMu.Lock()
+	s.mu.Lock()
+	retired := s.pruneFPVLocked(now)
+	s.mu.Unlock()
+	s.publishRetiredFPV(retired)
+	s.fpvEventMu.Unlock()
+	s.reportFPVArchiveDrops(false)
+	return s.flushFPVArchives(ctx, now, false)
+}
+
+// DrainFPV retires every live FPV target and synchronously flushes pending archives.
+func (s *Store) DrainFPV(ctx context.Context) error {
+	s.fpvEventMu.Lock()
+	s.mu.Lock()
+	retired := s.retireFPVLocked(s.fpv)
+	clear(s.fpv)
+	s.fpv = nil
+	s.mu.Unlock()
+	s.publishRetiredFPV(retired)
+	s.fpvEventMu.Unlock()
+	s.reportFPVArchiveDrops(true)
+	return s.flushFPVArchives(ctx, time.Now(), true)
+}
+
+// FlushFPVArchives processes one bounded archive batch when retry backoff allows it.
+func (s *Store) FlushFPVArchives(ctx context.Context) error {
+	return s.flushFPVArchives(ctx, time.Now(), false)
+}
+
+func (s *Store) flushFPVArchives(ctx context.Context, now time.Time, force bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	select {
+	case s.fpvArchiveGate <- struct{}{}:
+		defer func() { <-s.fpvArchiveGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	s.mu.RLock()
+	archiver := s.fpvArchiver
+	pendingCount := len(s.pendingFPV)
+	retryAt := s.fpvArchiveRetryAt
+	s.mu.RUnlock()
+	if archiver == nil || pendingCount == 0 || (!force && now.Before(retryAt)) {
+		return nil
+	}
+
+	budget := fpvArchiveBatchSize
+	if force {
+		budget = pendingCount
+	}
+	archiveErrors := make([]error, 0)
+	attempted := false
+	hadFailure := false
+	for budget > 0 {
+		batch := s.nextFPVArchiveBatch(min(fpvArchiveBatchSize, budget))
+		if len(batch) == 0 {
+			break
+		}
+		attempted = true
+		succeeded, failed, batchErr := archiveFPVBatch(ctx, archiver, batch)
+		s.applyFPVArchiveBatch(succeeded, failed)
+		if batchErr != nil {
+			hadFailure = true
+			archiveErrors = append(archiveErrors, batchErr)
+		}
+		budget -= len(batch)
+		if !force || ctx.Err() != nil {
+			break
+		}
+	}
+	s.updateFPVArchiveBackoff(now, attempted, hadFailure)
+	return errors.Join(archiveErrors...)
+}
+
+func (s *Store) nextFPVArchiveBatch(limit int) []model.ScreenFPVTarget {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	limit = min(limit, len(s.pendingFPV))
+	batch := make([]model.ScreenFPVTarget, limit)
+	for index := range batch {
+		batch[index] = cloneFPV(s.pendingFPV[(s.pendingFPVHead+index)%len(s.pendingFPV)])
+	}
+	return batch
+}
+
+func archiveFPVBatch(
+	ctx context.Context,
+	archiver FPVArchiver,
+	batch []model.ScreenFPVTarget,
+) (map[fpvArchiveKey]struct{}, map[fpvArchiveKey]struct{}, error) {
+	succeeded := make(map[fpvArchiveKey]struct{}, len(batch))
+	failed := make(map[fpvArchiveKey]struct{}, len(batch))
+	archiveErrors := make([]error, 0)
+	for _, target := range batch {
+		key := archiveKey(target)
+		if err := archiver.ArchiveFPVContext(ctx, cloneFPV(target)); err != nil {
+			failed[key] = struct{}{}
+			archiveErrors = append(archiveErrors, fmt.Errorf("archive FPV target %s: %w", target.ID, err))
+			continue
+		}
+		succeeded[key] = struct{}{}
+	}
+	return succeeded, failed, errors.Join(archiveErrors...)
+}
+
+func (s *Store) applyFPVArchiveBatch(
+	succeeded map[fpvArchiveKey]struct{},
+	failed map[fpvArchiveKey]struct{},
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	original := s.pendingFPV
+	remaining := make([]model.ScreenFPVTarget, 0, len(original))
+	retryTargets := make([]model.ScreenFPVTarget, 0, len(failed))
+	for offset := 0; offset < len(original); offset++ {
+		target := original[(s.pendingFPVHead+offset)%len(original)]
+		key := archiveKey(target)
+		if _, ok := succeeded[key]; ok {
+			continue
+		}
+		if _, ok := failed[key]; ok {
+			retryTargets = append(retryTargets, target)
+			continue
+		}
+		remaining = append(remaining, target)
+	}
+	remaining = append(remaining, retryTargets...)
+	clear(original)
+	s.pendingFPV = remaining
+	s.pendingFPVHead = 0
+}
+
+func (s *Store) updateFPVArchiveBackoff(now time.Time, attempted, failed bool) {
+	if !attempted {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingFPV) == 0 || !failed {
+		s.fpvArchiveFailures = 0
+		s.fpvArchiveRetryAt = time.Time{}
+		return
+	}
+	s.fpvArchiveFailures++
+	s.fpvArchiveRetryAt = now.Add(fpvArchiveRetryDelay(s.fpvArchiveFailures))
+}
+
+func fpvArchiveRetryDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return fpvArchiveRetryBase
+	}
+	delay := fpvArchiveRetryBase
+	for attempt := 1; attempt < failures && delay < fpvArchiveRetryMax; attempt++ {
+		if delay > fpvArchiveRetryMax/2 {
+			return fpvArchiveRetryMax
+		}
+		delay *= 2
+	}
+	return min(delay, fpvArchiveRetryMax)
 }
 
 // Subscribe registers an event subscriber.
@@ -490,14 +736,68 @@ func (s *Store) removeUncrackedDIDScreenPositionByCorrelationIDLocked(correlatio
 }
 
 func (s *Store) findFPVLocked(target model.ScreenFPVTarget) int {
-	for index, existing := range s.fpv {
-		sameFrequency := math.Abs(existing.Frequency-target.Frequency) < 0.5
-		sameType := strings.EqualFold(existing.SignalType, target.SignalType)
-		if sameFrequency && sameType {
-			return index
+	targetSN := strings.TrimSpace(target.DeviceSN)
+	if targetSN != "" {
+		for index, existing := range s.fpv {
+			existingSN := strings.TrimSpace(existing.DeviceSN)
+			if existingSN != "" && strings.EqualFold(existingSN, targetSN) {
+				return index
+			}
 		}
+
+		candidate := -1
+		for index, existing := range s.fpv {
+			if strings.TrimSpace(existing.DeviceSN) != "" || !sameFPVFrequencyAndType(existing, target) {
+				continue
+			}
+			if candidate != -1 {
+				return -1
+			}
+			candidate = index
+		}
+		return candidate
+	}
+
+	anonymousCandidate := -1
+	knownCandidate := -1
+	for index, existing := range s.fpv {
+		if !sameFPVFrequencyAndType(existing, target) {
+			continue
+		}
+		if strings.TrimSpace(existing.DeviceSN) == "" {
+			if anonymousCandidate != -1 {
+				return -1
+			}
+			anonymousCandidate = index
+			continue
+		}
+		if knownCandidate != -1 {
+			knownCandidate = -2
+			continue
+		}
+		knownCandidate = index
+	}
+	if anonymousCandidate != -1 {
+		return anonymousCandidate
+	}
+	if knownCandidate >= 0 {
+		return knownCandidate
 	}
 	return -1
+}
+
+func (s *Store) hasFPVLocked(id string) bool {
+	for _, target := range s.fpv {
+		if target.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func sameFPVFrequencyAndType(left, right model.ScreenFPVTarget) bool {
+	return math.Abs(left.Frequency-right.Frequency) < 0.5 &&
+		strings.EqualFold(left.SignalType, right.SignalType)
 }
 
 func (s *Store) prunePositionsLocked(now time.Time) {
@@ -517,15 +817,81 @@ func (s *Store) prunePositionsLocked(now time.Time) {
 	s.positions = active
 }
 
-func (s *Store) pruneFPVLocked(now time.Time) {
+func (s *Store) pruneFPVLocked(now time.Time) []model.ScreenFPVTarget {
 	active := s.fpv[:0]
+	retired := make([]model.ScreenFPVTarget, 0)
 	for _, target := range s.fpv {
 		if now.Sub(target.LastSeen) <= fpvTTL {
 			active = append(active, target)
+			continue
 		}
+		retired = append(retired, target)
 	}
 	clear(s.fpv[len(active):])
 	s.fpv = active
+	return s.retireFPVLocked(retired)
+}
+
+func (s *Store) retireFPVLocked(targets []model.ScreenFPVTarget) []model.ScreenFPVTarget {
+	retired := make([]model.ScreenFPVTarget, 0, len(targets))
+	for _, target := range targets {
+		target = cloneFPV(target)
+		retired = append(retired, target)
+		if target.EverValid {
+			s.enqueueFPVArchiveLocked(target)
+		}
+	}
+	return retired
+}
+
+func (s *Store) enqueueFPVArchiveLocked(target model.ScreenFPVTarget) {
+	target = cloneFPV(target)
+	if len(s.pendingFPV) < fpvArchiveQueueLimit {
+		s.pendingFPV = append(s.pendingFPV, target)
+		return
+	}
+	s.pendingFPV[s.pendingFPVHead] = target
+	s.pendingFPVHead = (s.pendingFPVHead + 1) % len(s.pendingFPV)
+	s.fpvArchiveDropped++
+	s.fpvArchiveDropsSinceLog++
+}
+
+func (s *Store) publishRetiredFPV(targets []model.ScreenFPVTarget) {
+	for _, target := range targets {
+		s.Publish(model.Event{
+			Type:    screenFPVRemovedType,
+			Time:    time.Now(),
+			Payload: cloneFPV(target),
+		})
+	}
+}
+
+func (s *Store) reportFPVArchiveDrops(force bool) {
+	now := time.Now()
+	s.mu.Lock()
+	if s.fpvArchiveDropsSinceLog == 0 ||
+		(!force && !s.fpvArchiveLastDropLog.IsZero() && now.Sub(s.fpvArchiveLastDropLog) < fpvArchiveDropLogInterval) {
+		s.mu.Unlock()
+		return
+	}
+	dropped := s.fpvArchiveDropsSinceLog
+	total := s.fpvArchiveDropped
+	pending := len(s.pendingFPV)
+	s.fpvArchiveDropsSinceLog = 0
+	s.fpvArchiveLastDropLog = now
+	s.mu.Unlock()
+
+	slog.Warn(
+		"FPV 待归档队列已满，已丢弃最旧候选",
+		"dropped", dropped,
+		"droppedTotal", total,
+		"pending", pending,
+		"capacity", fpvArchiveQueueLimit,
+	)
+}
+
+func archiveKey(target model.ScreenFPVTarget) fpvArchiveKey {
+	return fpvArchiveKey{id: target.ID, firstSeen: target.FirstSeen.UnixNano()}
 }
 
 func mergePosition(current, incoming model.ScreenPositionTarget) model.ScreenPositionTarget {
@@ -834,14 +1200,17 @@ func trimNewestPositions(items *[]model.ScreenPositionTarget, limit int) {
 	*items = (*items)[:limit]
 }
 
-func trimNewestFPV(items *[]model.ScreenFPVTarget, limit int) {
+func trimNewestFPV(items *[]model.ScreenFPVTarget, limit int) []model.ScreenFPVTarget {
 	if len(*items) <= limit {
-		return
+		return nil
 	}
 	slices.SortFunc(*items, func(a, b model.ScreenFPVTarget) int {
 		return b.LastSeen.Compare(a.LastSeen)
 	})
+	retired := slices.Clone((*items)[limit:])
+	clear((*items)[limit:])
 	*items = (*items)[:limit]
+	return retired
 }
 
 func withDeviceRelations(

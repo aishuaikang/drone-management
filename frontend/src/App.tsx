@@ -102,6 +102,7 @@ import type {
   InterferenceReportStatus,
   InterferenceReportSummary,
   IntrusionRecord,
+  IntrusionTargetType,
   LicenseInfo,
   LingyunDeviceSettings,
   LingyunDeviceType,
@@ -366,6 +367,9 @@ const labels: Record<Locale, Record<string, string>> = {
     valid: "有效",
     invalid: "无效",
     format: "格式",
+    signalType: "信号类型",
+    deviceSn: "设备 SN",
+    hitCount: "命中次数",
     viewVideo: "查看视频",
     fpvVideo: "FPV 视频",
     videoLoading: "正在连接视频流",
@@ -623,6 +627,13 @@ const labels: Record<Locale, Record<string, string>> = {
     deleteInterferenceReportTitle: "删除干扰报告",
     deleteInterferenceReportMessage: "确定删除这条失败的干扰报告吗？删除后无法恢复。",
     intrusionList: "目标入侵列表",
+    targetType: "目标类型",
+    intrusionTypeAll: "全部",
+    intrusionTypePosition: "定位",
+    intrusionTypeFPV: "FPV",
+    target: "目标",
+    identity: "标识",
+    details: "详情",
     fpvRecordList: "FPV 图传记录",
     intrusionMapTitle: "入侵坐标地图",
     whitelistManagement: "白名单管理",
@@ -671,6 +682,7 @@ const labels: Record<Locale, Record<string, string>> = {
     recordReady: "可播放",
     recordFailed: "失败",
     signalTypeFilter: "信号类型",
+    deviceSnFilter: "设备 SN",
     createdAt: "创建时间",
     whitelist: "白名单",
     whitelisted: "已在白名单",
@@ -781,6 +793,9 @@ const labels: Record<Locale, Record<string, string>> = {
     valid: "Valid",
     invalid: "Invalid",
     format: "Format",
+    signalType: "Signal type",
+    deviceSn: "Device SN",
+    hitCount: "Hits",
     viewVideo: "View video",
     fpvVideo: "FPV video",
     videoLoading: "Connecting video stream",
@@ -1038,6 +1053,13 @@ const labels: Record<Locale, Record<string, string>> = {
     deleteInterferenceReportTitle: "Delete Interference Report",
     deleteInterferenceReportMessage: "Delete this failed interference report? This cannot be undone.",
     intrusionList: "Intrusion List",
+    targetType: "Target type",
+    intrusionTypeAll: "All",
+    intrusionTypePosition: "Position",
+    intrusionTypeFPV: "FPV",
+    target: "Target",
+    identity: "Identity",
+    details: "Details",
     fpvRecordList: "FPV Video Records",
     intrusionMapTitle: "Intrusion Map",
     whitelistManagement: "Whitelist",
@@ -1086,6 +1108,7 @@ const labels: Record<Locale, Record<string, string>> = {
     recordReady: "Ready",
     recordFailed: "Failed",
     signalTypeFilter: "Signal",
+    deviceSnFilter: "Device SN",
     createdAt: "Created",
     whitelist: "Whitelist",
     whitelisted: "Whitelisted",
@@ -1386,6 +1409,11 @@ export function App() {
         if (event.payload) {
           setStreamError("");
           setFPV((items) => mergeFPV(items, event.payload!, targetLimit));
+        }
+      },
+      onFPVRemoved: (event) => {
+        if (event.payload) {
+          setFPV((items) => removeFPV(items, event.payload!));
         }
       },
       onDeviceLocation: (event) => {
@@ -4874,8 +4902,11 @@ function IntrusionsManagement({
   const [nextOffset, setNextOffset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [targetTypeFilter, setTargetTypeFilter] = useState<"all" | IntrusionTargetType>("all");
   const [modelQuery, setModelQuery] = useState("");
   const [serialQuery, setSerialQuery] = useState("");
+  const [signalTypeQuery, setSignalTypeQuery] = useState("");
+  const [deviceSnQuery, setDeviceSnQuery] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [banner, setBanner] = useState("");
@@ -4886,14 +4917,59 @@ function IntrusionsManagement({
   const [mapRecord, setMapRecord] = useState<IntrusionRecord | null>(null);
   const loadRequestRef = useRef(0);
 
+  const resetRecordsForFilterChange = () => {
+    loadRequestRef.current += 1;
+    setLoading(true);
+    setRecords([]);
+    setSelectedIds([]);
+    setHasMore(false);
+    setNextOffset(0);
+    setDeleteConfirmOpen(false);
+    setMapRecord(null);
+    setBanner("");
+  };
+
+  const changeTargetTypeFilter = (nextTargetType: "all" | IntrusionTargetType) => {
+    if (nextTargetType === targetTypeFilter) {
+      return;
+    }
+    resetRecordsForFilterChange();
+    setTargetTypeFilter(nextTargetType);
+  };
+
+  const clearFilters = () => {
+    const hasActiveFilters = targetTypeFilter !== "all"
+      || modelQuery !== ""
+      || serialQuery !== ""
+      || signalTypeQuery !== ""
+      || deviceSnQuery !== ""
+      || dateFrom !== ""
+      || dateTo !== "";
+    if (!hasActiveFilters) {
+      setBanner("");
+      return;
+    }
+    resetRecordsForFilterChange();
+    setTargetTypeFilter("all");
+    setModelQuery("");
+    setSerialQuery("");
+    setSignalTypeQuery("");
+    setDeviceSnQuery("");
+    setDateFrom("");
+    setDateTo("");
+  };
+
   const loadRecords = useCallback(async (offset: number, append: boolean, clearBanner = true) => {
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
     setLoading(true);
     try {
       const response = await getIntrusions(pageSize, offset, {
-        model: modelQuery,
-        serial: serialQuery,
+        type: targetTypeFilter === "all" ? undefined : targetTypeFilter,
+        model: targetTypeFilter === "position" ? modelQuery : undefined,
+        serial: targetTypeFilter === "position" ? serialQuery : undefined,
+        signalType: targetTypeFilter === "fpv" ? signalTypeQuery : undefined,
+        deviceSn: targetTypeFilter === "fpv" ? deviceSnQuery : undefined,
         dateFrom,
         dateTo,
       });
@@ -4920,7 +4996,7 @@ function IntrusionsManagement({
         setLoading(false);
       }
     }
-  }, [dateFrom, dateTo, modelQuery, serialQuery]);
+  }, [dateFrom, dateTo, deviceSnQuery, modelQuery, serialQuery, signalTypeQuery, targetTypeFilter]);
 
   useEffect(() => {
     void loadRecords(0, false);
@@ -4929,9 +5005,11 @@ function IntrusionsManagement({
   const visibleRecords = records;
 
   const selectedCount = selectedIds.length;
-  const totalTrajectoryCount = useMemo(() => visibleRecords.reduce((sum, record) => (
-    sum + (record.droneTrajectory?.length ?? 0) + (record.pilotTrajectory?.length ?? 0)
-  ), 0), [visibleRecords]);
+  const positionRecordCount = useMemo(
+    () => visibleRecords.filter((record) => record.targetType === "position").length,
+    [visibleRecords],
+  );
+  const fpvRecordCount = visibleRecords.length - positionRecordCount;
   const allVisibleSelected = visibleRecords.length > 0 && visibleRecords.every((record) => selectedIds.includes(record.id));
 
   const toggleRecordSelected = (id: string) => {
@@ -4950,14 +5028,18 @@ function IntrusionsManagement({
   };
 
   const deleteSelectedRecords = async () => {
-    if (!selectedIds.length) {
+    if (!selectedIds.length || loading || deleteBusy) {
       return;
     }
+    const requestGeneration = loadRequestRef.current;
     setDeleteBusy(true);
     try {
       const response = await deleteIntrusions({ ids: selectedIds });
       setSelectedIds([]);
       setDeleteConfirmOpen(false);
+      if (requestGeneration !== loadRequestRef.current) {
+        return;
+      }
       const reloaded = await loadRecords(0, false, false);
       if (reloaded) {
         setBanner(`${t.deletedRecords}: ${response.deleted}`);
@@ -5054,7 +5136,7 @@ function IntrusionsManagement({
             {exporting ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Download size={14} aria-hidden="true" />}
             <span>{exporting ? t.exporting : t.exportReport}</span>
           </button>
-          <button type="button" disabled={!selectedCount || deleteBusy} onClick={() => setDeleteConfirmOpen(true)}>
+          <button type="button" disabled={!selectedCount || loading || deleteBusy} onClick={() => setDeleteConfirmOpen(true)}>
             {deleteBusy ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
             <span>{t.deleteSelected}</span>
           </button>
@@ -5064,20 +5146,68 @@ function IntrusionsManagement({
       <div className="screen-management__summary" aria-label={t.intrusionList}>
         <span>{t.recordCount}: {visibleRecords.length}</span>
         <span>{t.selectedCount}: {selectedCount}</span>
-        <span>{t.trajectoryCount}: {totalTrajectoryCount}</span>
+        <span>{t.intrusionTypePosition}: {positionRecordCount}</span>
+        <span>{t.intrusionTypeFPV}: {fpvRecordCount}</span>
       </div>
 
-      <div className="screen-management__filters" aria-label={t.filter}>
-        <label>
-          <Search size={13} aria-hidden="true" />
-          <span>{t.modelFilter}</span>
-          <input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} />
-        </label>
-        <label>
-          <Search size={13} aria-hidden="true" />
-          <span>{t.serialFilter}</span>
-          <input value={serialQuery} onChange={(event) => setSerialQuery(event.target.value)} />
-        </label>
+      <div className="screen-management__filters screen-management__filters--intrusions" aria-label={t.filter}>
+        <div className="screen-intrusion-type-filter" role="group" aria-label={t.targetType}>
+          <button
+            type="button"
+            className={targetTypeFilter === "all" ? "active" : undefined}
+            aria-pressed={targetTypeFilter === "all"}
+            onClick={() => changeTargetTypeFilter("all")}
+          >
+            <ListFilter size={13} aria-hidden="true" />
+            <span>{t.intrusionTypeAll}</span>
+          </button>
+          <button
+            type="button"
+            className={targetTypeFilter === "position" ? "active" : undefined}
+            aria-pressed={targetTypeFilter === "position"}
+            onClick={() => changeTargetTypeFilter("position")}
+          >
+            <LocateFixed size={13} aria-hidden="true" />
+            <span>{t.intrusionTypePosition}</span>
+          </button>
+          <button
+            type="button"
+            className={targetTypeFilter === "fpv" ? "active" : undefined}
+            aria-pressed={targetTypeFilter === "fpv"}
+            onClick={() => changeTargetTypeFilter("fpv")}
+          >
+            <Radio size={13} aria-hidden="true" />
+            <span>{t.intrusionTypeFPV}</span>
+          </button>
+        </div>
+        {targetTypeFilter === "position" ? (
+          <>
+            <label>
+              <Search size={13} aria-hidden="true" />
+              <span>{t.modelFilter}</span>
+              <input value={modelQuery} onChange={(event) => setModelQuery(event.target.value)} />
+            </label>
+            <label>
+              <Search size={13} aria-hidden="true" />
+              <span>{t.serialFilter}</span>
+              <input value={serialQuery} onChange={(event) => setSerialQuery(event.target.value)} />
+            </label>
+          </>
+        ) : null}
+        {targetTypeFilter === "fpv" ? (
+          <>
+            <label>
+              <Search size={13} aria-hidden="true" />
+              <span>{t.signalTypeFilter}</span>
+              <input value={signalTypeQuery} onChange={(event) => setSignalTypeQuery(event.target.value)} />
+            </label>
+            <label>
+              <Search size={13} aria-hidden="true" />
+              <span>{t.deviceSnFilter}</span>
+              <input value={deviceSnQuery} onChange={(event) => setDeviceSnQuery(event.target.value)} />
+            </label>
+          </>
+        ) : null}
         <label>
           <span>{t.dateFrom}</span>
           <input type="date" value={dateFrom} onChange={(event) => {
@@ -5090,12 +5220,7 @@ function IntrusionsManagement({
           <span>{t.dateTo}</span>
           <input type="date" min={dateFrom || undefined} value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
         </label>
-        <button type="button" onClick={() => {
-          setModelQuery("");
-          setSerialQuery("");
-          setDateFrom("");
-          setDateTo("");
-        }}>
+        <button type="button" onClick={clearFilters}>
           <X size={13} aria-hidden="true" />
           <span>{t.clearFilters}</span>
         </button>
@@ -5107,16 +5232,17 @@ function IntrusionsManagement({
         <table className="screen-management-table screen-management-table--intrusions">
           <colgroup>
             <col className="screen-management-table__select-col" />
+            <col className="screen-management-table__status-col" />
             <col className="screen-management-table__model-col" />
             <col className="screen-management-table__identity-col" />
             <col className="screen-management-table__frequency-col" />
             <col className="screen-management-table__signal-col" />
             <col className="screen-management-table__time-col" />
             <col className="screen-management-table__time-col" />
-	            <col className="screen-management-table__duration-col" />
-	            <col className="screen-management-table__coordinates-col" />
-	            <col className="screen-management-table__replay-col" />
-	            <col className="screen-management-table__metric-col" />
+            <col className="screen-management-table__duration-col" />
+            <col className="screen-management-table__coordinates-col" />
+            <col className="screen-management-table__replay-col" />
+            <col className="screen-management-table__metric-col" />
             <col className="screen-management-table__metric-col" />
             <col className="screen-management-table__metric-col" />
             <col className="screen-management-table__metric-col" />
@@ -5126,16 +5252,17 @@ function IntrusionsManagement({
               <th>
                 <input type="checkbox" checked={allVisibleSelected} onChange={toggleVisibleSelected} aria-label={t.selectedCount} />
               </th>
-              <th>{t.model}</th>
-              <th>{t.serial}</th>
+              <th>{t.targetType}</th>
+              <th>{t.target}</th>
+              <th>{t.identity}</th>
               <th>{t.frequency}</th>
               <th>{t.rssi}</th>
               <th>{t.firstSeen}</th>
               <th>{t.lastSeen}</th>
-	              <th>{t.duration}</th>
-	              <th>{t.coordinate}</th>
-	              <th>{t.trajectoryReplay}</th>
-	              <th>{t.pilotDistance}</th>
+              <th>{t.duration}</th>
+              <th>{t.details}</th>
+              <th>{t.trajectoryReplay}</th>
+              <th>{t.pilotDistance}</th>
               <th>{t.droneDistance}</th>
               <th>{t.speed}</th>
               <th>{t.height}</th>
@@ -5143,54 +5270,73 @@ function IntrusionsManagement({
           </thead>
           <tbody>
             {visibleRecords.length ? visibleRecords.map((record) => {
-              const whitelisted = isSerialWhitelisted(record.serial, userSettings.whitelist);
+              const isFPV = record.targetType === "fpv";
+              const whitelisted = !isFPV && isSerialWhitelisted(record.serial, userSettings.whitelist);
               const serialKey = normalizeWhitelistSerial(record.serial);
-              const whitelistDisabled = (!whitelisted && isPendingEncryptedDJIDrone(record)) || !record.serial || Boolean(busySerial);
-              const displayModel = resolveDisplayModel(record) || t.unknown;
-              const hasMap = hasIntrusionMapData(record);
+              const whitelistDisabled = isFPV || (!whitelisted && isPendingEncryptedDJIDrone(record)) || !record.serial || Boolean(busySerial);
+              const displayTarget = isFPV ? resolveIntrusionFPVSignalType(record) || t.unknown : resolveDisplayModel(record) || t.unknown;
+              const identity = isFPV ? resolveIntrusionFPVDeviceSn(record) : record.serial?.trim();
+              const hasMap = !isFPV && hasIntrusionMapData(record);
               return (
-                <tr key={record.id}>
+                <tr key={record.id} className={isFPV ? "screen-intrusion-row screen-intrusion-row--fpv" : "screen-intrusion-row screen-intrusion-row--position"}>
                   <td>
-                    <input type="checkbox" checked={selectedIds.includes(record.id)} onChange={() => toggleRecordSelected(record.id)} aria-label={record.serial || record.id} />
+                    <input type="checkbox" checked={selectedIds.includes(record.id)} onChange={() => toggleRecordSelected(record.id)} aria-label={identity || record.id} />
                   </td>
                   <td>
-                    <strong title={displayModel}>{displayModel}</strong>
+                    <span className={`screen-intrusion-type screen-intrusion-type--${record.targetType}`}>
+                      {isFPV ? <Radio size={12} aria-hidden="true" /> : <LocateFixed size={12} aria-hidden="true" />}
+                      <span>{isFPV ? t.intrusionTypeFPV : t.intrusionTypePosition}</span>
+                    </span>
                   </td>
                   <td>
-                    <div className="screen-intrusion-identity">
-                      <strong title={record.serial || "-"}>{record.serial || "-"}</strong>
-                      <button
-                        type="button"
-                        disabled={whitelistDisabled}
-                        className={whitelisted ? "screen-table-action screen-table-action--active" : "screen-table-action"}
-                        onClick={() => void toggleRecordWhitelist(record)}
-                        title={whitelisted ? t.removeFromWhitelist : t.addToWhitelist}
-                      >
-                        {busySerial === serialKey ? <Loader2 className="app-spinner" size={13} aria-hidden="true" /> : whitelisted ? <ShieldMinus size={13} aria-hidden="true" /> : <ShieldPlus size={13} aria-hidden="true" />}
-                        <span>{whitelisted ? t.removeFromWhitelistShort : t.addToWhitelistShort}</span>
-                      </button>
-                    </div>
+                    <strong title={displayTarget}>{displayTarget}</strong>
+                    {isFPV && resolveIntrusionFPVFormat(record) ? <small>{t.format}: {resolveIntrusionFPVFormat(record)}</small> : null}
+                  </td>
+                  <td>
+                    {isFPV ? (
+                      <div className="screen-intrusion-identity">
+                        <strong title={identity || "-"}>{identity || "-"}</strong>
+                      </div>
+                    ) : (
+                      <div className="screen-intrusion-identity">
+                        <strong title={identity || "-"}>{identity || "-"}</strong>
+                        <button
+                          type="button"
+                          disabled={whitelistDisabled}
+                          className={whitelisted ? "screen-table-action screen-table-action--active" : "screen-table-action"}
+                          onClick={() => void toggleRecordWhitelist(record)}
+                          title={whitelisted ? t.removeFromWhitelist : t.addToWhitelist}
+                        >
+                          {busySerial === serialKey ? <Loader2 className="app-spinner" size={13} aria-hidden="true" /> : whitelisted ? <ShieldMinus size={13} aria-hidden="true" /> : <ShieldPlus size={13} aria-hidden="true" />}
+                          <span>{whitelisted ? t.removeFromWhitelistShort : t.addToWhitelistShort}</span>
+                        </button>
+                      </div>
+                    )}
                   </td>
                   <td>{formatFrequency(record.frequency)}</td>
                   <td>{formatRSSI(record.rssi)}</td>
                   <td>{formatFullTime(record.firstSeen, locale)}</td>
                   <td>{formatFullTime(record.lastSeen, locale)}</td>
                   <td>{formatDuration(record.durationSeconds)}</td>
-	                  <td>
-	                    <IntrusionCoordinateCell record={record} t={t} hasMap={hasMap} />
-	                  </td>
-	                  <td>
-	                    <IntrusionReplayCell record={record} t={t} hasMap={hasMap} onOpenMap={setMapRecord} />
-	                  </td>
-                  <td>{formatMeters(record.pilotDistanceM, locale, t)}</td>
-                  <td>{formatMeters(record.droneDistanceM, locale, t)}</td>
-                  <td>{formatSpeed(record.speed, locale, t)}</td>
-                  <td>{formatMeters(record.height, locale, t)}</td>
+                  <td>
+                    {isFPV
+                      ? <IntrusionFPVDetailsCell record={record} t={t} />
+                      : <IntrusionCoordinateCell record={record} t={t} hasMap={hasMap} />}
+                  </td>
+                  <td>
+                    {isFPV
+                      ? <span className="screen-intrusion-coordinate-empty">-</span>
+                      : <IntrusionReplayCell record={record} t={t} hasMap={hasMap} onOpenMap={setMapRecord} />}
+                  </td>
+                  <td>{isFPV ? "-" : formatMeters(record.pilotDistanceM, locale, t)}</td>
+                  <td>{isFPV ? "-" : formatMeters(record.droneDistanceM, locale, t)}</td>
+                  <td>{isFPV ? "-" : formatSpeed(record.speed, locale, t)}</td>
+                  <td>{isFPV ? "-" : formatMeters(record.height, locale, t)}</td>
                 </tr>
               );
             }) : (
               <tr>
-	                <td colSpan={14}>
+                <td colSpan={15}>
                   <div className="screen-management-empty">{loading ? t.waiting : t.noIntrusions}</div>
                 </td>
               </tr>
@@ -5863,6 +6009,32 @@ function IntrusionCoordinateCell({
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function IntrusionFPVDetailsCell({
+  record,
+  t,
+}: {
+  record: IntrusionRecord;
+  t: Record<string, string>;
+}) {
+  const format = resolveIntrusionFPVFormat(record) || "-";
+  const details = [
+    { key: "format", label: t.format, value: format },
+    { key: "valid", label: t.status, value: record.valid ? t.valid : t.invalid },
+    { key: "hits", label: t.hitCount, value: String(record.hitCount) },
+  ];
+
+  return (
+    <div className="screen-intrusion-fpv-details" title={details.map((item) => `${item.label}: ${item.value}`).join(" / ")}>
+      {details.map((item) => (
+        <span key={item.key}>
+          <em>{item.label}</em>
+          <strong>{item.value}</strong>
+        </span>
+      ))}
     </div>
   );
 }
@@ -7238,6 +7410,10 @@ function mergeFPV(items: ScreenFPVTarget[], target: ScreenFPVTarget, limit: numb
   return sortFPV(next).slice(0, limit);
 }
 
+function removeFPV(items: ScreenFPVTarget[], target: Pick<ScreenFPVTarget, "id">) {
+  return items.filter((item) => item.id !== target.id);
+}
+
 function resolvePositionExpireSeconds(value: number | undefined) {
   if (
     typeof value === "number" &&
@@ -7366,6 +7542,22 @@ function resolveDisplayModel(record: Pick<IntrusionRecord, "displayModel" | "mod
   return record.model?.trim() ?? "";
 }
 
+function resolveIntrusionFPVSignalType(record: IntrusionRecord) {
+  return record.signalType?.trim() || record.fpvLastRecord?.signalType?.trim() || "";
+}
+
+function resolveIntrusionFPVDeviceSn(record: IntrusionRecord) {
+  return record.deviceSn?.trim() || record.fpvLastRecord?.deviceSn?.trim() || "";
+}
+
+function resolveIntrusionFPVFormat(record: IntrusionRecord) {
+  return record.format?.trim() || record.fpvLastRecord?.format?.trim() || "";
+}
+
+function intrusionTargetTypeLabel(targetType: IntrusionTargetType, t: Record<string, string>) {
+  return targetType === "fpv" ? t.intrusionTypeFPV : t.intrusionTypePosition;
+}
+
 function intrusionToPositionTarget(record: IntrusionRecord): ScreenPositionTarget {
   return {
     id: record.targetId || record.id,
@@ -7405,6 +7597,9 @@ function intrusionToPositionTarget(record: IntrusionRecord): ScreenPositionTarge
 }
 
 function hasIntrusionMapData(record: IntrusionRecord) {
+  if (record.targetType !== "position") {
+    return false;
+  }
   if (
     validMapPoint(record.deviceLocation?.point) ||
     validMapPoint(record.drone) ||
@@ -8219,13 +8414,19 @@ async function fetchAllInterferenceReports(query: InterferenceReportQuery) {
 function intrusionRecordsToCSV(records: IntrusionRecord[], t: Record<string, string>, locale: Locale) {
   return toCSV([
     [
+      t.targetType,
       t.model,
       t.serial,
+      t.signalType,
+      t.deviceSn,
+      t.format,
+      t.valid,
       t.frequency,
       t.rssi,
       t.firstSeen,
       t.lastSeen,
       t.duration,
+      t.hitCount,
       t.deviceLocation,
       t.drone,
       t.pilot,
@@ -8236,30 +8437,42 @@ function intrusionRecordsToCSV(records: IntrusionRecord[], t: Record<string, str
       t.height,
       t.archivedAt,
     ],
-    ...records.map((record) => [
-      resolveDisplayModel(record) || record.model || "",
-      record.serial || "",
-      formatFrequency(record.frequency),
-      formatRSSI(record.rssi),
-      formatFullTime(record.firstSeen, locale),
-      formatFullTime(record.lastSeen, locale),
-      formatDuration(record.durationSeconds),
-      formatPointForReport(record.deviceLocation?.point),
-      formatPointForReport(record.drone),
-      formatPointForReport(record.pilot),
-      formatPointForReport(record.home),
-      formatMeters(record.pilotDistanceM, locale, t),
-      formatMeters(record.droneDistanceM, locale, t),
-      formatSpeed(record.speed, locale, t),
-      formatMeters(record.height, locale, t),
-      formatFullTime(record.archivedAt, locale),
-    ]),
+    ...records.map((record) => {
+      const isFPV = record.targetType === "fpv";
+      return [
+        intrusionTargetTypeLabel(record.targetType, t),
+        isFPV ? "" : resolveDisplayModel(record) || record.model || "",
+        isFPV ? "" : record.serial || "",
+        isFPV ? resolveIntrusionFPVSignalType(record) : "",
+        isFPV ? resolveIntrusionFPVDeviceSn(record) : "",
+        isFPV ? resolveIntrusionFPVFormat(record) : "",
+        isFPV ? (record.valid ? t.valid : t.invalid) : "",
+        formatFrequency(record.frequency),
+        formatRSSI(record.rssi),
+        formatFullTime(record.firstSeen, locale),
+        formatFullTime(record.lastSeen, locale),
+        formatDuration(record.durationSeconds),
+        record.hitCount,
+        formatPointForReport(record.deviceLocation?.point),
+        isFPV ? "" : formatPointForReport(record.drone),
+        isFPV ? "" : formatPointForReport(record.pilot),
+        isFPV ? "" : formatPointForReport(record.home),
+        isFPV ? "" : formatMeters(record.pilotDistanceM, locale, t),
+        isFPV ? "" : formatMeters(record.droneDistanceM, locale, t),
+        isFPV ? "" : formatSpeed(record.speed, locale, t),
+        isFPV ? "" : formatMeters(record.height, locale, t),
+        formatFullTime(record.archivedAt, locale),
+      ];
+    }),
   ]);
 }
 
 function intrusionTrajectoryPointRows(records: IntrusionRecord[], t: Record<string, string>, locale: Locale) {
   const rows: CSVCell[][] = [];
   records.forEach((record) => {
+    if (record.targetType !== "position") {
+      return;
+    }
     appendIntrusionTrajectoryPointRows(rows, record, record.droneTrajectory, t.trajectory, locale);
     appendIntrusionTrajectoryPointRows(rows, record, record.pilotTrajectory, t.pilotTrajectory, locale);
   });

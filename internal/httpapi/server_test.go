@@ -1457,6 +1457,8 @@ func TestIntrusionRoutesFilterRecords(t *testing.T) {
 			{ID: "other-model", TargetType: model.IntrusionTargetTypePosition, Model: "Mavic 3", Serial: "SN-2", FirstSeen: now, LastSeen: now, ArchivedAt: now},
 			{ID: "other-date", TargetType: model.IntrusionTargetTypePosition, Model: "Mini 4 Pro", Serial: "SN-2", FirstSeen: now.AddDate(0, 0, -2), LastSeen: now.AddDate(0, 0, -2), ArchivedAt: now},
 			{ID: "other-serial", TargetType: model.IntrusionTargetTypePosition, Model: "Mini 4 Pro", Serial: "SN-1", FirstSeen: now, LastSeen: now, ArchivedAt: now},
+			{ID: "fpv-match", TargetType: model.IntrusionTargetTypeFPV, SignalType: "DJI O3", DeviceSN: "FPV-SN-2", FirstSeen: now, LastSeen: now, ArchivedAt: now},
+			{ID: "fpv-other-signal", TargetType: model.IntrusionTargetTypeFPV, SignalType: "DJI O2", DeviceSN: "FPV-SN-2", FirstSeen: now, LastSeen: now, ArchivedAt: now},
 		},
 	}
 	s.userSettings = &memoryUserSettingsStore{}
@@ -1474,13 +1476,27 @@ func TestIntrusionRoutesFilterRecords(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].ID != "match" {
 		t.Fatalf("filtered page = %#v", page)
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/intrusions?type=fpv&signalType=o3&deviceSn=sn-2", nil)
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get FPV status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	page = model.ListResponse[model.IntrusionRecord]{}
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
+		t.Fatalf("decode FPV page: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "fpv-match" {
+		t.Fatalf("filtered FPV page = %#v", page)
+	}
 }
 
 func TestIntrusionRoutesRejectInvalidInput(t *testing.T) {
 	s := newTestServer(t, store.New(10, 10))
 	s.intrusions = &memoryIntrusionStore{}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/intrusions?type=fpv", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/intrusions?type=radar", nil)
 	rec := httptest.NewRecorder()
 	s.server.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -1539,6 +1555,10 @@ func TestScreenStream(t *testing.T) {
 	})
 
 	waitForStream(t, reader, "event: screen.fpv.updated")
+	if err := state.SweepFPV(context.Background(), now.Add(11*time.Second)); err != nil {
+		t.Fatalf("SweepFPV() error = %v", err)
+	}
+	waitForStream(t, reader, "event: screen.fpv.removed")
 	cancel()
 	_ = resp.Body.Close()
 }
@@ -2341,6 +2361,12 @@ func (s *memoryIntrusionStore) List(_ context.Context, options intrusion.QueryOp
 			continue
 		}
 		if !containsFold(item.Serial, options.Serial) {
+			continue
+		}
+		if !containsFold(item.SignalType, options.SignalType) {
+			continue
+		}
+		if !containsFold(item.DeviceSN, options.DeviceSN) {
 			continue
 		}
 		if !options.DateFrom.IsZero() && item.LastSeen.Before(options.DateFrom) {

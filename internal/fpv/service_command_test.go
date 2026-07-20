@@ -3,8 +3,10 @@ package fpv
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -105,3 +107,129 @@ func TestServiceCommandResponseDoesNotCreateFPVTarget(t *testing.T) {
 		t.Fatalf("remainder = %q, want empty", string(remainder))
 	}
 }
+
+func TestServiceRunWaitsForConnectionHandlersBeforeReturning(t *testing.T) {
+	state := store.New(10, 10)
+	payload := []byte(withASCIIChecksum("F5750R098T=FPV#") + "\r\n")
+	conn := newShutdownBlockingConn(payload)
+	listener := newSingleConnListener(conn)
+	service := NewService(state, Options{
+		Host: "127.0.0.1",
+		Port: 10005,
+		OpenListener: func(_, _ string) (net.Listener, error) {
+			return listener, nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		service.Run(ctx)
+		close(runDone)
+	}()
+
+	select {
+	case <-conn.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("connection handler did not start reading")
+	}
+	cancel()
+	select {
+	case <-conn.closed:
+	case <-time.After(time.Second):
+		t.Fatal("connection was not closed after cancellation")
+	}
+	select {
+	case <-runDone:
+		t.Fatal("Service.Run returned before the connection handler finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(conn.readRelease)
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("Service.Run did not return after the connection handler finished")
+	}
+	if items := state.FPV(10); len(items) != 1 || items[0].Frequency != 5750 {
+		t.Fatalf("final connection payload was not processed before Run returned: %#v", items)
+	}
+}
+
+type singleConnListener struct {
+	mu        sync.Mutex
+	conn      net.Conn
+	accepted  bool
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newSingleConnListener(conn net.Conn) *singleConnListener {
+	return &singleConnListener{conn: conn, closed: make(chan struct{})}
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	if !l.accepted {
+		l.accepted = true
+		conn := l.conn
+		l.mu.Unlock()
+		return conn, nil
+	}
+	l.mu.Unlock()
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *singleConnListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr {
+	return testNetAddr("listener")
+}
+
+type shutdownBlockingConn struct {
+	payload     []byte
+	readStarted chan struct{}
+	readRelease chan struct{}
+	closed      chan struct{}
+	startOnce   sync.Once
+	closeOnce   sync.Once
+}
+
+func newShutdownBlockingConn(payload []byte) *shutdownBlockingConn {
+	return &shutdownBlockingConn{
+		payload:     append([]byte(nil), payload...),
+		readStarted: make(chan struct{}),
+		readRelease: make(chan struct{}),
+		closed:      make(chan struct{}),
+	}
+}
+
+func (c *shutdownBlockingConn) Read(buffer []byte) (int, error) {
+	c.startOnce.Do(func() { close(c.readStarted) })
+	<-c.readRelease
+	return copy(buffer, c.payload), io.EOF
+}
+
+func (c *shutdownBlockingConn) Write(buffer []byte) (int, error) {
+	return len(buffer), nil
+}
+
+func (c *shutdownBlockingConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *shutdownBlockingConn) LocalAddr() net.Addr              { return testNetAddr("local") }
+func (c *shutdownBlockingConn) RemoteAddr() net.Addr             { return testNetAddr("remote") }
+func (c *shutdownBlockingConn) SetDeadline(time.Time) error      { return nil }
+func (c *shutdownBlockingConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *shutdownBlockingConn) SetWriteDeadline(time.Time) error { return nil }
+
+type testNetAddr string
+
+func (a testNetAddr) Network() string { return "test" }
+func (a testNetAddr) String() string  { return string(a) }

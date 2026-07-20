@@ -12,6 +12,7 @@ import type {
   IntrusionDeleteRequest,
   IntrusionDeleteResponse,
   IntrusionRecord,
+  IntrusionTargetType,
   LicenseInfo,
   LicenseUploadResponse,
   ListResponse,
@@ -443,8 +444,11 @@ export function updateUserSettings(payload: UserSettings) {
 }
 
 export type IntrusionQuery = {
+  type?: IntrusionTargetType;
   model?: string;
   serial?: string;
+  signalType?: string;
+  deviceSn?: string;
   dateFrom?: string;
   dateTo?: string;
 };
@@ -454,11 +458,20 @@ export function getIntrusions(limit = 50, offset = 0, query: IntrusionQuery = {}
     limit: String(limit),
     offset: String(offset),
   });
+  if (query.type) {
+    params.set("type", query.type);
+  }
   if (query.model?.trim()) {
     params.set("model", query.model.trim());
   }
   if (query.serial?.trim()) {
     params.set("serial", query.serial.trim());
+  }
+  if (query.signalType?.trim()) {
+    params.set("signalType", query.signalType.trim());
+  }
+  if (query.deviceSn?.trim()) {
+    params.set("deviceSn", query.deviceSn.trim());
   }
   if (query.dateFrom) {
     params.set("dateFrom", query.dateFrom);
@@ -641,6 +654,7 @@ export function openScreenStream(handlers: {
   onPosition?: (event: EventMessage<ScreenPositionTarget>) => void;
   onPositionRemoved?: (event: EventMessage<ScreenPositionTarget>) => void;
   onFPV?: (event: EventMessage<ScreenFPVTarget>) => void;
+  onFPVRemoved?: (event: EventMessage<Pick<ScreenFPVTarget, "id">>) => void;
   onDeviceLocation?: (event: EventMessage<ScreenDeviceLocationResponse>) => void;
   onStrike?: (event: EventMessage<ScreenStrikeState>) => void;
   onError?: (error: Error) => void;
@@ -663,6 +677,7 @@ export function openScreenStream(handlers: {
   bind("screen.position.updated", handlers.onPosition);
   bind("screen.position.removed", handlers.onPositionRemoved);
   bind("screen.fpv.updated", handlers.onFPV);
+  bind("screen.fpv.removed", handlers.onFPVRemoved);
   bind("screen.device_location.updated", handlers.onDeviceLocation);
   bind("screen.strike.updated", handlers.onStrike);
   source.onerror = () => {

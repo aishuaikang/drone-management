@@ -30,6 +30,7 @@ import (
 // App owns all long-running backend services.
 type App struct {
 	httpServer          *httpapi.Server
+	state               *store.Store
 	intrusions          *intrusion.Store
 	fpvRecords          *fpvrecord.Store
 	interferenceReports *interferencereport.Store
@@ -65,6 +66,7 @@ func New(cfg config.Config) (*App, error) {
 	}
 	intrusionStore.SetDeviceLocationProvider(state.DeviceLocation)
 	state.SetPositionArchiver(intrusionStore)
+	state.SetFPVArchiver(intrusionStore)
 	fpvRecordStore, err := fpvrecord.NewStore(cfg.FPVVideoRecordDBPath)
 	if err != nil {
 		_ = intrusionStore.Close()
@@ -122,7 +124,7 @@ func New(cfg config.Config) (*App, error) {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(3)
+		wg.Add(4)
 		go func() {
 			defer wg.Done()
 			positionSvc.Run(ctx)
@@ -134,6 +136,21 @@ func New(cfg config.Config) (*App, error) {
 		go func() {
 			defer wg.Done()
 			lingyunSvc.Run(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-ticker.C:
+					if err := state.SweepFPV(ctx, now); err != nil {
+						slog.Warn("归档 FPV 入侵目标失败", "error", err)
+					}
+				}
+			}
 		}()
 		<-ctx.Done()
 		wg.Wait()
@@ -155,6 +172,7 @@ func New(cfg config.Config) (*App, error) {
 			httpapi.WithNetworkService(networkSvc),
 			httpapi.WithLicenseService(licenseSvc),
 		),
+		state:               state,
 		intrusions:          intrusionStore,
 		fpvRecords:          fpvRecordStore,
 		interferenceReports: interferenceReportStore,
@@ -242,20 +260,20 @@ func (a *App) Shutdown() error {
 	if a.interference != nil {
 		a.interference.Shutdown()
 	}
+	if a.state != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		flushErr := a.state.DrainFPV(flushCtx)
+		flushCancel()
+		err = errors.Join(err, flushErr)
+	}
 	if a.intrusions != nil {
-		if closeErr := a.intrusions.Close(); closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
+		err = errors.Join(err, a.intrusions.Close())
 	}
 	if a.fpvRecords != nil {
-		if closeErr := a.fpvRecords.Close(); closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
+		err = errors.Join(err, a.fpvRecords.Close())
 	}
 	if a.interferenceReports != nil {
-		if closeErr := a.interferenceReports.Close(); closeErr != nil {
-			return errors.Join(err, closeErr)
-		}
+		err = errors.Join(err, a.interferenceReports.Close())
 	}
 	return err
 }

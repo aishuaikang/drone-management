@@ -281,7 +281,7 @@ export interface WhitelistItem {
   createdAt?: string;
 }
 
-export type IntrusionTargetType = "position";
+export type IntrusionTargetType = "position" | "fpv";
 
 export interface IntrusionRecord {
   id: string;
@@ -300,6 +300,11 @@ export interface IntrusionRecord {
   source?: string;
   sources?: string[];
   cracked?: boolean;
+  signalType?: string;
+  deviceSn?: string;
+  valid: boolean;
+  format?: string;
+  fpvLastRecord?: ScreenFPVLastRecord;
   deviceLocation?: ScreenDeviceLocationResponse;
   drone?: ScreenPositionPoint;
   pilot?: ScreenPositionPoint;
@@ -313,7 +318,7 @@ export interface IntrusionRecord {
   height?: number;
   altitude?: number;
   speed?: number;
-  lastRecord: ScreenPositionLastRecord;
+  lastRecord?: ScreenPositionLastRecord;
   archivedAt: string;
 }
 
