@@ -124,6 +124,7 @@ import { installLeafletCoordConverter } from "./utils/leafletCoordConverter";
 type Locale = "zh-CN" | "en-US";
 type Tab = "positions" | "fpv";
 type View = "screen" | "intrusions" | "fpvRecords" | "interferenceReports" | "whitelist" | "settings" | "offlineMap" | "network" | "lingyun" | "about";
+type SettingsView = Extract<View, "settings" | "offlineMap" | "network" | "lingyun">;
 type ThemeColor = "cyan" | "amber" | "blue" | "rose";
 type CSVCell = string | number | null | undefined;
 type NavigationMapProvider = "amap" | "google";
@@ -280,6 +281,11 @@ const navigationMapProviders: Array<{ id: NavigationMapProvider; labelKey: strin
   { id: "google", labelKey: "leaflet.map.googleMap" },
   { id: "amap", labelKey: "leaflet.map.gaodeMap" },
 ];
+const settingsViews: readonly SettingsView[] = ["settings", "offlineMap", "lingyun", "network"];
+
+function isSettingsView(view: View): view is SettingsView {
+  return settingsViews.some((item) => item === view);
+}
 
 const labels: Record<Locale, Record<string, string>> = {
   "zh-CN": {
@@ -429,6 +435,8 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportsView: "干扰报告",
     whitelistView: "白名单",
     settingsView: "设置",
+    settingsNavigation: "设置分类",
+    generalSettingsView: "通用设置",
     offlineMapView: "离线地图",
     networkView: "网络管理",
     lingyunView: "通用MQTT协议",
@@ -835,6 +843,8 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportsView: "Strike Reports",
     whitelistView: "Whitelist",
     settingsView: "Settings",
+    settingsNavigation: "Settings categories",
+    generalSettingsView: "General Settings",
     offlineMapView: "Offline Map",
     networkView: "Network",
     lingyunView: "General MQTT Protocol",
@@ -2056,6 +2066,7 @@ export function App() {
           onStatusChange={syncRuntimeStatus}
           onLicenseInfoChange={setLicenseInfo}
           onSaveUserSettings={saveUserSettings}
+          onViewChange={handleViewChange}
         />
       )}
 
@@ -2662,28 +2673,83 @@ function ViewSwitch({
     { id: "fpvRecords", label: t.fpvRecordsView, icon: <FileVideo size={14} aria-hidden="true" /> },
     { id: "interferenceReports", label: t.interferenceReportsView, icon: <Zap size={14} aria-hidden="true" /> },
     { id: "whitelist", label: t.whitelistView, icon: <ShieldCheck size={14} aria-hidden="true" /> },
-    { id: "offlineMap", label: t.offlineMapView, icon: <HardDriveUpload size={14} aria-hidden="true" /> },
-    { id: "network", label: t.networkView, icon: <Network size={14} aria-hidden="true" /> },
-    { id: "lingyun", label: t.lingyunView, icon: <Globe2 size={14} aria-hidden="true" /> },
     { id: "settings", label: t.settingsView, icon: <Settings size={14} aria-hidden="true" /> },
     { id: "about", label: t.aboutView, icon: <Info size={14} aria-hidden="true" /> },
   ];
   return (
     <nav className="screen-view-switch" aria-label="view">
-      {items.filter((item) => !item.hidden && (!licenseLocked || item.id === "about")).map((item) => (
-        <button
-          key={item.id}
-          className={view === item.id ? "screen-view-switch__item screen-view-switch__item--active" : "screen-view-switch__item"}
-          type="button"
-          title={item.label}
-          aria-label={item.label}
-          aria-current={view === item.id ? "page" : undefined}
-          onClick={() => onViewChange(item.id)}
-        >
-          {item.icon}
-          <span>{item.label}</span>
-        </button>
-      ))}
+      {items.filter((item) => !item.hidden && (!licenseLocked || item.id === "about")).map((item) => {
+        const active = item.id === "settings" ? isSettingsView(view) : view === item.id;
+        return (
+          <button
+            key={item.id}
+            className={active ? "screen-view-switch__item screen-view-switch__item--active" : "screen-view-switch__item"}
+            type="button"
+            title={item.label}
+            aria-label={item.label}
+            aria-current={active ? "page" : undefined}
+            onClick={() => onViewChange(item.id)}
+          >
+            {item.icon}
+            <span>{item.label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function SettingsNavigation({
+  view,
+  t,
+  onViewChange,
+}: {
+  view: SettingsView;
+  t: Record<string, string>;
+  onViewChange: (view: View) => void;
+}) {
+  const activeItemRef = useRef<HTMLButtonElement | null>(null);
+  const items: Array<{ id: SettingsView; label: string; icon: ReactNode }> = [
+    { id: "settings", label: t.generalSettingsView, icon: <Settings size={15} aria-hidden="true" /> },
+    { id: "offlineMap", label: t.offlineMapView, icon: <HardDriveUpload size={15} aria-hidden="true" /> },
+    { id: "lingyun", label: t.lingyunView, icon: <Globe2 size={15} aria-hidden="true" /> },
+    { id: "network", label: t.networkView, icon: <Network size={15} aria-hidden="true" /> },
+  ];
+
+  useEffect(() => {
+    const keepActiveItemVisible = () => {
+      activeItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    };
+    keepActiveItemVisible();
+    window.addEventListener("resize", keepActiveItemVisible);
+    return () => window.removeEventListener("resize", keepActiveItemVisible);
+  }, [t, view]);
+
+  return (
+    <nav className="screen-settings-navigation" aria-label={t.settingsNavigation}>
+      <div className="screen-settings-navigation__header">
+        <Settings size={16} aria-hidden="true" />
+        <strong>{t.settingsView}</strong>
+      </div>
+      <div className="screen-settings-navigation__items">
+        {items.map((item) => {
+          const active = item.id === view;
+          return (
+            <button
+              key={item.id}
+              ref={active ? activeItemRef : undefined}
+              className={active ? "screen-settings-navigation__item screen-settings-navigation__item--active" : "screen-settings-navigation__item"}
+              type="button"
+              title={item.label}
+              aria-current={active ? "page" : undefined}
+              onClick={() => onViewChange(item.id)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </nav>
   );
 }
@@ -3063,6 +3129,7 @@ function ManagementView({
   onStatusChange,
   onLicenseInfoChange,
   onSaveUserSettings,
+  onViewChange,
 }: {
   view: Exclude<View, "screen">;
   t: Record<string, string>;
@@ -3081,7 +3148,9 @@ function ManagementView({
   onStatusChange: (status: ScreenRuntimeStatus) => void;
   onLicenseInfoChange: (license: LicenseInfo | null) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
+  onViewChange: (view: View) => void;
 }) {
+  const settingsView = isSettingsView(view) ? view : null;
   const panelClassName = [
     "screen-management-panel",
     view === "settings" || view === "offlineMap" || view === "network" || view === "lingyun" || view === "about" ? "screen-management-panel--settings" : "",
@@ -3090,50 +3159,56 @@ function ManagementView({
     view === "lingyun" ? "screen-management-panel--lingyun" : "",
     view === "about" ? "screen-management-panel--about" : "",
   ].filter(Boolean).join(" ");
+  const content = view === "intrusions" ? (
+    <IntrusionsManagement t={t} locale={locale} theme={theme} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
+  ) : view === "fpvRecords" ? (
+    <FPVVideoRecordsManagement t={t} locale={locale} />
+  ) : view === "interferenceReports" ? (
+    <InterferenceReportsManagement t={t} locale={locale} userSettings={userSettings} />
+  ) : view === "lingyun" ? (
+    <LingyunSettingsManagement
+      t={t}
+      locale={locale}
+      userSettings={userSettings}
+      settingsLoaded={userSettingsLoaded}
+      settingsError={userSettingsError}
+      strikeState={strikeState}
+      deviceLocation={deviceLocation}
+      status={status}
+      onSaveUserSettings={onSaveUserSettings}
+    />
+  ) : view === "settings" ? (
+    <ScreenSettingsManagement
+      t={t}
+      userSettings={userSettings}
+      status={status}
+      defaultScreenTitle={defaultScreenTitle}
+      onStatusChange={onStatusChange}
+      onSaveUserSettings={onSaveUserSettings}
+    />
+  ) : view === "offlineMap" ? (
+    <OfflineMapManagement
+      t={t}
+      locale={locale}
+      state={offlineMapState}
+      onStateChange={onOfflineMapStateChange}
+    />
+  ) : view === "network" ? (
+    <NetworkManagement locale={locale} />
+  ) : view === "about" ? (
+    <AboutManagement t={t} locale={locale} licenseInfo={licenseInfo} deviceLocation={deviceLocation} onLicenseInfoChange={onLicenseInfoChange} />
+  ) : (
+    <WhitelistManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
+  );
 
   return (
     <section className={panelClassName}>
-      {view === "intrusions" ? (
-        <IntrusionsManagement t={t} locale={locale} theme={theme} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
-      ) : view === "fpvRecords" ? (
-        <FPVVideoRecordsManagement t={t} locale={locale} />
-      ) : view === "interferenceReports" ? (
-        <InterferenceReportsManagement t={t} locale={locale} userSettings={userSettings} />
-      ) : view === "lingyun" ? (
-        <LingyunSettingsManagement
-          t={t}
-          locale={locale}
-          userSettings={userSettings}
-          settingsLoaded={userSettingsLoaded}
-          settingsError={userSettingsError}
-          strikeState={strikeState}
-          deviceLocation={deviceLocation}
-          status={status}
-          onSaveUserSettings={onSaveUserSettings}
-        />
-      ) : view === "settings" ? (
-        <ScreenSettingsManagement
-          t={t}
-          userSettings={userSettings}
-          status={status}
-          defaultScreenTitle={defaultScreenTitle}
-          onStatusChange={onStatusChange}
-          onSaveUserSettings={onSaveUserSettings}
-        />
-      ) : view === "offlineMap" ? (
-        <OfflineMapManagement
-          t={t}
-          locale={locale}
-          state={offlineMapState}
-          onStateChange={onOfflineMapStateChange}
-        />
-      ) : view === "network" ? (
-        <NetworkManagement locale={locale} />
-      ) : view === "about" ? (
-        <AboutManagement t={t} locale={locale} licenseInfo={licenseInfo} deviceLocation={deviceLocation} onLicenseInfoChange={onLicenseInfoChange} />
-      ) : (
-        <WhitelistManagement t={t} locale={locale} userSettings={userSettings} onSaveUserSettings={onSaveUserSettings} />
-      )}
+      {settingsView ? (
+        <div className="screen-settings-workspace">
+          <SettingsNavigation view={settingsView} t={t} onViewChange={onViewChange} />
+          <div className="screen-settings-workspace__content">{content}</div>
+        </div>
+      ) : content}
     </section>
   );
 }
