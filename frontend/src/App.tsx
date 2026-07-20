@@ -1205,6 +1205,12 @@ export function App() {
     themeOption.className,
     licenseValid ? "" : "screen-shell--license-locked",
   ].filter(Boolean).join(" ");
+  const viewSwitchOverlayClassName = [
+    "screen-view-switch-overlay",
+    effectiveView === "screen" ? "screen-view-switch-overlay--screen" : "",
+    effectiveView === "screen" && strikeCollapsed ? "screen-view-switch-overlay--strike-collapsed" : "",
+    effectiveView === "screen" && rightCollapsed ? "screen-view-switch-overlay--right-collapsed" : "",
+  ].filter(Boolean).join(" ");
   const now = useMemo(() => new Date(clockTickMs + serverClockOffsetMs), [clockTickMs, serverClockOffsetMs]);
 
   const syncRuntimeStatus = useCallback((nextStatus: ScreenRuntimeStatus) => {
@@ -1889,7 +1895,7 @@ export function App() {
         </div>
       </header>
 
-      <div className="screen-view-switch-overlay">
+      <div className={viewSwitchOverlayClassName}>
         <ViewSwitch view={effectiveView} t={t} licenseLocked={!licenseValid} onViewChange={handleViewChange} />
       </div>
 
