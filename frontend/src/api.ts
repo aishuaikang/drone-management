@@ -3,6 +3,7 @@ import type {
   FPVVideoRecord,
   FPVVideoRecordDeleteRequest,
   FPVVideoRecordDeleteResponse,
+  FPVVideoNetworkAddress,
   FPVVideoSessionPayload,
   InterferenceReport,
   InterferenceReportDeleteResponse,
@@ -357,6 +358,10 @@ function isOfflineMapUploadLog(value: unknown): value is OfflineMapUploadLog {
 
 export function getUserSettings() {
   return requestJson<UserSettings>("/user/settings", { timeoutMs: 5000 });
+}
+
+export function getFPVVideoNetworkAddresses() {
+  return requestJson<ListResponse<FPVVideoNetworkAddress>>("/screen/fpv-video/network-addresses", { timeoutMs: 5000 });
 }
 
 export function getNetworkConfig() {

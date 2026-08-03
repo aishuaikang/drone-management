@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,7 +41,15 @@ var (
 	ErrNotConfigured = errors.New("fpv video stream is not configured")
 	// ErrUnsupportedPlatform means no bundled MediaMTX binary matches this OS and architecture.
 	ErrUnsupportedPlatform = errors.New("bundled mediamtx is not available for this platform")
+	// ErrRunning means the MediaMTX listen address cannot change during playback.
+	ErrRunning = errors.New("fpv video stream is running")
 )
+
+// NetworkAddress describes an active non-loopback local IPv4 address.
+type NetworkAddress struct {
+	Interface string
+	Address   string
+}
 
 // Options configures RTSP to WebRTC playback for browser clients.
 type Options struct {
@@ -102,6 +111,67 @@ func (s *Service) WHEPURL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.whepURL
+}
+
+// WebRTCListenHost returns the configured MediaMTX WebRTC listen host.
+func (s *Service) WebRTCListenHost() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.options.WebRTCListenHost
+}
+
+// SetWebRTCListenHost changes the MediaMTX WebRTC listen host between sessions.
+func (s *Service) SetWebRTCListenHost(host string) error {
+	host = strings.TrimSpace(host)
+	if ip := net.ParseIP(host); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("invalid WebRTC listen host: %s", host)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd != nil {
+		return ErrRunning
+	}
+	previousURL := localWHEPURL(s.options)
+	s.options.WebRTCListenHost = host
+	if strings.TrimSpace(s.options.WHEPURL) == "" && s.whepURL == previousURL {
+		s.whepURL = localWHEPURL(s.options)
+	}
+	return nil
+}
+
+// NetworkAddresses returns active non-loopback IPv4 addresses suitable for MediaMTX.
+func NetworkAddresses() ([]NetworkAddress, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	items := make([]NetworkAddress, 0)
+	for _, networkInterface := range interfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := networkInterface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err != nil {
+				ip = net.ParseIP(address.String())
+			}
+			if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+				continue
+			}
+			items = append(items, NetworkAddress{Interface: networkInterface.Name, Address: ip.String()})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Interface == items[j].Interface {
+			return items[i].Address < items[j].Address
+		}
+		return items[i].Interface < items[j].Interface
+	})
+	return items, nil
 }
 
 // Close stops a running MediaMTX process.

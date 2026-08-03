@@ -55,6 +55,7 @@ import {
   deleteFPVVideoRecords,
   exportFPVVideoRecords,
   getFPVVideoRecords,
+  getFPVVideoNetworkAddresses,
   getInterferenceReports,
   deleteIntrusions,
   getIntrusions,
@@ -96,6 +97,7 @@ import uavIconUrl from "./assets/images/uavIcon.svg";
 import type {
   GeoPoint,
   FPVVideoRecord,
+  FPVVideoNetworkAddress,
   InterferenceChannel,
   InterferenceReportStatus,
   InterferenceReportSummary,
@@ -449,6 +451,13 @@ const labels: Record<Locale, Record<string, string>> = {
     tcpPortSettingsHint: "保存后立即重启定位与 FPV 数据监听。",
     positionTCPPort: "定位模块端口",
     fpvTCPPort: "FPV 模块端口",
+    fpvVideoWebRTCSettings: "FPV 图传网络",
+    fpvVideoWebRTCSettingsHint: "选择浏览器所在网络可访问的本机网卡地址。播放期间不能切换。",
+    fpvVideoWebRTCHost: "WebRTC 监听地址",
+    fpvVideoNetworkAddressesLoading: "正在读取本机网卡…",
+    fpvVideoNetworkAddressesEmpty: "没有可用的本机 IPv4 地址",
+    fpvVideoCurrentAddressUnavailable: "当前地址不可用",
+    fpvVideoWebRTCHostInvalid: "请选择一个可用的本机 IPv4 地址",
     tcpPortInvalid: "请输入 1 到 65535 之间且不重复的端口",
     lingyunSettings: "通用MQTT协议",
     lingyunSettingsHint: "控制四类逻辑设备通过 MQTT 注册、上报和响应控制命令。",
@@ -857,6 +866,13 @@ const labels: Record<Locale, Record<string, string>> = {
     tcpPortSettingsHint: "Saving immediately restarts positioning and FPV listeners.",
     positionTCPPort: "Position module port",
     fpvTCPPort: "FPV module port",
+    fpvVideoWebRTCSettings: "FPV Video Network",
+    fpvVideoWebRTCSettingsHint: "Select a local interface address reachable from the browser network. It cannot change during playback.",
+    fpvVideoWebRTCHost: "WebRTC listen address",
+    fpvVideoNetworkAddressesLoading: "Loading local interfaces…",
+    fpvVideoNetworkAddressesEmpty: "No local IPv4 addresses are available",
+    fpvVideoCurrentAddressUnavailable: "Current address unavailable",
+    fpvVideoWebRTCHostInvalid: "Select an available local IPv4 address",
     tcpPortInvalid: "Enter unique ports from 1 to 65535",
     lingyunSettings: "General MQTT Protocol",
     lingyunSettingsHint: "Registers four logical devices through MQTT, publishes targets, and responds to platform controls.",
@@ -3538,6 +3554,7 @@ function ScreenSettingsManagement({
   const savedExpireSeconds = resolvePositionExpireSeconds(userSettings.positionExpireSeconds);
   const savedPositionTCPPort = resolveTCPPort(userSettings.positionTCPPort, status?.position?.port ?? 10007);
   const savedFPVTCPPort = resolveTCPPort(userSettings.fpvTCPPort, status?.fpv?.port ?? 10005);
+  const savedFPVVideoWebRTCHost = userSettings.fpvVideoWebRTCHost?.trim() ?? "";
   const savedStrikeLabels = normalizeScreenStrikeChannelLabels(userSettings.screenStrikeChannelLabels);
   const savedWarningZoneEnabled = Boolean(userSettings.warningZoneEnabled);
   const savedWarningZoneRadius = resolveWarningZoneRadiusMeters(userSettings);
@@ -3545,6 +3562,9 @@ function ScreenSettingsManagement({
   const [expireDraft, setExpireDraft] = useState(String(savedExpireSeconds));
   const [positionTCPPortDraft, setPositionTCPPortDraft] = useState(String(savedPositionTCPPort));
   const [fpvTCPPortDraft, setFPVTCPPortDraft] = useState(String(savedFPVTCPPort));
+  const [fpvVideoWebRTCHostDraft, setFPVVideoWebRTCHostDraft] = useState(savedFPVVideoWebRTCHost);
+  const [fpvVideoNetworkAddresses, setFPVVideoNetworkAddresses] = useState<FPVVideoNetworkAddress[]>([]);
+  const [fpvVideoNetworkAddressesLoading, setFPVVideoNetworkAddressesLoading] = useState(true);
   const [warningZoneEnabledDraft, setWarningZoneEnabledDraft] = useState(savedWarningZoneEnabled);
   const [warningZoneRadiusDraft, setWarningZoneRadiusDraft] = useState(String(savedWarningZoneRadius));
   const [strikeLabelDrafts, setStrikeLabelDrafts] = useState(savedStrikeLabels);
@@ -3568,6 +3588,34 @@ function ScreenSettingsManagement({
   }, [savedFPVTCPPort]);
 
   useEffect(() => {
+    setFPVVideoWebRTCHostDraft(savedFPVVideoWebRTCHost);
+  }, [savedFPVVideoWebRTCHost]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFPVVideoNetworkAddressesLoading(true);
+    void getFPVVideoNetworkAddresses()
+      .then((response) => {
+        if (!cancelled) {
+          setFPVVideoNetworkAddresses(response.items);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFPVVideoNetworkAddresses([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFPVVideoNetworkAddressesLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     setWarningZoneEnabledDraft(savedWarningZoneEnabled);
   }, [savedWarningZoneEnabled]);
 
@@ -3588,6 +3636,9 @@ function ScreenSettingsManagement({
   const positionTCPPort = Number(positionTCPPortDraft);
   const fpvTCPPort = Number(fpvTCPPortDraft);
   const tcpPortsValid = validTCPPort(positionTCPPort) && validTCPPort(fpvTCPPort) && positionTCPPort !== fpvTCPPort;
+  const fpvVideoWebRTCHostValid = fpvVideoWebRTCHostDraft === savedFPVVideoWebRTCHost ||
+    fpvVideoNetworkAddresses.some((item) => item.address === fpvVideoWebRTCHostDraft);
+  const savedFPVVideoWebRTCHostAvailable = fpvVideoNetworkAddresses.some((item) => item.address === savedFPVVideoWebRTCHost);
   const warningZoneRadius = Number(warningZoneRadiusDraft);
   const warningZoneRadiusValid = Number.isInteger(warningZoneRadius) &&
     warningZoneRadius >= minWarningZoneRadiusMeters &&
@@ -3596,6 +3647,7 @@ function ScreenSettingsManagement({
   const changed = normalizedTitle !== savedTitle ||
     (expireValid && expireSeconds !== savedExpireSeconds) ||
     (tcpPortsValid && (positionTCPPort !== savedPositionTCPPort || fpvTCPPort !== savedFPVTCPPort)) ||
+    (fpvVideoWebRTCHostValid && fpvVideoWebRTCHostDraft !== savedFPVVideoWebRTCHost) ||
     warningZoneEnabledDraft !== savedWarningZoneEnabled ||
     (warningZoneRadiusValid && warningZoneRadius !== savedWarningZoneRadius) ||
     strikeLabelsChanged;
@@ -3609,6 +3661,10 @@ function ScreenSettingsManagement({
       setBanner(t.tcpPortInvalid);
       return;
     }
+    if (!fpvVideoWebRTCHostValid || !fpvVideoWebRTCHostDraft) {
+      setBanner(t.fpvVideoWebRTCHostInvalid);
+      return;
+    }
     if (!warningZoneRadiusValid) {
       setBanner(t.warningZoneRadiusInvalid);
       return;
@@ -3619,6 +3675,7 @@ function ScreenSettingsManagement({
       const nextSettings: UserSettings = {
         screenTitle: normalizedTitle,
         positionExpireSeconds: expireSeconds,
+        fpvVideoWebRTCHost: fpvVideoWebRTCHostDraft,
         warningZoneEnabled: warningZoneEnabledDraft,
         warningZoneRadiusMeters: warningZoneRadius,
         screenStrikeChannelLabels: normalizedStrikeLabels,
@@ -3754,6 +3811,49 @@ function ScreenSettingsManagement({
             <div className="screen-settings-preview">
               <span>{t.savedValue}</span>
               <strong>{savedPositionTCPPort} / {savedFPVTCPPort}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section className="screen-settings-section screen-settings-section--fpv-video-network">
+          <header>
+            <span className="screen-settings-section__icon">
+              <Network size={15} aria-hidden="true" />
+            </span>
+            <span className="screen-settings-section__heading">
+              <strong>{t.fpvVideoWebRTCSettings}</strong>
+              <span>{t.fpvVideoWebRTCSettingsHint}</span>
+            </span>
+          </header>
+          <div className="screen-settings-form-grid">
+            <label>
+              <span>{t.fpvVideoWebRTCHost}</span>
+              <select
+                value={fpvVideoWebRTCHostDraft}
+                disabled={fpvVideoNetworkAddressesLoading && !savedFPVVideoWebRTCHost}
+                onChange={(event) => setFPVVideoWebRTCHostDraft(event.target.value)}
+              >
+                {fpvVideoNetworkAddressesLoading && !savedFPVVideoWebRTCHost ? (
+                  <option value="">{t.fpvVideoNetworkAddressesLoading}</option>
+                ) : null}
+                {!fpvVideoNetworkAddressesLoading && fpvVideoNetworkAddresses.length === 0 && !savedFPVVideoWebRTCHost ? (
+                  <option value="">{t.fpvVideoNetworkAddressesEmpty}</option>
+                ) : null}
+                {savedFPVVideoWebRTCHost && !savedFPVVideoWebRTCHostAvailable ? (
+                  <option value={savedFPVVideoWebRTCHost}>
+                    {savedFPVVideoWebRTCHost} — {t.fpvVideoCurrentAddressUnavailable}
+                  </option>
+                ) : null}
+                {fpvVideoNetworkAddresses.map((item) => (
+                  <option key={`${item.interface}-${item.address}`} value={item.address}>
+                    {item.interface} — {item.address}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="screen-settings-preview">
+              <span>{t.savedValue}</span>
+              <strong>{savedFPVVideoWebRTCHost || "-"}</strong>
             </div>
           </div>
         </section>
@@ -7354,6 +7454,7 @@ function defaultUserSettings(): UserSettings {
     positionExpireSeconds: defaultPositionExpireSeconds,
     positionTCPPort: undefined,
     fpvTCPPort: undefined,
+    fpvVideoWebRTCHost: "",
     lingyun: defaultLingyunSettings(),
     screenTitle: "",
     screenStrikeChannelLabels: defaultStrikeChannelLabels(),
@@ -7370,6 +7471,7 @@ function resolveUserSettings(settings?: UserSettings | null): UserSettings {
     positionExpireSeconds: resolvePositionExpireSeconds(settings?.positionExpireSeconds),
     positionTCPPort: settings?.positionTCPPort,
     fpvTCPPort: settings?.fpvTCPPort,
+    fpvVideoWebRTCHost: settings?.fpvVideoWebRTCHost ?? "",
     lingyun: resolveLingyunSettings(settings?.lingyun),
     screenTitle: settings?.screenTitle ?? "",
     screenStrikeChannelLabels: normalizeScreenStrikeChannelLabels(settings?.screenStrikeChannelLabels),

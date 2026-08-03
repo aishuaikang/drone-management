@@ -78,6 +78,7 @@ type UserSettings struct {
 	PositionExpireSeconds     *int                          `json:"positionExpireSeconds,omitempty"`
 	PositionTCPPort           *int                          `json:"positionTCPPort,omitempty"`
 	FPVTCPPort                *int                          `json:"fpvTCPPort,omitempty"`
+	FPVVideoWebRTCHost        string                        `json:"fpvVideoWebRTCHost,omitempty"`
 	Lingyun                   LingyunSettings               `json:"lingyun,omitempty"`
 	ScreenStrikeChannelLabels []string                      `json:"screenStrikeChannelLabels,omitempty"`
 	ScreenStrikeUnattended    *ScreenStrikeUnattendedConfig `json:"screenStrikeUnattended,omitempty"`
@@ -85,6 +86,12 @@ type UserSettings struct {
 	WarningZoneRadiusMeters   *float64                      `json:"warningZoneRadiusMeters,omitempty"`
 	WarningZones              []WarningZone                 `json:"warningZones,omitempty"`
 	Whitelist                 []WhitelistItem               `json:"whitelist,omitempty"`
+}
+
+// FPVVideoNetworkAddress describes an active local IPv4 address available to MediaMTX.
+type FPVVideoNetworkAddress struct {
+	Interface string `json:"interface"`
+	Address   string `json:"address"`
 }
 
 const (

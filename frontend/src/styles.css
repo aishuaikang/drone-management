@@ -5649,7 +5649,8 @@ button.screen-position-card__point {
   font-weight: 850;
 }
 
-.screen-settings-form-grid input {
+.screen-settings-form-grid input,
+.screen-settings-form-grid select {
   width: 100%;
   min-width: 0;
   border: 1px solid rgba(168, 185, 183, 0.22);
@@ -5663,9 +5664,15 @@ button.screen-position-card__point {
   outline: none;
 }
 
-.screen-settings-form-grid input:focus {
+.screen-settings-form-grid input:focus,
+.screen-settings-form-grid select:focus {
   border-color: rgba(var(--screen-primary-muted-rgb), 0.62);
   box-shadow: 0 0 0 2px rgba(var(--screen-primary-rgb), 0.12);
+}
+
+.screen-settings-form-grid select:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 .screen-settings-form-grid .screen-lingyun-static-value,

@@ -1,9 +1,48 @@
 package fpvvideo
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestSetWebRTCListenHostUpdatesConfigBetweenSessions(t *testing.T) {
+	service := New(Options{
+		RTSPURL:          "rtsp://192.168.100.106:554/live/1_1",
+		WebRTCListenHost: "192.168.77.101",
+		WebRTCListenPort: 18889,
+		WebRTCUDPPort:    18189,
+		PathName:         "fpv",
+	})
+	service.whepURL = localWHEPURL(service.options)
+
+	if err := service.SetWebRTCListenHost("192.168.31.254"); err != nil {
+		t.Fatalf("SetWebRTCListenHost() error = %v", err)
+	}
+	if got := service.WebRTCListenHost(); got != "192.168.31.254" {
+		t.Fatalf("WebRTCListenHost() = %q", got)
+	}
+	if got := service.WHEPURL(); got != "http://192.168.31.254:18889/fpv/whep" {
+		t.Fatalf("WHEPURL() = %q", got)
+	}
+	config := service.mediaMTXConfig()
+	if !strings.Contains(config, "webrtcAddress: 192.168.31.254:18889") ||
+		!strings.Contains(config, "webrtcLocalUDPAddress: 192.168.31.254:18189") {
+		t.Fatalf("config does not use updated host:\n%s", config)
+	}
+}
+
+func TestSetWebRTCListenHostRejectsInvalidOrRunning(t *testing.T) {
+	service := New(Options{WebRTCListenHost: "127.0.0.1"})
+	if err := service.SetWebRTCListenHost("::1"); err == nil {
+		t.Fatal("SetWebRTCListenHost() accepted IPv6 address")
+	}
+	service.cmd = &exec.Cmd{}
+	if err := service.SetWebRTCListenHost("192.168.31.254"); !errors.Is(err, ErrRunning) {
+		t.Fatalf("SetWebRTCListenHost() error = %v, want ErrRunning", err)
+	}
+}
 
 func TestMediaMTXBinaryName(t *testing.T) {
 	tests := []struct {

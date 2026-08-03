@@ -12,6 +12,7 @@ func TestUserSettingsPersistence(t *testing.T) {
 	retentionDays := 0
 	saved, err := store.SaveEditableUser(model.UserSettings{
 		IntrusionRetentionDays: &retentionDays,
+		FPVVideoWebRTCHost:     "192.168.31.254",
 		Whitelist: []model.WhitelistItem{
 			{Serial: "DJI-001", Model: "Mini 4 Pro", Source: "manual"},
 		},
@@ -35,6 +36,9 @@ func TestUserSettingsPersistence(t *testing.T) {
 	}
 	if len(loaded.Whitelist) != 1 || loaded.Whitelist[0].Serial != "DJI-001" {
 		t.Fatalf("loaded whitelist = %#v", loaded.Whitelist)
+	}
+	if loaded.FPVVideoWebRTCHost != "192.168.31.254" {
+		t.Fatalf("loaded FPV WebRTC host = %q", loaded.FPVVideoWebRTCHost)
 	}
 }
 

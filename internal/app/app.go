@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"drone-management/internal/config"
 	"drone-management/internal/fpv"
 	"drone-management/internal/fpvrecord"
+	"drone-management/internal/fpvvideo"
 	"drone-management/internal/httpapi"
 	"drone-management/internal/interference"
 	"drone-management/internal/interferencereport"
@@ -55,6 +57,7 @@ func New(cfg config.Config) (*App, error) {
 		seconds := model.UserSettingsPositionExpireSeconds(loaded)
 		state.SetPositionTTL(time.Duration(seconds) * time.Second)
 		cfg = configWithUserTCPPorts(cfg, loaded)
+		cfg = configWithUserFPVVideoHost(cfg, loaded)
 	}
 	intrusionStore, err := intrusion.NewStore(cfg.IntrusionDBPath)
 	if err != nil {
@@ -159,6 +162,26 @@ func New(cfg config.Config) (*App, error) {
 		cancel:              cancel,
 		done:                done,
 	}, nil
+}
+
+func configWithUserFPVVideoHost(cfg config.Config, userSettings model.UserSettings) config.Config {
+	host := strings.TrimSpace(userSettings.FPVVideoWebRTCHost)
+	if host == "" {
+		return cfg
+	}
+	addresses, err := fpvvideo.NetworkAddresses()
+	if err != nil {
+		slog.Warn("failed to list local addresses; ignoring saved WebRTC host", "host", host, "error", err)
+		return cfg
+	}
+	for _, address := range addresses {
+		if address.Address == host {
+			cfg.FPVVideo.WebRTCListenHost = host
+			return cfg
+		}
+	}
+	slog.Warn("saved WebRTC host is not assigned to an active local interface", "host", host)
+	return cfg
 }
 
 func newInterferenceService(cfg config.Config, state *store.Store) *interference.Service {

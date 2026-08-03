@@ -635,6 +635,101 @@ func TestUpdateScreenTCPPortsRouteRejectsInvalidPorts(t *testing.T) {
 	}
 }
 
+func TestFPVVideoNetworkAddressesRoute(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	s.fpvVideoAddresses = func() ([]model.FPVVideoNetworkAddress, error) {
+		return []model.FPVVideoNetworkAddress{
+			{Interface: "eth0", Address: "192.168.31.254"},
+			{Interface: "eth1", Address: "192.168.100.101"},
+		}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/screen/fpv-video/network-addresses", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body model.ListResponse[model.FPVVideoNetworkAddress]
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Count != 2 || len(body.Items) != 2 || body.Items[0].Interface != "eth0" {
+		t.Fatalf("addresses = %#v", body)
+	}
+}
+
+func TestUpdateUserSettingsChangesFPVVideoWebRTCHost(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	settingsStore := &memoryUserSettingsStore{}
+	s.userSettings = settingsStore
+	s.fpvVideoAddresses = func() ([]model.FPVVideoNetworkAddress, error) {
+		return []model.FPVVideoNetworkAddress{{Interface: "eth0", Address: "192.168.31.254"}}, nil
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"fpvVideoWebRTCHost":"192.168.31.254"}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := s.fpvVideo.WebRTCListenHost(); got != "192.168.31.254" {
+		t.Fatalf("WebRTCListenHost() = %q", got)
+	}
+	if settingsStore.settings.FPVVideoWebRTCHost != "192.168.31.254" {
+		t.Fatalf("saved settings = %#v", settingsStore.settings)
+	}
+}
+
+func TestUpdateUserSettingsDoesNotPersistRuntimeFPVVideoWebRTCHost(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	settingsStore := &memoryUserSettingsStore{}
+	s.userSettings = settingsStore
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"screenTitle":"Updated","fpvVideoWebRTCHost":"127.0.0.1"}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if settingsStore.settings.FPVVideoWebRTCHost != "" {
+		t.Fatalf("saved runtime FPV WebRTC host = %q, want empty", settingsStore.settings.FPVVideoWebRTCHost)
+	}
+	if settingsStore.settings.ScreenTitle != "Updated" {
+		t.Fatalf("saved screen title = %q", settingsStore.settings.ScreenTitle)
+	}
+}
+
+func TestUpdateUserSettingsRejectsUnavailableFPVVideoWebRTCHost(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	s.userSettings = &memoryUserSettingsStore{}
+	s.fpvVideoAddresses = func() ([]model.FPVVideoNetworkAddress, error) {
+		return []model.FPVVideoNetworkAddress{{Interface: "eth0", Address: "192.168.31.254"}}, nil
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"fpvVideoWebRTCHost":"192.168.77.101"}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := s.fpvVideo.WebRTCListenHost(); got != "127.0.0.1" {
+		t.Fatalf("WebRTCListenHost() = %q", got)
+	}
+}
+
 func TestUserSettingsRoutesNormalizeWhitelist(t *testing.T) {
 	state := store.New(10, 10)
 	s := newTestServer(t, state)

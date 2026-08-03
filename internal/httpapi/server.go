@@ -64,6 +64,7 @@ type userSettingsUpdateRequest struct {
 	IntrusionRetentionDays    *int                   `json:"intrusionRetentionDays,omitempty"`
 	ScreenTitle               *string                `json:"screenTitle,omitempty"`
 	PositionExpireSeconds     *int                   `json:"positionExpireSeconds,omitempty"`
+	FPVVideoWebRTCHost        *string                `json:"fpvVideoWebRTCHost,omitempty"`
 	ScreenStrikeChannelLabels *[]string              `json:"screenStrikeChannelLabels,omitempty"`
 	Lingyun                   *model.LingyunSettings `json:"lingyun,omitempty"`
 	WarningZoneEnabled        *bool                  `json:"warningZoneEnabled,omitempty"`
@@ -119,6 +120,7 @@ type Server struct {
 	mapTileLicenseStatus *mapTileLicenseStatusCache
 	network              *networkmanager.Service
 	license              *license.Service
+	fpvVideoAddresses    func() ([]model.FPVVideoNetworkAddress, error)
 
 	fpvVideoStopMu               sync.Mutex
 	fpvVideoMu                   sync.Mutex
@@ -251,6 +253,7 @@ func New(
 			WHEPURL:          cfg.FPVVideo.WHEPURL,
 			RecordPath:       "",
 		}),
+		fpvVideoAddresses: listFPVVideoNetworkAddresses,
 	}
 	for _, option := range options {
 		option(s)
@@ -317,6 +320,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/network/backups/{name}/restore", s.requireLicense(s.handleRestoreNetworkBackup))
 	mux.HandleFunc("DELETE /api/v1/network/backups/{name}", s.requireLicense(s.handleDeleteNetworkBackup))
 	mux.HandleFunc("GET /api/v1/screen/status", s.requireLicense(s.handleScreenStatus))
+	mux.HandleFunc("GET /api/v1/screen/fpv-video/network-addresses", s.requireLicense(s.handleFPVVideoNetworkAddresses))
 	mux.HandleFunc("GET /api/v1/screen/positions", s.requireLicense(s.handleScreenPositions))
 	mux.HandleFunc("GET /api/v1/screen/fpv", s.requireLicense(s.handleScreenFPV))
 	mux.HandleFunc("GET /api/v1/screen/strike", s.requireLicense(s.handleScreenStrike))
@@ -452,6 +456,22 @@ func (s *Server) handleUploadOfflineMap(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleScreenStatus(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, s.screenRuntimeStatus())
+}
+
+func (s *Server) handleFPVVideoNetworkAddresses(w http.ResponseWriter, _ *http.Request) {
+	if s.fpvVideoAddresses == nil {
+		respondError(w, http.StatusServiceUnavailable, "FPV video network address discovery is unavailable")
+		return
+	}
+	items, err := s.fpvVideoAddresses()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "list FPV video network addresses failed")
+		return
+	}
+	respondJSON(w, http.StatusOK, model.ListResponse[model.FPVVideoNetworkAddress]{
+		Items: items,
+		Count: len(items),
+	})
 }
 
 func (s *Server) handleUpdateScreenTCPPorts(w http.ResponseWriter, r *http.Request) {
@@ -687,11 +707,50 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusBadRequest, "invalid warning zones")
 		return
 	}
+	previousFPVVideoHost := ""
+	fpvVideoHostChanged := false
+	fpvVideoSessionLocked := false
+	defer func() {
+		if fpvVideoSessionLocked {
+			s.fpvVideoMu.Unlock()
+		}
+	}()
+	if req.FPVVideoWebRTCHost != nil {
+		s.fpvVideoMu.Lock()
+		fpvVideoSessionLocked = true
+		host := strings.TrimSpace(*req.FPVVideoWebRTCHost)
+		currentHost := s.fpvVideo.WebRTCListenHost()
+		if host == "" {
+			respondError(w, http.StatusBadRequest, "invalid FPV video WebRTC address")
+			return
+		}
+		if host != currentHost {
+			if !s.isAvailableFPVVideoNetworkAddress(host) {
+				respondError(w, http.StatusBadRequest, "FPV video WebRTC address is not assigned to an active local interface")
+				return
+			}
+			if err := s.fpvVideo.SetWebRTCListenHost(host); err != nil {
+				if errors.Is(err, fpvvideo.ErrRunning) {
+					respondError(w, http.StatusConflict, "close the active FPV video session before changing the WebRTC address")
+					return
+				}
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			previousFPVVideoHost = currentHost
+			fpvVideoHostChanged = true
+			s.cfg.FPVVideo.WebRTCListenHost = host
+		}
+	}
 
 	settings := model.UserSettings{}
 	if s.userSettings != nil {
 		loaded, ok, err := s.userSettings.LoadUser()
 		if err != nil {
+			if fpvVideoHostChanged {
+				_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
+				s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+			}
 			respondError(w, http.StatusInternalServerError, "load user settings failed")
 			return
 		}
@@ -708,6 +767,9 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	if req.PositionExpireSeconds != nil {
 		settings.PositionExpireSeconds = req.PositionExpireSeconds
+	}
+	if fpvVideoHostChanged {
+		settings.FPVVideoWebRTCHost = strings.TrimSpace(*req.FPVVideoWebRTCHost)
 	}
 	if req.ScreenStrikeChannelLabels != nil {
 		settings.ScreenStrikeChannelLabels = normalizeScreenStrikeChannelLabels(*req.ScreenStrikeChannelLabels)
@@ -737,14 +799,26 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	settings = model.UserSettingsWithDefaults(settings)
 	if s.userSettings == nil {
+		if fpvVideoSessionLocked {
+			s.fpvVideoMu.Unlock()
+			fpvVideoSessionLocked = false
+		}
 		s.applyUserSettings(settings)
 		respondJSON(w, http.StatusOK, settings)
 		return
 	}
 	saved, err := s.userSettings.SaveEditableUser(settings)
 	if err != nil {
+		if fpvVideoHostChanged {
+			_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
+			s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+		}
 		respondError(w, http.StatusInternalServerError, "save user settings failed")
 		return
+	}
+	if fpvVideoSessionLocked {
+		s.fpvVideoMu.Unlock()
+		fpvVideoSessionLocked = false
 	}
 	saved = model.UserSettingsWithDefaults(saved)
 	saved = s.userSettingsWithRuntimeDefaults(saved)
@@ -2323,6 +2397,9 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 		port := s.fpv.Status().Port
 		settings.FPVTCPPort = &port
 	}
+	if s != nil && s.fpvVideo != nil {
+		settings.FPVVideoWebRTCHost = s.fpvVideo.WebRTCListenHost()
+	}
 	if s != nil && s.store != nil {
 		location := s.store.DeviceLocation()
 		if location.Valid && location.Point != nil {
@@ -2335,6 +2412,37 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 		}
 	}
 	return model.UserSettingsWithDefaults(settings)
+}
+
+func (s *Server) isAvailableFPVVideoNetworkAddress(host string) bool {
+	if s == nil || s.fpvVideoAddresses == nil {
+		return false
+	}
+	addresses, err := s.fpvVideoAddresses()
+	if err != nil {
+		return false
+	}
+	for _, address := range addresses {
+		if address.Address == host {
+			return true
+		}
+	}
+	return false
+}
+
+func listFPVVideoNetworkAddresses() ([]model.FPVVideoNetworkAddress, error) {
+	addresses, err := fpvvideo.NetworkAddresses()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.FPVVideoNetworkAddress, 0, len(addresses))
+	for _, address := range addresses {
+		items = append(items, model.FPVVideoNetworkAddress{
+			Interface: address.Interface,
+			Address:   address.Address,
+		})
+	}
+	return items, nil
 }
 
 func (s *Server) pruneIntrusionsByCurrentUserSettings(ctx context.Context) error {

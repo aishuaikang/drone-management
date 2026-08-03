@@ -205,6 +205,7 @@ export interface UserSettings {
   positionExpireSeconds?: number;
   positionTCPPort?: number;
   fpvTCPPort?: number;
+  fpvVideoWebRTCHost?: string;
   lingyun?: LingyunSettings;
   screenStrikeChannelLabels?: string[];
   screenStrikeUnattended?: ScreenStrikeUnattendedConfig;
@@ -212,6 +213,11 @@ export interface UserSettings {
   warningZoneRadiusMeters?: number;
   warningZones?: WarningZone[];
   whitelist?: WhitelistItem[];
+}
+
+export interface FPVVideoNetworkAddress {
+  interface: string;
+  address: string;
 }
 
 export interface LingyunSettings {
