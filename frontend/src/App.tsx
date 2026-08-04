@@ -6337,7 +6337,7 @@ function IntrusionTrackReplay({
   useEffect(() => {
     updateProgress(0);
     setIsPlaying(canAnimate);
-  }, [activeKind, canAnimate, target.id, timeline, updateProgress]);
+  }, [activeKind, canAnimate, target.id, updateProgress]);
 
   useEffect(() => {
     if (!map) {
@@ -6605,7 +6605,7 @@ function IntrusionMapModal({
   t: Record<string, string>;
   onClose: () => void;
 }) {
-  const target = intrusionToPositionTarget(record);
+  const target = useMemo(() => intrusionToPositionTarget(record), [record]);
   const deviceLocation = record.deviceLocation ?? null;
   const title = resolveDisplayModel(record) || record.serial || t.intrusionMapTitle;
 
