@@ -19,6 +19,7 @@ import {
   Maximize2,
   MapPin,
   Network,
+  Pause,
   Palette,
   Play,
   FileVideo,
@@ -26,6 +27,7 @@ import {
   Plus,
   QrCode,
   Radio,
+  RotateCcw,
   Satellite,
   Search,
   Settings,
@@ -83,8 +85,6 @@ import { NetworkManagement } from "./components/NetworkManagement";
 import centerPointIcon from "./assets/images/centerPoint.svg";
 import detectionDeviceIconOnlineUrl from "./assets/images/detectionDeviceIconOnline.svg";
 import screenAlarmAudio from "./assets/images/screen/audio.mp3";
-import footerBg from "./assets/images/screen/footerBg.svg?raw";
-import headerBg from "./assets/images/screen/headerBg.svg?raw";
 import mini2Image from "./assets/images/uav/mini2.png";
 import remoteControlBlackFlyIconUrl from "./assets/images/remoteControlBlackFlyIcon.svg";
 import remoteControlIconUrl from "./assets/images/remoteControlIcon.svg";
@@ -121,8 +121,15 @@ import type {
   WarningZone,
   WhitelistItem,
 } from "./types";
+import { isValidCoordinate } from "./utils/coordinate";
 import { createDrawControlButtonGroup } from "./utils/leafletControls";
 import { installLeafletCoordConverter } from "./utils/leafletCoordConverter";
+import {
+  buildTrackReplayTimeline,
+  sampleTrackReplay,
+  selectTrackReplayKind,
+  type TrackReplayKind,
+} from "./utils/trackReplay";
 
 type Locale = "zh-CN" | "en-US";
 type Tab = "positions" | "fpv";
@@ -271,6 +278,9 @@ const referenceMapLayers: ReferenceMapLayer[] = [
 const deviceIconSize: [number, number] = [40, 52];
 const targetIconSize: [number, number] = [32, 52];
 const pilotTrackColor = "#fbbf24";
+const replayPlaybackRates = [1, 2, 4, 8, 16];
+const emptyReplayPositions: ScreenPositionTarget[] = [];
+const noopReplaySelectPosition = () => undefined;
 const warningZoneControlIcon = `
   <span class="warning-zone-button__icon" aria-hidden="true">
     <svg viewBox="0 0 24 24" focusable="false">
@@ -304,6 +314,8 @@ const labels: Record<Locale, Record<string, string>> = {
     enabled: "已启用",
     disabled: "已停用",
     listening: "监听中",
+    udpListenFailed: "UDP 监听失败",
+    udpListenFailedTcpAvailable: "UDP 监听失败，TCP 仍在监听",
     offline: "未监听",
     waiting: "等待设备",
     positions: "定位列表",
@@ -424,10 +436,19 @@ const labels: Record<Locale, Record<string, string>> = {
     unwhitelistedDrone: "无人机（未入白名单）",
     whitelistPilot: "飞手（白名单）",
     unwhitelistedPilot: "飞手（未入白名单）",
-	    trajectory: "无人机轨迹",
-	    pilotTrajectory: "飞手轨迹",
-	    trajectoryReplay: "轨迹回放",
-	    time: "时间",
+    trajectory: "无人机轨迹",
+    pilotTrajectory: "飞手轨迹",
+    trajectoryReplay: "轨迹回放",
+    trajectoryReplayTrack: "轨迹类型",
+    trajectoryReplayDrone: "无人机",
+    trajectoryReplayPilot: "飞手",
+    trajectoryReplayPlay: "播放",
+    trajectoryReplayPause: "暂停",
+    trajectoryReplayReset: "重新播放",
+    trajectoryReplayProgress: "播放进度",
+    trajectoryReplayRate: "倍速",
+    trajectoryReplayNoTrack: "该记录没有可回放的轨迹",
+    time: "时间",
     coordinate: "坐标",
     deviceStatus: "设备状态",
     tcpAddress: "监听地址",
@@ -635,7 +656,7 @@ const labels: Record<Locale, Record<string, string>> = {
     identity: "标识",
     details: "详情",
     fpvRecordList: "FPV 图传记录",
-    intrusionMapTitle: "入侵坐标地图",
+    intrusionMapTitle: "轨迹回放",
     whitelistManagement: "白名单管理",
     filter: "筛选",
     modelFilter: "型号",
@@ -730,6 +751,8 @@ const labels: Record<Locale, Record<string, string>> = {
     enabled: "Enabled",
     disabled: "Disabled",
     listening: "Listening",
+    udpListenFailed: "UDP listener failed",
+    udpListenFailedTcpAvailable: "UDP listener failed; TCP is still listening",
     offline: "Offline",
     waiting: "Waiting",
     positions: "Positions",
@@ -850,10 +873,19 @@ const labels: Record<Locale, Record<string, string>> = {
     unwhitelistedDrone: "Drone (alert)",
     whitelistPilot: "Pilot (whitelist)",
     unwhitelistedPilot: "Pilot (alert)",
-	    trajectory: "Drone track",
-	    pilotTrajectory: "Pilot track",
-	    trajectoryReplay: "Track Replay",
-	    time: "Time",
+    trajectory: "Drone track",
+    pilotTrajectory: "Pilot track",
+    trajectoryReplay: "Track Replay",
+    trajectoryReplayTrack: "Track type",
+    trajectoryReplayDrone: "Drone",
+    trajectoryReplayPilot: "Pilot",
+    trajectoryReplayPlay: "Play",
+    trajectoryReplayPause: "Pause",
+    trajectoryReplayReset: "Replay",
+    trajectoryReplayProgress: "Playback progress",
+    trajectoryReplayRate: "Speed",
+    trajectoryReplayNoTrack: "This record has no replayable track",
+    time: "Time",
     coordinate: "Coordinate",
     deviceStatus: "Device status",
     tcpAddress: "Listen address",
@@ -1061,7 +1093,7 @@ const labels: Record<Locale, Record<string, string>> = {
     identity: "Identity",
     details: "Details",
     fpvRecordList: "FPV Video Records",
-    intrusionMapTitle: "Intrusion Map",
+    intrusionMapTitle: "Track Replay",
     whitelistManagement: "Whitelist",
     filter: "Filter",
     modelFilter: "Model",
@@ -1826,13 +1858,17 @@ export function App() {
       ) : null}
 
       <header className="screen-header">
-        <span className="screen-header-bg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: headerBg }} />
-        <div className="screen-header__left">
-          <span className="screen-header__date">{formatScreenDate(now)}</span>
-          <strong className="screen-header__time">{now.toLocaleTimeString(locale, { hour12: false })}</strong>
-        </div>
         <div className="screen-header__title">
+          <span className="screen-header__brand-mark" aria-hidden="true">
+            <Antenna />
+          </span>
           <h1 title={screenTitle}>{screenTitle}</h1>
+          <span className="screen-header__clock">
+            <span className="screen-header__date">{formatScreenDate(now)}</span>
+            <time className="screen-header__time" dateTime={now.toISOString()}>
+              {now.toLocaleTimeString(locale, { hour12: false })}
+            </time>
+          </span>
         </div>
         <div className="screen-header__right">
           <div
@@ -2076,7 +2112,7 @@ export function App() {
                   aria-selected={tab === "positions"}
                   onClick={() => setTab("positions")}
                 >
-                  <TabStatusDot status={status?.position} />
+                  <TabStatusDot status={status?.position} t={t} />
                   <MapPin className="screen-tab__icon" aria-hidden="true" />
                   <span>{t.positions}</span>
                   <strong>{visiblePositions.length}</strong>
@@ -2088,7 +2124,7 @@ export function App() {
                   aria-selected={tab === "fpv"}
                   onClick={() => setTab("fpv")}
                 >
-                  <TabStatusDot status={status?.fpv} />
+                  <TabStatusDot status={status?.fpv} t={t} />
                   <Radio className="screen-tab__icon" aria-hidden="true" />
                   <span>{t.fpv}</span>
                   <strong>{visibleFPV.length}</strong>
@@ -2120,9 +2156,7 @@ export function App() {
         />
       )}
 
-      <footer className="screen-footer" aria-hidden="true">
-        <span className="screen-footer-bg" dangerouslySetInnerHTML={{ __html: footerBg }} />
-      </footer>
+      <footer className="screen-footer" aria-hidden="true" />
 
       <NavigationQRCodeModal
         state={navigationQRCode}
@@ -2167,6 +2201,8 @@ function ScreenMap({
   warningZoneEnabled = false,
   manualLocationPickMode = false,
   onSelectPosition,
+  onCenterMap,
+  onMapReady,
   onManualLocationPick,
   onWarningZoneToggle,
   t,
@@ -2182,6 +2218,8 @@ function ScreenMap({
   warningZoneEnabled?: boolean;
   manualLocationPickMode?: boolean;
   onSelectPosition: (target: ScreenPositionTarget) => void;
+  onCenterMap?: (map: L.Map) => void;
+  onMapReady?: (map: L.Map | null) => void;
   onManualLocationPick?: (point: GeoPoint) => void;
   onWarningZoneToggle?: (enabled: boolean) => void | Promise<void>;
   t: Record<string, string>;
@@ -2197,6 +2235,8 @@ function ScreenMap({
   const [tileNetworkMode, setTileNetworkMode] = useState<TileNetworkMode>(() => getStoredTileNetworkMode());
   const tileNetworkModeRef = useRef(tileNetworkMode);
   const dataRef = useRef<ScreenMapData>({ deviceLocation, positions, warningZone: warningZone ?? null });
+  const onCenterMapRef = useRef(onCenterMap);
+  const onMapReadyRef = useRef(onMapReady);
   const onWarningZoneToggleRef = useRef(onWarningZoneToggle);
   const onManualLocationPickRef = useRef(onManualLocationPick);
   const warningZoneEnabledRef = useRef(warningZoneEnabled);
@@ -2211,6 +2251,17 @@ function ScreenMap({
   useEffect(() => {
     dataRef.current = { deviceLocation, positions, warningZone: warningZone ?? null };
   }, [deviceLocation, positions, warningZone]);
+
+  useEffect(() => {
+    onCenterMapRef.current = onCenterMap;
+  }, [onCenterMap]);
+
+  useEffect(() => {
+    onMapReadyRef.current = onMapReady;
+    if (mapRef.current) {
+      onMapReady?.(mapRef.current);
+    }
+  }, [onMapReady]);
 
   useEffect(() => {
     onWarningZoneToggleRef.current = onWarningZoneToggle;
@@ -2278,6 +2329,10 @@ function ScreenMap({
     if (!map) {
       return;
     }
+    if (onCenterMapRef.current) {
+      onCenterMapRef.current(map);
+      return;
+    }
     const data = dataRef.current;
     fitBounds(map, collectMapPoints(data.deviceLocation, data.positions, data.warningZone));
   }, []);
@@ -2320,6 +2375,10 @@ function ScreenMap({
           text: centerPointIcon,
           className: "center-point-button",
           onClick: () => {
+            if (onCenterMapRef.current) {
+              onCenterMapRef.current(map);
+              return;
+            }
             const data = dataRef.current;
             fitBounds(map, collectMapPoints(data.deviceLocation, data.positions, data.warningZone));
           },
@@ -2388,6 +2447,7 @@ function ScreenMap({
 
     mapRef.current = map;
     layerRef.current = L.layerGroup().addTo(map);
+    onMapReadyRef.current?.(map);
     const timer = window.setTimeout(() => {
       map.invalidateSize();
       fitMap();
@@ -2395,6 +2455,7 @@ function ScreenMap({
 
     return () => {
       window.clearTimeout(timer);
+      onMapReadyRef.current?.(null);
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
@@ -5369,7 +5430,6 @@ function IntrusionsManagement({
           locale={locale}
           theme={theme}
           t={t}
-          userSettings={userSettings}
           onClose={() => setMapRecord(null)}
         />
       ) : null}
@@ -6142,19 +6202,407 @@ function FPVVideoRecordModal({
   return createPortal(modal, document.body);
 }
 
+type IntrusionReplayLayers = {
+  group: L.LayerGroup;
+  marker: L.Marker;
+  passedLine: L.Polyline | null;
+  activeSegmentLine: L.Polyline | null;
+  trackLatLngs: L.LatLng[];
+  renderedLowerIndex: number;
+};
+
+function fallbackReplayPoint(
+  point: ScreenPositionPoint | undefined,
+  target: ScreenPositionTarget,
+  includeFlightMetrics: boolean,
+): ScreenPositionTrackPoint[] {
+  if (!validMapPoint(point)) {
+    return [];
+  }
+  return [{
+    ...point,
+    time: target.lastSeen,
+    ...(includeFlightMetrics ? { height: target.height, speed: target.speed } : {}),
+  }];
+}
+
+function resolveReplayPoints(target: ScreenPositionTarget, kind: TrackReplayKind) {
+  const trajectory = (kind === "drone" ? target.droneTrajectory : target.pilotTrajectory)
+    ?.filter(validMapPoint) ?? [];
+  if (trajectory.length > 0) {
+    return trajectory;
+  }
+  return fallbackReplayPoint(
+    kind === "drone" ? target.drone : target.pilot,
+    target,
+    kind === "drone",
+  );
+}
+
+function formatReplayDuration(valueMs: number) {
+  const totalSeconds = Math.max(0, Math.round(valueMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatReplayMetric(value: number | undefined, locale: Locale, unit: string, maximumFractionDigits: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  return `${value.toLocaleString(locale, { maximumFractionDigits })}${unit}`;
+}
+
+function collectReplayFitPoints(
+  trackLatLngs: L.LatLng[],
+  deviceLocation: ScreenDeviceLocationResponse | null,
+) {
+  const points = [...trackLatLngs];
+  if (deviceLocation?.valid && validMapPoint(deviceLocation.point)) {
+    points.push(L.latLng(deviceLocation.point.latitude, deviceLocation.point.longitude));
+  }
+  return points;
+}
+
+function fitReplayMap(
+  map: L.Map,
+  trackLatLngs: L.LatLng[],
+  deviceLocation: ScreenDeviceLocationResponse | null,
+) {
+  map.invalidateSize();
+  const points = collectReplayFitPoints(trackLatLngs, deviceLocation);
+  if (points.length === 1) {
+    map.setView(points[0], Math.max(map.getZoom(), 15), { animate: false });
+  } else if (points.length > 1) {
+    map.fitBounds(L.latLngBounds(points), {
+      animate: false,
+      maxZoom: 16,
+      padding: [48, 48],
+    });
+  }
+}
+
+function IntrusionTrackReplay({
+  target,
+  deviceLocation,
+  locale,
+  theme,
+  t,
+}: {
+  target: ScreenPositionTarget;
+  deviceLocation: ScreenDeviceLocationResponse | null;
+  locale: Locale;
+  theme: ThemeColorOption;
+  t: Record<string, string>;
+}) {
+  const dronePoints = useMemo(() => resolveReplayPoints(target, "drone"), [target]);
+  const pilotPoints = useMemo(() => resolveReplayPoints(target, "pilot"), [target]);
+  const initialKind = selectTrackReplayKind(dronePoints.length, pilotPoints.length);
+  const [activeKind, setActiveKind] = useState<TrackReplayKind>(initialKind);
+  const [map, setMap] = useState<L.Map | null>(null);
+  const [playbackRate, setPlaybackRate] = useState(4);
+  const [progress, setProgressState] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const progressRef = useRef(0);
+  const replayLayersRef = useRef<IntrusionReplayLayers | null>(null);
+
+  const activePoints = activeKind === "drone" ? dronePoints : pilotPoints;
+  const timeline = useMemo(() => buildTrackReplayTimeline(activePoints), [activePoints]);
+  const trackLatLngs = useMemo(
+    () => timeline.points.map((point) => L.latLng(point.latitude, point.longitude)),
+    [timeline.points],
+  );
+  const canAnimate = timeline.points.length > 1 && timeline.durationMs > 0;
+  const currentSample = useMemo(() => sampleTrackReplay(timeline, progress), [progress, timeline]);
+  const trackColor = activeKind === "drone" ? theme.trackColor : pilotTrackColor;
+
+  const updateProgress = useCallback((value: number) => {
+    const normalized = Math.min(1, Math.max(0, value));
+    progressRef.current = normalized;
+    setProgressState(normalized);
+  }, []);
+
+  const handleCenterMap = useCallback((targetMap: L.Map) => {
+    fitReplayMap(targetMap, trackLatLngs, deviceLocation);
+  }, [deviceLocation, trackLatLngs]);
+
+  useEffect(() => {
+    setActiveKind(selectTrackReplayKind(dronePoints.length, pilotPoints.length));
+  }, [dronePoints.length, pilotPoints.length, target.id]);
+
+  useEffect(() => {
+    updateProgress(0);
+    setIsPlaying(canAnimate);
+  }, [activeKind, canAnimate, target.id, timeline, updateProgress]);
+
+  useEffect(() => {
+    if (!map) {
+      return;
+    }
+
+    replayLayersRef.current?.group.remove();
+    replayLayersRef.current = null;
+    if (timeline.points.length === 0) {
+      return;
+    }
+
+    const group = L.layerGroup().addTo(map);
+    if (trackLatLngs.length > 1) {
+      L.polyline(trackLatLngs, {
+        className: "screen-intrusion-replay-line screen-intrusion-replay-line--remaining",
+        color: "#64748b",
+        opacity: 0.72,
+        pane: "screenTrajectories",
+        weight: 3,
+      }).addTo(group);
+    }
+    const passedLine = trackLatLngs.length > 1
+      ? L.polyline([trackLatLngs[0]], {
+        className: "screen-intrusion-replay-line screen-intrusion-replay-line--passed",
+        color: trackColor,
+        opacity: 0.96,
+        pane: "screenTrajectories",
+        weight: 4,
+      }).addTo(group)
+      : null;
+    const activeSegmentLine = trackLatLngs.length > 1
+      ? L.polyline([trackLatLngs[0]], {
+        className: "screen-intrusion-replay-line screen-intrusion-replay-line--passed",
+        color: trackColor,
+        opacity: 0.96,
+        pane: "screenTrajectories",
+        weight: 4,
+      }).addTo(group)
+      : null;
+    const marker = L.marker(trackLatLngs[0], {
+      alt: activeKind === "drone" ? t.trajectoryReplayDrone : t.trajectoryReplayPilot,
+      icon: createIcon(
+        markerIcon(activeKind, true, false),
+        targetIconSize,
+        "screen-intrusion-replay-marker",
+      ),
+      keyboard: false,
+      pane: "screenSelectedMarkers",
+      zIndexOffset: 50,
+    }).addTo(group);
+
+    replayLayersRef.current = {
+      group,
+      marker,
+      passedLine,
+      activeSegmentLine,
+      trackLatLngs,
+      renderedLowerIndex: 0,
+    };
+
+    const fitTimer = window.setTimeout(() => fitReplayMap(map, trackLatLngs, deviceLocation), 0);
+    return () => {
+      window.clearTimeout(fitTimer);
+      group.remove();
+      if (replayLayersRef.current?.group === group) {
+        replayLayersRef.current = null;
+      }
+    };
+  }, [activeKind, deviceLocation, map, t.trajectoryReplayDrone, t.trajectoryReplayPilot, timeline.points.length, trackColor, trackLatLngs]);
+
+  useEffect(() => {
+    if (!currentSample || !replayLayersRef.current) {
+      return;
+    }
+    const layers = replayLayersRef.current;
+    const currentLatLng = L.latLng(currentSample.latitude, currentSample.longitude);
+    layers.marker.setLatLng(currentLatLng);
+    if (layers.passedLine && layers.renderedLowerIndex !== currentSample.lowerIndex) {
+      layers.passedLine.setLatLngs(layers.trackLatLngs.slice(0, currentSample.lowerIndex + 1));
+      layers.renderedLowerIndex = currentSample.lowerIndex;
+    }
+    if (layers.activeSegmentLine) {
+      layers.activeSegmentLine.setLatLngs(currentSample.upperIndex === currentSample.lowerIndex
+        ? [currentLatLng]
+        : [layers.trackLatLngs[currentSample.lowerIndex], currentLatLng]);
+    }
+  }, [currentSample]);
+
+  useEffect(() => {
+    if (!isPlaying || !canAnimate) {
+      return;
+    }
+
+    const startedAt = performance.now();
+    const startProgress = progressRef.current;
+    let animationFrame = 0;
+    const animate = (now: number) => {
+      const elapsedPlaybackMs = (now - startedAt) * playbackRate;
+      const nextProgress = startProgress + elapsedPlaybackMs / timeline.durationMs;
+      if (nextProgress >= 1) {
+        updateProgress(1);
+        setIsPlaying(false);
+        return;
+      }
+      updateProgress(nextProgress);
+      animationFrame = window.requestAnimationFrame(animate);
+    };
+    animationFrame = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [canAnimate, isPlaying, playbackRate, timeline.durationMs, updateProgress]);
+
+  const togglePlayback = () => {
+    if (!canAnimate) {
+      return;
+    }
+    if (isPlaying) {
+      setIsPlaying(false);
+      return;
+    }
+    if (progressRef.current >= 1) {
+      updateProgress(0);
+    }
+    setIsPlaying(true);
+  };
+
+  const resetPlayback = () => {
+    updateProgress(0);
+    setIsPlaying(canAnimate);
+  };
+
+  const trackLabel = activeKind === "drone" ? t.trajectoryReplayDrone : t.trajectoryReplayPilot;
+  const currentTime = currentSample?.timeMs !== null && currentSample?.timeMs !== undefined
+    ? formatFullTime(new Date(currentSample.timeMs).toISOString(), locale)
+    : "-";
+
+  return (
+    <div className="screen-intrusion-replay">
+      <div className="screen-intrusion-replay__controls">
+        <div className="screen-intrusion-replay__track-switch" role="tablist" aria-label={t.trajectoryReplayTrack}>
+          <button
+            className={activeKind === "drone" ? "is-active" : undefined}
+            type="button"
+            role="tab"
+            aria-selected={activeKind === "drone"}
+            disabled={dronePoints.length === 0}
+            onClick={() => setActiveKind("drone")}
+          >
+            {t.trajectoryReplayDrone}
+          </button>
+          <button
+            className={activeKind === "pilot" ? "is-active" : undefined}
+            type="button"
+            role="tab"
+            aria-selected={activeKind === "pilot"}
+            disabled={pilotPoints.length === 0}
+            onClick={() => setActiveKind("pilot")}
+          >
+            {t.trajectoryReplayPilot}
+          </button>
+        </div>
+
+        <button
+          className="screen-intrusion-replay__control-button"
+          type="button"
+          disabled={!canAnimate}
+          aria-label={isPlaying ? t.trajectoryReplayPause : t.trajectoryReplayPlay}
+          title={isPlaying ? t.trajectoryReplayPause : t.trajectoryReplayPlay}
+          onClick={togglePlayback}
+        >
+          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+        </button>
+        <button
+          className="screen-intrusion-replay__control-button"
+          type="button"
+          disabled={timeline.points.length === 0}
+          aria-label={t.trajectoryReplayReset}
+          title={t.trajectoryReplayReset}
+          onClick={resetPlayback}
+        >
+          <RotateCcw size={16} />
+        </button>
+
+        <input
+          className="screen-intrusion-replay__progress"
+          type="range"
+          min={0}
+          max={1000}
+          step={1}
+          value={Math.round(progress * 1000)}
+          disabled={!canAnimate}
+          aria-label={t.trajectoryReplayProgress}
+          onChange={(event) => {
+            setIsPlaying(false);
+            updateProgress(Number(event.currentTarget.value) / 1000);
+          }}
+        />
+        <span className="screen-intrusion-replay__clock">
+          {formatReplayDuration(currentSample?.elapsedMs ?? 0)} / {formatReplayDuration(timeline.durationMs)}
+        </span>
+        <label className="screen-intrusion-replay__rate">
+          <span>{t.trajectoryReplayRate}</span>
+          <select value={playbackRate} onChange={(event) => setPlaybackRate(Number(event.currentTarget.value))}>
+            {replayPlaybackRates.map((rate) => <option key={rate} value={rate}>{rate}×</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="screen-intrusion-replay__map-wrap">
+        <ScreenMap
+          positions={emptyReplayPositions}
+          selectedPosition={null}
+          deviceLocation={deviceLocation}
+          theme={theme}
+          onSelectPosition={noopReplaySelectPosition}
+          onCenterMap={handleCenterMap}
+          onMapReady={setMap}
+          t={t}
+          locale={locale}
+          showLayerControl={false}
+        />
+        {timeline.points.length === 0 ? (
+          <div className="screen-intrusion-replay__empty" role="status">
+            {t.trajectoryReplayNoTrack}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="screen-intrusion-replay__details" aria-label={trackLabel}>
+        <div>
+          <span>{t.time}</span>
+          <strong>{currentTime}</strong>
+        </div>
+        <div>
+          <span>{t.latitude}</span>
+          <strong>{formatCoordinateValue(currentSample?.latitude)}</strong>
+        </div>
+        <div>
+          <span>{t.longitude}</span>
+          <strong>{formatCoordinateValue(currentSample?.longitude)}</strong>
+        </div>
+        <div>
+          <span>{t.speed}</span>
+          <strong>{formatReplayMetric(currentSample?.speed, locale, t.metersPerSecond, 1)}</strong>
+        </div>
+        <div>
+          <span>{t.height}</span>
+          <strong>{formatReplayMetric(currentSample?.height, locale, t.meters, 1)}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IntrusionMapModal({
   record,
   locale,
   theme,
   t,
-  userSettings,
   onClose,
 }: {
   record: IntrusionRecord;
   locale: Locale;
   theme: ThemeColorOption;
   t: Record<string, string>;
-  userSettings: UserSettings;
   onClose: () => void;
 }) {
   const target = intrusionToPositionTarget(record);
@@ -6172,20 +6620,13 @@ function IntrusionMapModal({
           <h2 id="screen-intrusion-map-title">{title}</h2>
           <p>{record.serial || record.targetId || "-"}</p>
         </header>
-        <div className="screen-intrusion-map-modal__map">
-          <ScreenMapLegend t={t} theme={theme} />
-          <ScreenMap
-            positions={[target]}
-            selectedPosition={target}
-            deviceLocation={deviceLocation}
-            theme={theme}
-            whitelist={userSettings.whitelist}
-            onSelectPosition={() => undefined}
-            t={t}
-            locale={locale}
-            showLayerControl={false}
-          />
-        </div>
+        <IntrusionTrackReplay
+          target={target}
+          deviceLocation={deviceLocation}
+          locale={locale}
+          theme={theme}
+          t={t}
+        />
       </section>
     </div>
   );
@@ -6467,8 +6908,16 @@ function DeviceSummary({
   );
 }
 
-function TabStatusDot({ status }: { status?: TCPListenerStatus }) {
-  return <span className={`screen-tab__status screen-tab__status--${getTCPListenerStatusTone(status)}`} aria-hidden="true" />;
+function TabStatusDot({ status, t }: { status?: TCPListenerStatus; t: Record<string, string> }) {
+  const label = getTCPListenerStatusLabel(status, t);
+  return (
+    <span
+      className={`screen-tab__status screen-tab__status--${getTCPListenerStatusTone(status)}`}
+      aria-label={label}
+      role="img"
+      title={label}
+    />
+  );
 }
 
 function TCPClientStatusDot({ status }: { status?: TCPClientStatus }) {
@@ -6476,13 +6925,26 @@ function TCPClientStatusDot({ status }: { status?: TCPClientStatus }) {
 }
 
 function getTCPListenerStatusTone(status?: TCPListenerStatus) {
-  if (status?.sourceConnected) {
+  if (status?.sourceConnected || status?.udpSourceActive) {
     return "success";
   }
-  if (status?.listening) {
+  if (status?.listening || status?.udpListening) {
     return "warning";
   }
   return "danger";
+}
+
+function getTCPListenerStatusLabel(status: TCPListenerStatus | undefined, t: Record<string, string>) {
+  if (status?.sourceConnected || status?.udpSourceActive) {
+    return t.connected;
+  }
+  if (status?.udpEnabled && status.udpListenError) {
+    return status.listening ? t.udpListenFailedTcpAvailable : t.udpListenFailed;
+  }
+  if (status?.listening || status?.udpListening) {
+    return t.listening;
+  }
+  return t.disconnected;
 }
 
 function getTCPClientStatusTone(status?: TCPClientStatus) {
@@ -8737,24 +9199,11 @@ function sortFPV(items: ScreenFPVTarget[]) {
 }
 
 function presentCoordinatePoint(point?: GeoPoint | ScreenPositionPoint | null): point is ScreenPositionPoint {
-  return Boolean(
-    point &&
-      Number.isFinite(point.latitude) &&
-      Number.isFinite(point.longitude),
-  );
+  return Boolean(point && isValidCoordinate(point.longitude, point.latitude));
 }
 
 function validMapPoint(point?: GeoPoint | ScreenPositionPoint | null): point is ScreenPositionPoint {
-  return Boolean(
-    point &&
-      Number.isFinite(point.latitude) &&
-      Number.isFinite(point.longitude) &&
-      point.latitude >= -90 &&
-      point.latitude <= 90 &&
-      point.longitude >= -180 &&
-      point.longitude <= 180 &&
-      !(point.latitude === 0 && point.longitude === 0),
-  );
+  return Boolean(point && isValidCoordinate(point.longitude, point.latitude));
 }
 
 function formatManualCoordinate(value: number) {
@@ -8781,7 +9230,7 @@ function validLongitude(value: number) {
 }
 
 function validManualPoint(latitude: number, longitude: number) {
-  return validLatitude(latitude) && validLongitude(longitude) && !(latitude === 0 && longitude === 0);
+  return isValidCoordinate(longitude, latitude);
 }
 
 function getNavigationCoordinates(point: ScreenPositionPoint) {

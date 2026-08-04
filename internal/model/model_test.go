@@ -315,23 +315,32 @@ func TestLingyunSettingsWithDeviceLocationOverridesLogicalDevices(t *testing.T) 
 }
 
 func TestLingyunSettingsWithDeviceLocationSkipsInvalidPoint(t *testing.T) {
-	settings := LingyunSettingsWithDefaults(LingyunSettings{
-		Devices: []LingyunDeviceSettings{
-			{
-				Type:            LingyunDeviceAOA,
-				DeviceLongitude: 116.1,
-				DeviceLatitude:  39.9,
-			},
-		},
-	})
+	tests := []struct {
+		name  string
+		point GeoPoint
+	}{
+		{name: "NaN", point: GeoPoint{Latitude: math.NaN(), Longitude: 116.5678}},
+		{name: "zero longitude", point: GeoPoint{Latitude: 39.9, Longitude: 0}},
+		{name: "near origin", point: GeoPoint{Latitude: -0.05, Longitude: 0.05}},
+	}
 
-	got := LingyunSettingsWithDeviceLocation(settings, &GeoPoint{
-		Latitude:  math.NaN(),
-		Longitude: 116.5678,
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			settings := LingyunSettingsWithDefaults(LingyunSettings{
+				Devices: []LingyunDeviceSettings{
+					{
+						Type:            LingyunDeviceAOA,
+						DeviceLongitude: 116.1,
+						DeviceLatitude:  39.9,
+					},
+				},
+			})
 
-	if got.Devices[0].DeviceLongitude != 116.1 || got.Devices[0].DeviceLatitude != 39.9 {
-		t.Fatalf("invalid point changed location to %.4f/%.4f", got.Devices[0].DeviceLongitude, got.Devices[0].DeviceLatitude)
+			got := LingyunSettingsWithDeviceLocation(settings, &tt.point)
+			if got.Devices[0].DeviceLongitude != 116.1 || got.Devices[0].DeviceLatitude != 39.9 {
+				t.Fatalf("invalid point changed location to %.4f/%.4f", got.Devices[0].DeviceLongitude, got.Devices[0].DeviceLatitude)
+			}
+		})
 	}
 }
 

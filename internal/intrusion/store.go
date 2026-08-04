@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/model"
 
 	_ "modernc.org/sqlite"
@@ -782,16 +783,7 @@ func floatPtr(value sql.NullFloat64) *float64 {
 }
 
 func validGeoPoint(point *model.GeoPoint) bool {
-	return point != nil &&
-		!math.IsNaN(point.Latitude) &&
-		!math.IsInf(point.Latitude, 0) &&
-		!math.IsNaN(point.Longitude) &&
-		!math.IsInf(point.Longitude, 0) &&
-		point.Latitude >= -90 &&
-		point.Latitude <= 90 &&
-		point.Longitude >= -180 &&
-		point.Longitude <= 180 &&
-		!(point.Latitude == 0 && point.Longitude == 0)
+	return point != nil && coordinate.IsValid(point.Longitude, point.Latitude)
 }
 
 func distanceMeters(a, b model.ScreenPositionPoint) float64 {

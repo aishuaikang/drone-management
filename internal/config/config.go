@@ -13,6 +13,8 @@ type Config struct {
 	Addr                     string
 	TCPBindHost              string
 	PositionTCPPort          int
+	PositionUDPEnabled       bool
+	PositionUDPPort          int
 	FPVTCPPort               int
 	TCPBindRetry             time.Duration
 	TCPReadIdleTimeout       time.Duration
@@ -75,6 +77,8 @@ func Load() Config {
 		Addr:                     envString("API_ADDR", ":18080"),
 		TCPBindHost:              envString("API_TCP_BIND_HOST", "0.0.0.0"),
 		PositionTCPPort:          envInt("API_POSITION_TCP_PORT", 10007),
+		PositionUDPEnabled:       envBool("API_POSITION_UDP_ENABLED", false),
+		PositionUDPPort:          envInt("API_POSITION_UDP_PORT", 10007),
 		FPVTCPPort:               envInt("API_FPV_TCP_PORT", 10005),
 		TCPBindRetry:             time.Duration(envInt("API_TCP_BIND_RETRY_MS", 1000)) * time.Millisecond,
 		TCPReadIdleTimeout:       time.Duration(envInt("API_TCP_READ_IDLE_TIMEOUT_MS", 0)) * time.Millisecond,

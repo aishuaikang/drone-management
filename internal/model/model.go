@@ -5,12 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"math"
 	"net"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"drone-management/internal/coordinate"
 )
 
 // LocaleMeta describes supported frontend locales.
@@ -322,7 +323,7 @@ func LingyunSettingsWithDeviceIdentity(settings LingyunSettings, identity string
 
 // LingyunSettingsWithDeviceLocation fills all logical Lingyun device coordinates with point.
 func LingyunSettingsWithDeviceLocation(settings LingyunSettings, point *GeoPoint) LingyunSettings {
-	if point == nil || !validLingyunGeoPoint(*point) {
+	if point == nil || !coordinate.IsValid(point.Longitude, point.Latitude) {
 		return settings
 	}
 	for index := range settings.Devices {
@@ -330,17 +331,6 @@ func LingyunSettingsWithDeviceLocation(settings LingyunSettings, point *GeoPoint
 		settings.Devices[index].DeviceLatitude = point.Latitude
 	}
 	return settings
-}
-
-func validLingyunGeoPoint(point GeoPoint) bool {
-	return !math.IsNaN(point.Latitude) &&
-		!math.IsNaN(point.Longitude) &&
-		!math.IsInf(point.Latitude, 0) &&
-		!math.IsInf(point.Longitude, 0) &&
-		point.Latitude >= -90 &&
-		point.Latitude <= 90 &&
-		point.Longitude >= -180 &&
-		point.Longitude <= 180
 }
 
 // NewLingyunDeviceSN returns a stable device serial derived from the host MAC address.
@@ -662,16 +652,26 @@ type ScreenTCPPortRequest struct {
 	FPVTCPPort      int `json:"fpvTCPPort"`
 }
 
-// TCPListenerStatus describes one ingest TCP server.
+// TCPListenerStatus describes one ingest receiver and its optional UDP side channel.
 type TCPListenerStatus struct {
-	Address         string     `json:"address"`
-	Host            string     `json:"host"`
-	Port            int        `json:"port"`
-	Listening       bool       `json:"listening"`
-	ListenError     string     `json:"listenError,omitempty"`
-	SourceConnected bool       `json:"sourceConnected"`
-	ClientAddress   string     `json:"clientAddress,omitempty"`
-	UpdatedAt       *time.Time `json:"updatedAt,omitempty"`
+	Address          string     `json:"address"`
+	Host             string     `json:"host"`
+	Port             int        `json:"port"`
+	Listening        bool       `json:"listening"`
+	ListenError      string     `json:"listenError,omitempty"`
+	SourceConnected  bool       `json:"sourceConnected"`
+	ClientAddress    string     `json:"clientAddress,omitempty"`
+	DeviceName       string     `json:"deviceName,omitempty"`
+	FirmwareTime     string     `json:"firmwareTime,omitempty"`
+	UDPEnabled       bool       `json:"udpEnabled,omitempty"`
+	UDPAddress       string     `json:"udpAddress,omitempty"`
+	UDPPort          int        `json:"udpPort,omitempty"`
+	UDPListening     bool       `json:"udpListening,omitempty"`
+	UDPListenError   string     `json:"udpListenError,omitempty"`
+	UDPSourceAddress string     `json:"udpSourceAddress,omitempty"`
+	UDPLastMessageAt *time.Time `json:"udpLastMessageAt,omitempty"`
+	UDPSourceActive  bool       `json:"udpSourceActive,omitempty"`
+	UpdatedAt        *time.Time `json:"updatedAt,omitempty"`
 }
 
 // TCPClientStatus describes one outbound TCP client target.

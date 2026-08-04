@@ -2,6 +2,7 @@ package position
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/diddecrypt"
 	"drone-management/internal/model"
 )
@@ -18,7 +20,15 @@ type ParsedMessage struct {
 	Kind         string
 	Position     *model.ScreenPositionTarget
 	Location     *model.ScreenDeviceLocationResponse
+	DeviceInfo   *PositionDeviceInfo
 	EncryptedDID *diddecrypt.Packet
+	ParseError   string
+}
+
+// PositionDeviceInfo is the identity reported by a ddsT1 device_info frame.
+type PositionDeviceInfo struct {
+	DeviceName   string
+	FirmwareTime string
 }
 
 type djiOParseResult struct {
@@ -49,23 +59,33 @@ func ParseLine(raw string, receivedAt time.Time) (ParsedMessage, bool) {
 
 	switch fields[0] {
 	case "device_info":
-		return ParsedMessage{Kind: "device_info"}, true
+		info, err := parsePositionDeviceInfo(fields)
+		if err != nil {
+			return ParsedMessage{Kind: "device_info", ParseError: err.Error()}, true
+		}
+		return ParsedMessage{Kind: "device_info", DeviceInfo: &info}, true
 	case "device_status":
 		location, ok := parseDeviceStatus(fields, line, receivedAt)
 		if !ok {
-			return ParsedMessage{Kind: "device_status"}, true
+			return ParsedMessage{Kind: "device_status", ParseError: "invalid device_status fields"}, true
 		}
 		return ParsedMessage{Kind: "device_status", Location: &location}, true
 	case "RID":
 		target, ok := parseRID(fields, line, receivedAt)
 		if !ok {
-			return ParsedMessage{Kind: "RID"}, true
+			return ParsedMessage{Kind: "RID", ParseError: "invalid RID fields"}, true
 		}
 		return ParsedMessage{Kind: "RID", Position: &target}, true
+	case "RID_GB46750":
+		target, err := parseRIDGB46750(fields, line, receivedAt)
+		if err != nil {
+			return ParsedMessage{Kind: "RID_GB46750", ParseError: err.Error()}, true
+		}
+		return ParsedMessage{Kind: "RID_GB46750", Position: &target}, true
 	case "dji_O":
 		result, ok := parseDJIO(line, receivedAt)
 		if !ok {
-			return ParsedMessage{Kind: "dji_O"}, true
+			return ParsedMessage{Kind: "dji_O", ParseError: "invalid dji_O fields"}, true
 		}
 		parsed := ParsedMessage{Kind: "dji_O", EncryptedDID: result.encryptedDID}
 		if result.hasTarget {
@@ -73,8 +93,18 @@ func ParseLine(raw string, receivedAt time.Time) (ParsedMessage, bool) {
 		}
 		return parsed, true
 	default:
-		return ParsedMessage{Kind: "unknown"}, true
+		return ParsedMessage{Kind: "unknown", ParseError: "unknown message prefix " + strconv.Quote(fields[0])}, true
 	}
+}
+
+func parsePositionDeviceInfo(fields []string) (PositionDeviceInfo, error) {
+	if len(fields) < 3 {
+		return PositionDeviceInfo{}, fmt.Errorf("device_info field count is %d, expected at least 3", len(fields))
+	}
+	return PositionDeviceInfo{
+		DeviceName:   strings.TrimSpace(fields[1]),
+		FirmwareTime: strings.TrimSpace(fields[2]),
+	}, nil
 }
 
 func parseDeviceStatus(
@@ -94,7 +124,7 @@ func parseDeviceStatus(
 	location := model.ScreenDeviceLocationResponse{
 		Source:     "ddsT1",
 		UpdatedAt:  &receivedAt,
-		Valid:      locked && latOK && lngOK && validCoordinate(lat, lng),
+		Valid:      locked && latOK && lngOK && coordinate.IsValid(lng, lat),
 		Locked:     locked,
 		RFTempC:    rfTemp,
 		MainTempC:  mainTemp,
@@ -162,6 +192,131 @@ func parseRID(fields []string, raw string, receivedAt time.Time) (model.ScreenPo
 	return target, true
 }
 
+func parseRIDGB46750(fields []string, raw string, receivedAt time.Time) (model.ScreenPositionTarget, error) {
+	if len(fields) != 18 && len(fields) != 19 {
+		return model.ScreenPositionTarget{}, fmt.Errorf("RID_GB46750 field count is %d, expected 18 or 19", len(fields))
+	}
+	serial := strings.TrimSpace(fields[1])
+	if serial == "" {
+		return model.ScreenPositionTarget{}, fmt.Errorf("RID_GB46750 product_id is empty")
+	}
+	if err := validateOptionalInt(fields[3], "uav_category"); err != nil {
+		return model.ScreenPositionTarget{}, err
+	}
+	stationLat, err := parseOptionalFloatStrict(fields[4])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid station_lat: %w", err)
+	}
+	stationLon, err := parseOptionalFloatStrict(fields[5])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid station_lon: %w", err)
+	}
+	uavLat, err := parseOptionalFloatStrict(fields[6])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid uav_lat: %w", err)
+	}
+	uavLon, err := parseOptionalFloatStrict(fields[7])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid uav_lon: %w", err)
+	}
+	height, err := parseOptionalFloatStrict(fields[8])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid relative_height: %w", err)
+	}
+	altitude, err := parseOptionalFloatStrict(fields[9])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid altitude: %w", err)
+	}
+	speed, err := parseOptionalFloatStrict(fields[10])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid ground_speed: %w", err)
+	}
+	if _, err := parseOptionalFloatStrict(fields[11]); err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid vertical_speed: %w", err)
+	}
+	if _, err := parseOptionalFloatStrict(fields[12]); err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid track_angle: %w", err)
+	}
+	if err := validateOptionalInt(fields[13], "status"); err != nil {
+		return model.ScreenPositionTarget{}, err
+	}
+	frequency, err := parseOptionalFloatStrict(fields[14])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid frequency: %w", err)
+	}
+	rssi, err := parseOptionalFloatStrict(fields[15])
+	if err != nil {
+		return model.ScreenPositionTarget{}, fmt.Errorf("invalid rssi: %w", err)
+	}
+	if err := validateOptionalInt64(fields[16], "gb_timestamp_ms"); err != nil {
+		return model.ScreenPositionTarget{}, err
+	}
+	if err := validateOptionalInt64(fields[17], "recv_time_ms"); err != nil {
+		return model.ScreenPositionTarget{}, err
+	}
+
+	modelName := "RID_GB46750"
+	productModel := ""
+	if len(fields) == 19 {
+		productModel = strings.TrimSpace(fields[18])
+		if productModel != "" {
+			modelName = productModel
+		}
+	}
+	data := map[string]string{
+		"productId":          fields[1],
+		"registrationIdTail": fields[2],
+		"uavCategory":        fields[3],
+		"stationLat":         fields[4],
+		"stationLon":         fields[5],
+		"uavLat":             fields[6],
+		"uavLon":             fields[7],
+		"relativeHeight":     fields[8],
+		"altitude":           fields[9],
+		"groundSpeed":        fields[10],
+		"verticalSpeed":      fields[11],
+		"trackAngle":         fields[12],
+		"status":             fields[13],
+		"frequency":          fields[14],
+		"rssi":               fields[15],
+		"gbTimestampMs":      fields[16],
+		"recvTimeMs":         fields[17],
+		"productModel":       productModel,
+	}
+	dataJSON, _ := json.Marshal(data)
+	target := model.ScreenPositionTarget{
+		Serial:           serial,
+		Model:            modelName,
+		Source:           "RID_GB46750",
+		Frequency:        optionalFloatValue(frequency),
+		RSSI:             optionalFloatValue(rssi),
+		Device:           serial,
+		Drone:            optionalCoordinatePoint(uavLat, uavLon),
+		Home:             optionalCoordinatePoint(stationLat, stationLon),
+		Height:           height,
+		Altitude:         altitude,
+		Speed:            speed,
+		TrajectorySpeed:  speed,
+		TrajectoryHeight: height,
+		Cracked:          true,
+		FirstSeen:        receivedAt,
+		LastSeen:         receivedAt,
+		LastRecord: model.ScreenPositionLastRecord{
+			Type:       "RID_GB46750",
+			ReceivedAt: receivedAt,
+			Device:     serial,
+			Serial:     serial,
+			Model:      modelName,
+			Frequency:  optionalFloatValue(frequency),
+			RSSI:       optionalFloatValue(rssi),
+			Cracked:    true,
+			Raw:        raw,
+			Data:       dataJSON,
+		},
+	}
+	return target, nil
+}
+
 func parseDJIO(raw string, receivedAt time.Time) (djiOParseResult, bool) {
 	head, airData, _ := strings.Cut(strings.TrimSpace(raw), ";")
 	fields := splitCSVLine(head)
@@ -183,10 +338,10 @@ func parseDJIO(raw string, receivedAt time.Time) (djiOParseResult, bool) {
 		}
 	}
 	if serial == "" {
-		return encryptedFallbackParseResult(encryptedDID, raw, receivedAt), true
+		return encryptedFallbackParseResult(encryptedDID, airData, raw, receivedAt), true
 	}
 	if isDJIOSerialOnlyFrame(fields) {
-		return encryptedFallbackParseResult(encryptedDID, raw, receivedAt), true
+		return serialOnlyDJIOParseResult(fields, airData, encryptedDID, raw, receivedAt), true
 	}
 
 	drone := parseLngLatPair(fields[6], fields[7])
@@ -250,7 +405,70 @@ func parseDJIO(raw string, receivedAt time.Time) (djiOParseResult, bool) {
 	return djiOParseResult{target: target, hasTarget: true, encryptedDID: encryptedDID}, true
 }
 
-func encryptedFallbackParseResult(packet *diddecrypt.Packet, raw string, receivedAt time.Time) djiOParseResult {
+func serialOnlyDJIOParseResult(
+	fields []string,
+	airData string,
+	packet *diddecrypt.Packet,
+	raw string,
+	receivedAt time.Time,
+) djiOParseResult {
+	linkKind := strings.TrimSpace(fields[1])
+	frequency := parseFloatDefault(fields[2])
+	rssi := parseFloatDefault(fields[3])
+	modelName := normalizeModel(fields[4])
+	serial := strings.TrimSpace(fields[5])
+	gpsTime := ""
+	if len(fields) > 14 {
+		gpsTime = strings.TrimSpace(fields[14])
+	}
+	uuid := ""
+	if len(fields) > 15 {
+		uuid = strings.TrimSpace(fields[15])
+	}
+	correlationID := uuid
+	if packet != nil {
+		correlationID = didCorrelationID(packet.EncryptedID)
+	}
+	data := map[string]string{
+		"linkKind":    linkKind,
+		"gpsTime":     gpsTime,
+		"uuid":        uuid,
+		"airData":     strings.TrimSpace(airData),
+		"encryptedID": "",
+		"serialOnly":  "true",
+	}
+	if packet != nil {
+		data["encryptedID"] = packet.EncryptedID
+	}
+	dataJSON, _ := json.Marshal(data)
+	source := "dji_O:" + linkKind
+	cracked := linkKind != "4"
+	target := model.ScreenPositionTarget{
+		CorrelationID: correlationID,
+		Serial:        serial,
+		Model:         modelName,
+		Source:        source,
+		Frequency:     frequency,
+		RSSI:          rssi,
+		Cracked:       cracked,
+		FirstSeen:     receivedAt,
+		LastSeen:      receivedAt,
+		LastRecord: model.ScreenPositionLastRecord{
+			Type:       source,
+			ReceivedAt: receivedAt,
+			Serial:     serial,
+			Model:      modelName,
+			Frequency:  frequency,
+			RSSI:       rssi,
+			Cracked:    cracked,
+			Raw:        raw,
+			Data:       dataJSON,
+		},
+	}
+	return djiOParseResult{target: target, hasTarget: true, encryptedDID: packet}
+}
+
+func encryptedFallbackParseResult(packet *diddecrypt.Packet, airData string, raw string, receivedAt time.Time) djiOParseResult {
 	if packet == nil {
 		return djiOParseResult{}
 	}
@@ -263,6 +481,12 @@ func encryptedFallbackParseResult(packet *diddecrypt.Packet, raw string, receive
 	target.TrajectorySpeed = nil
 	target.TrajectoryHeight = nil
 	target.LastRecord.Raw = raw
+	dataJSON, _ := json.Marshal(map[string]string{
+		"linkKind":    "4",
+		"airData":     strings.TrimSpace(airData),
+		"encryptedID": packet.EncryptedID,
+	})
+	target.LastRecord.Data = dataJSON
 	return djiOParseResult{target: target, hasTarget: true, encryptedDID: packet}
 }
 
@@ -272,7 +496,7 @@ func parseDJIODIDPacket(
 	rssi float64,
 ) *diddecrypt.Packet {
 	hexStr := normalizeAirDataHex(airData)
-	if len(hexStr) != 352 {
+	if len(hexStr) != 352 && len(hexStr) != 360 {
 		return nil
 	}
 	encryptedID := encryptedIDFromDIDHex(hexStr)
@@ -320,7 +544,7 @@ func ignoredDIDAirDataReason(hexStr string) string {
 	if hexStr == "" {
 		return "empty_or_invalid_hex"
 	}
-	if len(hexStr) != 352 {
+	if len(hexStr) != 352 && len(hexStr) != 360 {
 		return "unexpected_length"
 	}
 	if encryptedIDFromDIDHex(hexStr) == "" {
@@ -341,10 +565,10 @@ func encryptedIDFromDIDHex(hexStr string) string {
 }
 
 func isDJIOSerialOnlyFrame(fields []string) bool {
-	if len(fields) <= 6 {
+	if len(fields) < 14 {
 		return false
 	}
-	for _, field := range fields[6:] {
+	for _, field := range fields[6:14] {
 		if !isEmptyDJIOValue(field) {
 			return false
 		}
@@ -489,29 +713,14 @@ func parseLatLngPair(latRaw, lngRaw string) *model.ScreenPositionPoint {
 }
 
 func coordinatePoint(lat, lng float64) *model.ScreenPositionPoint {
-	if !validCoordinateRange(lat, lng) {
+	if !coordinate.IsValid(lng, lat) {
 		return nil
 	}
 	return &model.ScreenPositionPoint{Latitude: lat, Longitude: lng}
 }
 
-func validCoordinate(lat, lng float64) bool {
-	return validCoordinateRange(lat, lng) && !(lat == 0 && lng == 0)
-}
-
-func validCoordinateRange(lat, lng float64) bool {
-	return !math.IsNaN(lat) &&
-		!math.IsInf(lat, 0) &&
-		!math.IsNaN(lng) &&
-		!math.IsInf(lng, 0) &&
-		lat >= -90 &&
-		lat <= 90 &&
-		lng >= -180 &&
-		lng <= 180
-}
-
 func splitCSVLine(raw string) []string {
-	parts := strings.Split(raw, ",")
+	parts := strings.Split(strings.TrimSuffix(strings.TrimSpace(raw), ";"), ",")
 	for index := range parts {
 		parts[index] = strings.TrimSpace(parts[index])
 	}
@@ -527,6 +736,53 @@ func parseOptionalFloat(raw string) *float64 {
 		return nil
 	}
 	return &value
+}
+
+func parseOptionalFloatStrict(raw string) (*float64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	value, ok := parseFloat(raw)
+	if !ok {
+		return nil, fmt.Errorf("invalid number %q", raw)
+	}
+	return &value, nil
+}
+
+func validateOptionalInt(raw, fieldName string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if _, err := strconv.Atoi(raw); err != nil {
+		return fmt.Errorf("invalid %s %q", fieldName, raw)
+	}
+	return nil
+}
+
+func validateOptionalInt64(raw, fieldName string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if _, err := strconv.ParseInt(raw, 10, 64); err != nil {
+		return fmt.Errorf("invalid %s %q", fieldName, raw)
+	}
+	return nil
+}
+
+func optionalCoordinatePoint(lat, lon *float64) *model.ScreenPositionPoint {
+	if lat == nil || lon == nil {
+		return nil
+	}
+	return coordinatePoint(*lat, *lon)
+}
+
+func optionalFloatValue(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func parseFloatDefault(raw string) float64 {

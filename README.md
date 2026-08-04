@@ -1,11 +1,14 @@
 # Drone Management 网口版
 
-Drone Management 后端启动 HTTP API，并启动两个 TCP server 接收设备数据：
+Drone Management 后端启动 HTTP API，并启动两个 TCP server 接收设备数据；ddsT1 定位协议还可按需启用 UDP 接收：
 
 - ddsT1 定位数据：默认 `0.0.0.0:10007`
+- ddsT1 定位 UDP：默认关闭，启用后默认 `0.0.0.0:10007`
 - A3-F9 FPV 告警数据：默认 `0.0.0.0:10005`
 
 部署电脑网口 IP 固定为 `192.168.100.101`，设备端把 TCP server 目标地址配置为该 IP。
+
+定位接收兼容 `RID_GB46750` 的 18 字段标准格式和带机型的 19 字段扩展格式；`dji_O,4` 原始空口数据同时兼容 176 字节与 180 字节，接收和解密链路保持报文实际长度，不提前截取。
 
 ## 开发运行
 
@@ -43,6 +46,8 @@ VERSION=2.2.6 TARGETS="linux/arm64" scripts/build-release.sh
 - `API_ADDR`：HTTP API 地址，默认 `:18080`
 - `API_TCP_BIND_HOST`：TCP 监听地址，默认 `0.0.0.0`
 - `API_POSITION_TCP_PORT`：定位数据端口，默认 `10007`
+- `API_POSITION_UDP_ENABLED`：是否同时接收 ddsT1 UDP 定位报文，默认 `false`
+- `API_POSITION_UDP_PORT`：ddsT1 UDP 监听端口，默认 `10007`；与 TCP 端口相互独立
 - `API_FPV_TCP_PORT`：FPV 告警端口，默认 `10005`
 - `API_FPV_COMMAND_TIMEOUT_MS`：FPV AT 指令等待 `OK` 回执超时，默认 `3000`
 - `API_FPV_VIDEO_RTSP_URL`：FPV 图传 RTSP 地址，默认 `rtsp://192.168.100.106:554/live/1_1`

@@ -70,15 +70,17 @@ var nibbleToHex = [16]byte{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a'
 
 func NormalizePacketHex(hexStr string) (encrypted string, decrypted string, ok bool) {
 	hexStr = strings.ToLower(strings.TrimSpace(hexStr))
-	if len(hexStr) != 352 || !isHexString(hexStr) {
+	if (len(hexStr) != 352 && len(hexStr) != 360) || !isHexString(hexStr) {
 		return "", "", false
 	}
-	if crc24Hex(hexStr) == 0 {
-		return Normalize176Hex(hexStr, false), hexStr, true
+	core := hexStr[:352]
+	tail := hexStr[352:]
+	if crc24Hex(core) == 0 {
+		return Normalize176Hex(core, false) + tail, core + tail, true
 	}
-	decrypted = Normalize176Hex(hexStr, true)
-	if crc24Hex(decrypted) == 0 {
-		return hexStr, decrypted, true
+	decryptedCore := Normalize176Hex(core, true)
+	if crc24Hex(decryptedCore) == 0 {
+		return core + tail, decryptedCore + tail, true
 	}
 	return "", "", false
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/model"
 )
 
@@ -1099,15 +1100,7 @@ func validPositionPoint(point *model.ScreenPositionPoint) bool {
 }
 
 func validPositionCoordinate(lat, lng float64) bool {
-	return !math.IsNaN(lat) &&
-		!math.IsInf(lat, 0) &&
-		!math.IsNaN(lng) &&
-		!math.IsInf(lng, 0) &&
-		lat >= -90 &&
-		lat <= 90 &&
-		lng >= -180 &&
-		lng <= 180 &&
-		!(lat == 0 && lng == 0)
+	return coordinate.IsValid(lng, lat)
 }
 
 func cleanFloat(value *float64) *float64 {
@@ -1364,7 +1357,8 @@ func normalizePositionSerial(source, serial string) string {
 	if serial == "" {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(source), "RID") {
+	switch strings.ToUpper(strings.TrimSpace(source)) {
+	case "RID", "RID_GB46750":
 		for _, prefix := range []string{"1581"} {
 			trimmed, ok := strings.CutPrefix(serial, prefix)
 			if ok && len(trimmed) >= 12 {
@@ -1526,7 +1520,7 @@ func preferredPositionModel(current, incoming string) string {
 
 func isPlaceholderPositionModel(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "rid", "unknown", "dji-drone":
+	case "rid", "rid_gb46750", "unknown", "dji-drone":
 		return true
 	default:
 		return false

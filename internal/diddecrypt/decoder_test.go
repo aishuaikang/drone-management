@@ -3,6 +3,7 @@ package diddecrypt
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,6 +68,21 @@ func TestPacketTypeFromHex(t *testing.T) {
 	}
 }
 
+func TestNormalizePacketHexPreserves180ByteLength(t *testing.T) {
+	core := "8710494e4650447e5681" + strings.Repeat("00", 163) + "a163b7"
+	tail := "aabbccdd"
+	encrypted, decrypted, ok := NormalizePacketHex(core + tail)
+	if !ok {
+		t.Fatal("NormalizePacketHex() rejected 180-byte packet")
+	}
+	if len(encrypted) != 360 || len(decrypted) != 360 {
+		t.Fatalf("normalized lengths = %d/%d, want 360/360", len(encrypted), len(decrypted))
+	}
+	if !strings.HasSuffix(encrypted, tail) || !strings.HasSuffix(decrypted, tail) {
+		t.Fatalf("180-byte tail was changed: encrypted=%q decrypted=%q", encrypted[len(encrypted)-8:], decrypted[len(decrypted)-8:])
+	}
+}
+
 func TestDecoderDecodeHexPairDirectSuccess(t *testing.T) {
 	decoder := NewDecoder(fakeClient{}, Options{})
 	out := decoder.decodeHexPair(context.Background(), packet(), "6d00", "6d00", "device-sn", time.Unix(1700000000, 0))
@@ -81,17 +97,14 @@ func TestDecoderDecodeHexPairDirectSuccess(t *testing.T) {
 	}
 }
 
-func TestDecoderRequireDecodedCoordinateAllowsZeroPoint(t *testing.T) {
+func TestDecoderRequireDecodedCoordinateRejectsZeroPoint(t *testing.T) {
 	decoder := NewDecoder(zeroCoordinateClient{}, Options{RequireDecodedCoordinate: true})
 	out := decoder.decodeHexPair(context.Background(), packet(), "6d00", "6d00", "device-sn", time.Unix(1700000000, 0))
-	if out.Status != StatusDecoded || !out.HasTarget {
-		t.Fatalf("output = %+v, want decoded target", out)
+	if out.Status != StatusDecoded || out.HasTarget {
+		t.Fatalf("output = %+v, want decoded result without target", out)
 	}
-	if out.Target.Source != O4Source {
-		t.Fatalf("source = %q, want %q", out.Target.Source, O4Source)
-	}
-	if out.Target.Drone == nil || out.Target.Drone.Latitude != 0 || out.Target.Drone.Longitude != 0 {
-		t.Fatalf("drone point = %+v, want zero point", out.Target.Drone)
+	if out.Target.Drone != nil || out.Target.Pilot != nil || out.Target.Home != nil {
+		t.Fatalf("invalid coordinates produced target points: %+v", out.Target)
 	}
 }
 

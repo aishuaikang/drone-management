@@ -98,6 +98,8 @@ func New(cfg config.Config) (*App, error) {
 	positionSvc := position.NewService(state, position.Options{
 		Host:              cfg.TCPBindHost,
 		Port:              cfg.PositionTCPPort,
+		UDPEnabled:        cfg.PositionUDPEnabled,
+		UDPPort:           cfg.PositionUDPPort,
 		BindRetryInterval: cfg.TCPBindRetry,
 		ReadIdleTimeout:   cfg.TCPReadIdleTimeout,
 		O3Decrypt: position.O3DecryptOptions{

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/model"
 )
 
@@ -329,21 +330,10 @@ func correlationID(encryptedID string) string {
 }
 
 func pointFromLatLng(lat, lng float64) *model.ScreenPositionPoint {
-	if !validCoordinate(lat, lng) {
+	if !coordinate.IsValid(lng, lat) {
 		return nil
 	}
 	return &model.ScreenPositionPoint{Latitude: lat, Longitude: lng}
-}
-
-func validCoordinate(lat, lng float64) bool {
-	return !math.IsNaN(lat) &&
-		!math.IsInf(lat, 0) &&
-		!math.IsNaN(lng) &&
-		!math.IsInf(lng, 0) &&
-		lat >= -90 &&
-		lat <= 90 &&
-		lng >= -180 &&
-		lng <= 180
 }
 
 func nonZeroFloatPtr(value float64) *float64 {

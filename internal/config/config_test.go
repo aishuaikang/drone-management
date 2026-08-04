@@ -62,6 +62,16 @@ func TestLoadFPVVideoConfig(t *testing.T) {
 	}
 }
 
+func TestLoadPositionUDPConfig(t *testing.T) {
+	t.Setenv("API_POSITION_UDP_ENABLED", "true")
+	t.Setenv("API_POSITION_UDP_PORT", "11007")
+
+	cfg := Load()
+	if !cfg.PositionUDPEnabled || cfg.PositionUDPPort != 11007 {
+		t.Fatalf("position UDP config = enabled:%v port:%d", cfg.PositionUDPEnabled, cfg.PositionUDPPort)
+	}
+}
+
 func TestLoadDeviceAndOfflineMapConfig(t *testing.T) {
 	t.Setenv("API_DEVICE_SN", "SL67CB3FC848FA0E795P")
 	t.Setenv("API_LICENSE_PATH", "/var/lib/drone-management/license.lic")

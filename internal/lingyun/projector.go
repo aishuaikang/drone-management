@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/model"
 )
 
@@ -23,7 +24,7 @@ func projectPosition(
 	if isDJIDronePlaceholderModel(target.Model) {
 		return senseDataObject{}, false
 	}
-	if target.Drone == nil || !validCoordinate(target.Drone.Latitude, target.Drone.Longitude) {
+	if target.Drone == nil || !coordinate.IsValid(target.Drone.Longitude, target.Drone.Latitude) {
 		return senseDataObject{}, false
 	}
 	objectID := strings.TrimSpace(target.Serial)
@@ -51,7 +52,7 @@ func projectPosition(
 		UAVModel:   strings.TrimSpace(target.Model),
 		UAVSN:      uavSN,
 	}
-	if target.Pilot != nil && validCoordinate(target.Pilot.Latitude, target.Pilot.Longitude) {
+	if target.Pilot != nil && coordinate.IsValid(target.Pilot.Longitude, target.Pilot.Latitude) {
 		pilotLon := target.Pilot.Longitude
 		pilotLat := target.Pilot.Latitude
 		extension.PilotLon = &pilotLon
@@ -106,7 +107,9 @@ func isLingyunPositionSource(source string, deviceType string) bool {
 	source = strings.TrimSpace(source)
 	switch deviceType {
 	case model.LingyunDeviceRemoteID, model.LingyunDeviceDCD:
-		return strings.EqualFold(source, "RID") || strings.HasPrefix(strings.ToLower(source), "dji_o")
+		return strings.EqualFold(source, "RID") ||
+			strings.EqualFold(source, "RID_GB46750") ||
+			strings.HasPrefix(strings.ToLower(source), "dji_o")
 	default:
 		return false
 	}
@@ -124,18 +127,6 @@ func channelFromFrequency(frequency float64) string {
 		return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(frequency/1000, 'f', 3, 64), "0"), ".") + "GHz"
 	}
 	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(frequency, 'f', 3, 64), "0"), ".") + "MHz"
-}
-
-func validCoordinate(lat, lng float64) bool {
-	return !math.IsNaN(lat) &&
-		!math.IsInf(lat, 0) &&
-		!math.IsNaN(lng) &&
-		!math.IsInf(lng, 0) &&
-		lat >= -90 &&
-		lat <= 90 &&
-		lng >= -180 &&
-		lng <= 180 &&
-		!(lat == 0 && lng == 0)
 }
 
 func floatValueOrZero(value *float64) float64 {

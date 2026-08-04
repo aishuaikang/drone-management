@@ -44,3 +44,26 @@ func TestLoadManualDeviceLocationMissingFile(t *testing.T) {
 		t.Fatal("load missing manual location ok = true, want false")
 	}
 }
+
+func TestSaveManualDeviceLocationRejectsInvalidCoordinates(t *testing.T) {
+	tests := []struct {
+		name  string
+		point model.GeoPoint
+	}{
+		{name: "zero longitude", point: model.GeoPoint{Latitude: 39.9, Longitude: 0}},
+		{name: "zero latitude", point: model.GeoPoint{Latitude: 0, Longitude: 116.3}},
+		{name: "near origin", point: model.GeoPoint{Latitude: -0.05, Longitude: 0.05}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "manual-device-location.json")
+			if err := SaveManualDeviceLocation(path, tt.point, time.Now()); err == nil {
+				t.Fatalf("SaveManualDeviceLocation(%+v) error = nil, want invalid coordinate error", tt.point)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid manual location created file: %v", err)
+			}
+		})
+	}
+}

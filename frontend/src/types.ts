@@ -51,6 +51,16 @@ export interface TCPListenerStatus {
   listenError?: string;
   sourceConnected: boolean;
   clientAddress?: string;
+  deviceName?: string;
+  firmwareTime?: string;
+  udpEnabled?: boolean;
+  udpAddress?: string;
+  udpPort?: number;
+  udpListening?: boolean;
+  udpListenError?: string;
+  udpSourceAddress?: string;
+  udpLastMessageAt?: string;
+  udpSourceActive?: boolean;
   updatedAt?: string;
 }
 
@@ -169,6 +179,7 @@ export interface ScreenPositionLastRecord {
   rssi?: number;
   cracked?: boolean;
   raw?: string;
+  data?: Record<string, string>;
 }
 
 export interface ScreenPositionTarget {

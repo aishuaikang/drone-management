@@ -2,6 +2,8 @@ package position
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -60,6 +62,96 @@ func TestParseRID(t *testing.T) {
 	}
 }
 
+func TestParseRIDGB46750Accepts18FieldsAndPreservesUnknownAircraftPosition(t *testing.T) {
+	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	line := "RID_GB46750,1581FA6QC259B00C67T3,,1,31.158553,121.699907,,,,-63.50,0.0,0.0,,1,2437.0,-91,,3481440;"
+	parsed, ok := ParseLine(line, now)
+	if !ok || parsed.ParseError != "" || parsed.Position == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+	target := parsed.Position
+	if target.Serial != "1581FA6QC259B00C67T3" || target.Model != "RID_GB46750" {
+		t.Fatalf("identity = %#v", target)
+	}
+	if target.Drone != nil || target.Pilot != nil {
+		t.Fatalf("unknown aircraft position became coordinates: drone=%#v pilot=%#v", target.Drone, target.Pilot)
+	}
+	if target.Home == nil || target.Home.Latitude != 31.158553 || target.Home.Longitude != 121.699907 {
+		t.Fatalf("home = %#v", target.Home)
+	}
+	if target.Height != nil || target.Altitude == nil || *target.Altitude != -63.5 {
+		t.Fatalf("height/altitude = %#v/%#v", target.Height, target.Altitude)
+	}
+	if target.Speed == nil || *target.Speed != 0 || target.Frequency != 2437 || target.RSSI != -91 {
+		t.Fatalf("speed/radio = %#v", target)
+	}
+	if !target.LastSeen.Equal(now) {
+		t.Fatalf("LastSeen = %v, want server receive time %v", target.LastSeen, now)
+	}
+	var data map[string]string
+	if err := json.Unmarshal(target.LastRecord.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data["uavLat"] != "" || data["gbTimestampMs"] != "" || data["recvTimeMs"] != "3481440" {
+		t.Fatalf("last record data = %#v", data)
+	}
+}
+
+func TestParseRIDGB46750AcceptsOptionalProductModel(t *testing.T) {
+	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	line := "RID_GB46750,1581FA6QC259B00C67T3,,1,31.158521,121.699861,,,,-40.00,0.0,0.0,,1,2437.0,-34,,905570,DJI Neo 2;"
+	parsed, ok := ParseLine(line, now)
+	if !ok || parsed.ParseError != "" || parsed.Position == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+	if parsed.Position.Model != "DJI Neo 2" || parsed.Position.LastRecord.Model != "DJI Neo 2" {
+		t.Fatalf("model = %#v", parsed.Position)
+	}
+}
+
+func TestParseRIDGB46750MapsFullRecord(t *testing.T) {
+	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	line := "RID_GB46750,product,tail,2,31.1,121.2,31.3,121.4,12.5,43.5,8.5,-1.5,270,3,5800,-72,1000,2000,Model X;"
+	parsed, ok := ParseLine(line, now)
+	if !ok || parsed.ParseError != "" || parsed.Position == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+	target := parsed.Position
+	if target.Drone == nil || target.Drone.Latitude != 31.3 || target.Drone.Longitude != 121.4 {
+		t.Fatalf("drone = %#v", target.Drone)
+	}
+	if target.Home == nil || target.Home.Latitude != 31.1 || target.Home.Longitude != 121.2 {
+		t.Fatalf("home = %#v", target.Home)
+	}
+	if target.Height == nil || *target.Height != 12.5 || target.Altitude == nil || *target.Altitude != 43.5 || target.Speed == nil || *target.Speed != 8.5 {
+		t.Fatalf("telemetry = %#v", target)
+	}
+	var data map[string]string
+	if err := json.Unmarshal(target.LastRecord.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data["registrationIdTail"] != "tail" || data["verticalSpeed"] != "-1.5" || data["trackAngle"] != "270" || data["status"] != "3" {
+		t.Fatalf("last record data = %#v", data)
+	}
+}
+
+func TestParseRIDGB46750ReportsInvalidFields(t *testing.T) {
+	parsed, ok := ParseLine("RID_GB46750,product,tail,2,31.1,121.2,31.3,bad,12.5,43.5,8.5,-1.5,270,3,5800,-72,1000,2000;", time.Now())
+	if !ok || parsed.ParseError == "" || parsed.Position != nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+}
+
+func TestParseDeviceInfo(t *testing.T) {
+	parsed, ok := ParseLine("device_info,DDM-P1,2026-07-27 15:30:00;", time.Now())
+	if !ok || parsed.ParseError != "" || parsed.DeviceInfo == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+	if parsed.DeviceInfo.DeviceName != "DDM-P1" || parsed.DeviceInfo.FirmwareTime != "2026-07-27 15:30:00" {
+		t.Fatalf("device info = %#v", parsed.DeviceInfo)
+	}
+}
+
 func TestParseDJIOEncryptedRawEmitsDIDPacket(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	line := "dji_O,4,5816.5,-81,dji,,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,0;" +
@@ -109,6 +201,32 @@ func TestParseDJIOEncryptedRawPadsSingleNibbleAirDataBytes(t *testing.T) {
 	}
 	if len(parsed.EncryptedDID.Bytes) != 352 {
 		t.Fatalf("packet hex len = %d, want 352", len(parsed.EncryptedDID.Bytes))
+	}
+}
+
+func TestParseDJIOEncryptedRawPreserves180Bytes(t *testing.T) {
+	now := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	airData := testDIDAirData("80", "01fa261e") + ",0xaa,0xbb,0xcc,0xdd"
+	line := "dji_O,4,5816.5,-81,dji,,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,0;" + airData
+	parsed, ok := ParseLine(line, now)
+	if !ok || parsed.ParseError != "" || parsed.EncryptedDID == nil || parsed.Position == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
+	}
+	if len(parsed.EncryptedDID.Bytes) != 360 {
+		t.Fatalf("decrypt payload hex len = %d, want 360", len(parsed.EncryptedDID.Bytes))
+	}
+	if !strings.HasSuffix(parsed.EncryptedDID.Bytes, "aabbccdd") {
+		t.Fatalf("decrypt payload tail = %q", parsed.EncryptedDID.Bytes[len(parsed.EncryptedDID.Bytes)-8:])
+	}
+	if parsed.EncryptedDID.EncryptedID != "01fa261e" {
+		t.Fatalf("encrypted id = %q", parsed.EncryptedDID.EncryptedID)
+	}
+	var data map[string]string
+	if err := json.Unmarshal(parsed.Position.LastRecord.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data["airData"] != airData {
+		t.Fatalf("full air data was not preserved: got len %d, want len %d", len(data["airData"]), len(airData))
 	}
 }
 
@@ -180,15 +298,19 @@ func TestParseDJIO(t *testing.T) {
 	}
 }
 
-func TestParseDJIOSerialOnlyFrameDoesNotEmitPosition(t *testing.T) {
+func TestParseDJIOSerialOnlyFrameEmitsTargetWithoutTelemetry(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
-	line := "dji_O,2/3,5776.5,-79,dji,F4XFC237300753P5,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,0;0x6d"
+	line := "dji_O,2/3,5776.5,-79,dji,F4XFC237300753P5,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,2026-07-27 15:30:00;0x6d"
 	parsed, ok := ParseLine(line, now)
-	if !ok {
-		t.Fatal("ParseLine() returned ok=false")
+	if !ok || parsed.ParseError != "" || parsed.Position == nil {
+		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
 	}
-	if parsed.Position != nil {
-		t.Fatalf("position = %#v, want nil for serial-only frame", parsed.Position)
+	target := parsed.Position
+	if target.Serial != "F4XFC237300753P5" || target.Model != "dji" || target.Frequency != 5776.5 || target.RSSI != -79 {
+		t.Fatalf("identity/radio = %#v", target)
+	}
+	if target.Drone != nil || target.Pilot != nil || target.Home != nil || target.Height != nil || target.Altitude != nil || target.Speed != nil {
+		t.Fatalf("serial-only telemetry = %#v", target)
 	}
 	if parsed.EncryptedDID != nil {
 		t.Fatalf("encrypted DID = %#v, want nil", parsed.EncryptedDID)
@@ -233,33 +355,30 @@ func TestParseDJIOKeepsZeroTelemetryValues(t *testing.T) {
 	}
 }
 
-func TestParseRIDKeepsZeroCoordinatesForListDisplay(t *testing.T) {
+func TestParseRIDRejectsZeroCoordinatesForListDisplay(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	line := "RID,serial,,0.000000,0.000000,0.000000,0.000000,0.00,137.00,2437.0,0.0,-82,29658"
 	parsed, ok := ParseLine(line, now)
 	if !ok || parsed.Position == nil {
 		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
 	}
-	if parsed.Position.Drone == nil || parsed.Position.Home == nil {
-		t.Fatalf("expected zero coordinates to be kept: %#v", parsed.Position)
-	}
-	if parsed.Position.Drone.Latitude != 0 || parsed.Position.Drone.Longitude != 0 {
-		t.Fatalf("drone = %#v, want zero point", parsed.Position.Drone)
-	}
-	if parsed.Position.Home.Latitude != 0 || parsed.Position.Home.Longitude != 0 {
-		t.Fatalf("home = %#v, want zero point", parsed.Position.Home)
+	if parsed.Position.Drone != nil || parsed.Position.Home != nil {
+		t.Fatalf("zero coordinates were kept: %#v", parsed.Position)
 	}
 }
 
-func TestParseDJIOKeepsZeroCoordinatesForListDisplay(t *testing.T) {
+func TestParseDJIOZeroTelemetryIsTreatedAsSerialOnly(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	line := "dji_O,2/3,5776.5,-79,dji,F4XFC237300753P5,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,1744703230504;0x6d"
 	parsed, ok := ParseLine(line, now)
 	if !ok || parsed.Position == nil {
 		t.Fatalf("parsed = %#v, ok = %v", parsed, ok)
 	}
-	if parsed.Position.Drone == nil || parsed.Position.Pilot == nil || parsed.Position.Home == nil {
-		t.Fatalf("expected zero coordinates to be kept: %#v", parsed.Position)
+	if parsed.Position.Drone != nil || parsed.Position.Pilot != nil || parsed.Position.Home != nil {
+		t.Fatalf("zero telemetry created coordinates: %#v", parsed.Position)
+	}
+	if parsed.Position.Height != nil || parsed.Position.Altitude != nil || parsed.Position.Speed != nil {
+		t.Fatalf("zero telemetry created scalar values: %#v", parsed.Position)
 	}
 }
 
@@ -282,6 +401,104 @@ func TestServiceReceivesTCP(t *testing.T) {
 	_ = conn.Close()
 
 	waitFor(t, time.Second, func() bool { return len(state.Positions(10)) == 1 })
+}
+
+func TestServiceReceivesUDPDatagrams(t *testing.T) {
+	tcpPort := freeTCPPort(t)
+	udpPort := freeUDPPort(t)
+	state := store.New(10, 10)
+	service := NewService(state, Options{
+		Host:       "127.0.0.1",
+		Port:       tcpPort,
+		UDPEnabled: true,
+		UDPPort:    udpPort,
+	})
+	ctx, cancel := contextWithTimeout(t, 2*time.Second)
+	defer cancel()
+	go service.Run(ctx)
+	waitFor(t, time.Second, func() bool {
+		status := service.Status()
+		return status.Listening && status.UDPListening
+	})
+
+	conn, err := net.Dial("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(udpPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	first := "RID_GB46750,udp-1,,1,31.1,121.1,31.2,121.2,10,20,3,1,90,1,2437,-60,100,101;"
+	if _, err := conn.Write([]byte(first)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool { return len(state.Positions(10)) == 1 })
+
+	multiple := "RID_GB46750,udp-2,,1,31.1,121.1,31.2,121.2,10,20,3,1,90,1,2437,-61,100,102;\r\n" +
+		"RID_GB46750,udp-3,,1,31.1,121.1,31.2,121.2,10,20,3,1,90,1,2437,-62,100,103;"
+	if _, err := conn.Write([]byte(multiple)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool { return len(state.Positions(10)) == 3 })
+	if status := service.Status(); status.UDPSourceAddress == "" || status.UDPPort != udpPort || !status.UDPEnabled || !status.UDPSourceActive || status.UDPLastMessageAt == nil {
+		t.Fatalf("UDP status = %#v", status)
+	}
+}
+
+func TestServiceUDPSourceActivityExpires(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	service := NewService(store.New(10, 10), Options{
+		Host:                  "127.0.0.1",
+		Port:                  10007,
+		UDPEnabled:            true,
+		UDPPort:               10007,
+		UDPSourceActiveWindow: 5 * time.Second,
+		Now:                   func() time.Time { return now },
+	})
+	service.recordUDPDatagram(&net.UDPAddr{IP: net.ParseIP("192.168.100.106"), Port: 52000})
+	status := service.Status()
+	if !status.UDPSourceActive || status.UDPLastMessageAt == nil || !status.UDPLastMessageAt.Equal(now) {
+		t.Fatalf("active UDP status = %#v", status)
+	}
+	now = now.Add(6 * time.Second)
+	status = service.Status()
+	if status.UDPSourceActive || status.UDPLastMessageAt == nil {
+		t.Fatalf("expired UDP status = %#v", status)
+	}
+}
+
+func TestServiceUDPListenFailureDoesNotStopTCP(t *testing.T) {
+	port := freeTCPPort(t)
+	service := NewService(store.New(10, 10), Options{
+		Host:              "127.0.0.1",
+		Port:              port,
+		UDPEnabled:        true,
+		UDPPort:           freeUDPPort(t),
+		BindRetryInterval: 10 * time.Millisecond,
+		OpenPacketListener: func(string, string) (net.PacketConn, error) {
+			return nil, errors.New("forced UDP bind failure")
+		},
+	})
+	ctx, cancel := contextWithTimeout(t, time.Second)
+	defer cancel()
+	go service.Run(ctx)
+	waitFor(t, time.Second, func() bool {
+		status := service.Status()
+		return status.Listening && strings.Contains(status.UDPListenError, "forced UDP bind failure")
+	})
+
+	conn, err := net.DialTimeout("tcp", service.Address(), time.Second)
+	if err != nil {
+		t.Fatalf("TCP listener stopped after UDP failure: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestServiceUDPSkipsOversizedLine(t *testing.T) {
+	state := store.New(10, 10)
+	service := NewService(state, Options{Host: "127.0.0.1", Port: 10007, MaxLineBytes: 32})
+	service.ingestUDPDatagram(strings.Repeat("x", 33))
+	if items := state.Positions(10); len(items) != 0 {
+		t.Fatalf("positions = %#v, want empty", items)
+	}
 }
 
 func TestServiceSetPortRestartsListener(t *testing.T) {
@@ -349,11 +566,11 @@ func TestServicePreservesDeviceLocationWhenGPSUnlocks(t *testing.T) {
 	}
 }
 
-func TestServiceSkipsDJIOSerialOnlyFrameMerge(t *testing.T) {
+func TestServiceMergesDJIOSerialOnlyFrameWithoutOverwritingTelemetry(t *testing.T) {
 	state := store.New(10, 10)
 	service := NewService(state, Options{Host: "127.0.0.1", Port: 10007})
 	positionLine := "dji_O,2/3,5776.5,-81,DJI Mini 3 pro,F4XFC237300753P5,121.664104,31.172048,121.699656,31.158675,121.699673,31.158600,14.90|110.60,965.00|-432.00|0.00,1744703230504;0x6d"
-	serialOnlyLine := "dji_O,2/3,5776.5,-79,dji,F4XFC237300753P5,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,0;0x6d"
+	serialOnlyLine := "dji_O,2/3,5776.5,-79,dji,F4XFC237300753P5,0.000000,0.000000,0.000000,0.000000,0.000000,0.000000,0.00|0.00,0.00|0.00|0.00,2026-07-27 15:30:00;0x6d"
 
 	service.IngestLine(positionLine)
 	items := state.Positions(10)
@@ -362,21 +579,36 @@ func TestServiceSkipsDJIOSerialOnlyFrameMerge(t *testing.T) {
 	}
 	lastSeen := items[0].LastSeen
 	hitCount := items[0].HitCount
-	lastRaw := items[0].LastRecord.Raw
+	drone := *items[0].Drone
+	altitude := *items[0].Altitude
+	height := *items[0].Height
+	speed := *items[0].Speed
 
 	service.IngestLine(serialOnlyLine)
 	items = state.Positions(10)
 	if len(items) != 1 {
 		t.Fatalf("positions count = %d, want 1", len(items))
 	}
-	if items[0].HitCount != hitCount {
-		t.Fatalf("hit count = %d, want %d", items[0].HitCount, hitCount)
+	if items[0].HitCount != hitCount+1 {
+		t.Fatalf("hit count = %d, want %d", items[0].HitCount, hitCount+1)
 	}
-	if !items[0].LastSeen.Equal(lastSeen) {
-		t.Fatalf("last seen = %v, want %v", items[0].LastSeen, lastSeen)
+	if items[0].LastSeen.Before(lastSeen) {
+		t.Fatalf("last seen = %v, want >= %v", items[0].LastSeen, lastSeen)
 	}
-	if items[0].LastRecord.Raw != lastRaw {
-		t.Fatalf("last raw = %q, want original position frame", items[0].LastRecord.Raw)
+	if items[0].LastRecord.Raw != serialOnlyLine {
+		t.Fatalf("last raw = %q, want serial-only frame", items[0].LastRecord.Raw)
+	}
+	if items[0].Drone == nil || *items[0].Drone != drone || items[0].Altitude == nil || *items[0].Altitude != altitude || items[0].Height == nil || *items[0].Height != height || items[0].Speed == nil || *items[0].Speed != speed {
+		t.Fatalf("existing telemetry was overwritten: %#v", items[0])
+	}
+}
+
+func TestServiceExposesDeviceInfoInStatus(t *testing.T) {
+	service := NewService(store.New(10, 10), Options{Host: "127.0.0.1", Port: 10007})
+	service.IngestLine("device_info,DDM-P1,2026-07-27 15:30:00;")
+	status := service.Status()
+	if status.DeviceName != "DDM-P1" || status.FirmwareTime != "2026-07-27 15:30:00" || status.UpdatedAt == nil {
+		t.Fatalf("status = %#v", status)
 	}
 }
 
@@ -559,6 +791,19 @@ func testDIDAirDataWithMagic(packetType string, magic string, encryptedID string
 		parts = append(parts, "0x"+hexStr[index:index+2])
 	}
 	return strings.Join(parts, ",")
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.LocalAddr().(*net.UDPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
 }
 
 func float64PtrForTest(value float64) *float64 {

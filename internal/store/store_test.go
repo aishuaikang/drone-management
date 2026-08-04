@@ -424,70 +424,74 @@ func TestPositionDelayedDecodedFrameDoesNotMoveLastSeenBackward(t *testing.T) {
 }
 
 func TestPositionMergesRIDPrefixedSerialWithDJIOSerial(t *testing.T) {
-	state := New(10, 10)
-	base := recentStoreTestTime()
-	height := 12.0
-	pilot := &model.ScreenPositionPoint{Latitude: 31.24, Longitude: 121.48}
+	for _, ridSource := range []string{"RID", "RID_GB46750"} {
+		t.Run(ridSource, func(t *testing.T) {
+			state := New(10, 10)
+			base := recentStoreTestTime()
+			height := 12.0
+			pilot := &model.ScreenPositionPoint{Latitude: 31.24, Longitude: 121.48}
 
-	_, _ = state.AddPosition(model.ScreenPositionTarget{
-		Serial:    "F6Z9C2412003L1W8",
-		Model:     "Mini 4 Pro",
-		Source:    "dji_O:4",
-		Frequency: 5797,
-		RSSI:      -84,
-		Pilot:     pilot,
-		FirstSeen: base,
-		LastSeen:  base,
-		LastRecord: model.ScreenPositionLastRecord{
-			Type:       "dji_O:4",
-			ReceivedAt: base,
-			Serial:     "F6Z9C2412003L1W8",
-			Model:      "Mini 4 Pro",
-			Frequency:  5797,
-			RSSI:       -84,
-		},
-	})
-	_, _ = state.AddPosition(model.ScreenPositionTarget{
-		Serial:    "1581F6Z9C2412003L1W8",
-		Model:     "DJI Mini4 pro",
-		Source:    "RID",
-		Frequency: 2437,
-		RSSI:      -42,
-		Height:    &height,
-		FirstSeen: base.Add(time.Second),
-		LastSeen:  base.Add(time.Second),
-		LastRecord: model.ScreenPositionLastRecord{
-			Type:       "RID",
-			ReceivedAt: base.Add(time.Second),
-			Serial:     "1581F6Z9C2412003L1W8",
-			Model:      "DJI Mini4 pro",
-			Frequency:  2437,
-			RSSI:       -42,
-		},
-	})
+			_, _ = state.AddPosition(model.ScreenPositionTarget{
+				Serial:    "F6Z9C2412003L1W8",
+				Model:     "Mini 4 Pro",
+				Source:    "dji_O:4",
+				Frequency: 5797,
+				RSSI:      -84,
+				Pilot:     pilot,
+				FirstSeen: base,
+				LastSeen:  base,
+				LastRecord: model.ScreenPositionLastRecord{
+					Type:       "dji_O:4",
+					ReceivedAt: base,
+					Serial:     "F6Z9C2412003L1W8",
+					Model:      "Mini 4 Pro",
+					Frequency:  5797,
+					RSSI:       -84,
+				},
+			})
+			_, _ = state.AddPosition(model.ScreenPositionTarget{
+				Serial:    "1581F6Z9C2412003L1W8",
+				Model:     "DJI Mini4 pro",
+				Source:    ridSource,
+				Frequency: 2437,
+				RSSI:      -42,
+				Height:    &height,
+				FirstSeen: base.Add(time.Second),
+				LastSeen:  base.Add(time.Second),
+				LastRecord: model.ScreenPositionLastRecord{
+					Type:       ridSource,
+					ReceivedAt: base.Add(time.Second),
+					Serial:     "1581F6Z9C2412003L1W8",
+					Model:      "DJI Mini4 pro",
+					Frequency:  2437,
+					RSSI:       -42,
+				},
+			})
 
-	items := state.Positions(10)
-	if len(items) != 1 {
-		t.Fatalf("positions count = %d, want 1", len(items))
-	}
-	item := items[0]
-	if item.Serial != "F6Z9C2412003L1W8" || item.Model != "Mini 4 Pro" {
-		t.Fatalf("identity = %#v", item)
-	}
-	if item.ReportedSerial != "1581F6Z9C2412003L1W8" {
-		t.Fatalf("reported serial = %q, want full RID SN", item.ReportedSerial)
-	}
-	if item.Pilot == nil || item.Pilot.Latitude != pilot.Latitude || item.Pilot.Longitude != pilot.Longitude {
-		t.Fatalf("pilot was not preserved from dji_O: %#v", item.Pilot)
-	}
-	if item.Height == nil || *item.Height != height {
-		t.Fatalf("height was not merged from RID: %#v", item.Height)
-	}
-	if len(item.Sources) != 2 || item.Sources[0] != "dji_O:4" || item.Sources[1] != "RID" {
-		t.Fatalf("sources = %#v, want dji_O:4 and RID", item.Sources)
-	}
-	if item.Frequency != 2437 || item.RSSI != -42 {
-		t.Fatalf("latest radio = %#v, want RID radio", item)
+			items := state.Positions(10)
+			if len(items) != 1 {
+				t.Fatalf("positions count = %d, want 1", len(items))
+			}
+			item := items[0]
+			if item.Serial != "F6Z9C2412003L1W8" || item.Model != "Mini 4 Pro" {
+				t.Fatalf("identity = %#v", item)
+			}
+			if item.ReportedSerial != "1581F6Z9C2412003L1W8" {
+				t.Fatalf("reported serial = %q, want full RID SN", item.ReportedSerial)
+			}
+			if item.Pilot == nil || item.Pilot.Latitude != pilot.Latitude || item.Pilot.Longitude != pilot.Longitude {
+				t.Fatalf("pilot was not preserved from dji_O: %#v", item.Pilot)
+			}
+			if item.Height == nil || *item.Height != height {
+				t.Fatalf("height was not merged from RID: %#v", item.Height)
+			}
+			if len(item.Sources) != 2 || item.Sources[0] != "dji_O:4" || item.Sources[1] != ridSource {
+				t.Fatalf("sources = %#v, want dji_O:4 and %s", item.Sources, ridSource)
+			}
+			if item.Frequency != 2437 || item.RSSI != -42 {
+				t.Fatalf("latest radio = %#v, want RID radio", item)
+			}
+		})
 	}
 }
 
@@ -590,9 +594,9 @@ func TestPositionAddFiltersInvalidCoordinates(t *testing.T) {
 		Source:          "RID",
 		Frequency:       2437,
 		RSSI:            -42,
-		Drone:           &model.ScreenPositionPoint{Latitude: 0, Longitude: 0},
-		Pilot:           &model.ScreenPositionPoint{Latitude: 91, Longitude: 121.48},
-		Home:            &model.ScreenPositionPoint{Latitude: 31.2, Longitude: 181},
+		Drone:           &model.ScreenPositionPoint{Latitude: 31.2, Longitude: 0},
+		Pilot:           &model.ScreenPositionPoint{Latitude: -0.05, Longitude: 0.05},
+		Home:            &model.ScreenPositionPoint{Latitude: 0, Longitude: 121.48},
 		Speed:           &speed,
 		Height:          &height,
 		TrajectorySpeed: &speed,
@@ -692,6 +696,56 @@ func TestPositionNormalizesModelAliases(t *testing.T) {
 	}
 	if items[0].LastRecord.Model != "Mini 4 Pro" {
 		t.Fatalf("last record model = %q, want Mini 4 Pro", items[0].LastRecord.Model)
+	}
+}
+
+func TestPositionMergeTreatsRIDGB46750ModelAsPlaceholder(t *testing.T) {
+	base := recentStoreTestTime()
+	protocolTarget := model.ScreenPositionTarget{
+		Serial:    "1581F6Z9C2412003L1W8",
+		Model:     "RID_GB46750",
+		Source:    "RID_GB46750",
+		FirstSeen: base,
+		LastSeen:  base,
+	}
+	realTarget := model.ScreenPositionTarget{
+		Serial: "F6Z9C2412003L1W8",
+		Model:  "Matrice 350 RTK",
+		Source: "dji_O:4",
+	}
+
+	for _, tt := range []struct {
+		name   string
+		first  model.ScreenPositionTarget
+		second model.ScreenPositionTarget
+	}{
+		{name: "protocol then real model", first: protocolTarget, second: realTarget},
+		{name: "real model then protocol", first: realTarget, second: protocolTarget},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := New(10, 10)
+			first := tt.first
+			second := tt.second
+			first.FirstSeen = base
+			first.LastSeen = base
+			second.FirstSeen = base.Add(time.Second)
+			second.LastSeen = base.Add(time.Second)
+
+			if _, ok := state.AddPosition(first); !ok {
+				t.Fatal("first AddPosition() ok = false")
+			}
+			if _, ok := state.AddPosition(second); !ok {
+				t.Fatal("second AddPosition() ok = false")
+			}
+
+			items := state.Positions(10)
+			if len(items) != 1 {
+				t.Fatalf("positions count = %d, want 1", len(items))
+			}
+			if items[0].Model != "Matrice 350 RTK" {
+				t.Fatalf("model = %q, want real model", items[0].Model)
+			}
+		})
 	}
 }
 

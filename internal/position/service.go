@@ -18,12 +18,20 @@ import (
 	"drone-management/internal/store"
 )
 
-const defaultMaxLineBytes = 1024 * 1024
+const (
+	defaultMaxLineBytes          = 1024 * 1024
+	defaultUDPSourceActiveWindow = 5 * time.Second
+)
 
 var errListenerConfigurationChanged = errors.New("listener configuration changed")
 
+var parseErrorLogs sync.Map
+
 // ListenerOpener opens a TCP listener. Tests can replace it.
 type ListenerOpener func(network string, address string) (net.Listener, error)
+
+// PacketListenerOpener opens a UDP packet listener. Tests can replace it.
+type PacketListenerOpener func(network string, address string) (net.PacketConn, error)
 
 // DIDDecoder decrypts O3+/O4 DID encrypted packets.
 type DIDDecoder interface {
@@ -37,31 +45,42 @@ type DIDDecoder interface {
 
 // Options configures the ddsT1 receiver.
 type Options struct {
-	Host              string
-	Port              int
-	BindRetryInterval time.Duration
-	ReadIdleTimeout   time.Duration
-	MaxLineBytes      int
-	OpenListener      ListenerOpener
-	O3Decrypt         O3DecryptOptions
-	DIDDecoder        DIDDecoder
+	Host                  string
+	Port                  int
+	BindRetryInterval     time.Duration
+	ReadIdleTimeout       time.Duration
+	MaxLineBytes          int
+	OpenListener          ListenerOpener
+	UDPEnabled            bool
+	UDPPort               int
+	UDPSourceActiveWindow time.Duration
+	OpenPacketListener    PacketListenerOpener
+	Now                   func() time.Time
+	O3Decrypt             O3DecryptOptions
+	DIDDecoder            DIDDecoder
 }
 
-// Service receives ddsT1 positioning messages over TCP.
+// Service receives ddsT1 positioning messages over TCP and optional UDP.
 type Service struct {
 	store   *store.Store
 	options Options
 	decoder DIDDecoder
 
-	mu              sync.RWMutex
-	listener        net.Listener
-	listening       bool
-	listenError     string
-	sourceConnected bool
-	clientAddress   string
-	clients         map[string]net.Conn
-	updatedAt       time.Time
-	configVersion   uint64
+	mu               sync.RWMutex
+	listener         net.Listener
+	udpListener      net.PacketConn
+	listening        bool
+	listenError      string
+	udpListening     bool
+	udpListenError   string
+	udpSourceAddress string
+	udpLastMessageAt time.Time
+	sourceConnected  bool
+	clientAddress    string
+	clients          map[string]net.Conn
+	deviceInfo       PositionDeviceInfo
+	updatedAt        time.Time
+	configVersion    uint64
 }
 
 // NewService creates a positioning receiver.
@@ -79,8 +98,21 @@ func NewService(store *store.Store, options Options) *Service {
 	}
 }
 
-// Run keeps the TCP server alive until ctx is cancelled.
+// Run keeps the TCP receiver and optional UDP receiver alive until ctx is cancelled.
 func (s *Service) Run(ctx context.Context) {
+	var udp sync.WaitGroup
+	if s.udpEnabled() {
+		udp.Add(1)
+		go func() {
+			defer udp.Done()
+			s.runUDP(ctx)
+		}()
+	}
+	s.runTCP(ctx)
+	udp.Wait()
+}
+
+func (s *Service) runTCP(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -104,6 +136,36 @@ func (s *Service) Run(ctx context.Context) {
 		}
 		if err != nil {
 			s.setListenerState(false, err.Error())
+		}
+		if err == nil {
+			continue
+		}
+		if !sleepOrDone(ctx, s.bindRetryInterval()) {
+			return
+		}
+	}
+}
+
+func (s *Service) runUDP(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		listener, err := s.openUDPListener()
+		if err != nil {
+			s.setUDPListenerState(false, err.Error())
+			if !sleepOrDone(ctx, s.bindRetryInterval()) {
+				return
+			}
+			continue
+		}
+		s.setUDPListenerState(true, "")
+		err = s.serveUDPListener(ctx, listener)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			s.setUDPListenerState(false, err.Error())
 		}
 		if err == nil {
 			continue
@@ -220,12 +282,66 @@ func (s *Service) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 }
 
+func (s *Service) serveUDPListener(ctx context.Context, listener net.PacketConn) error {
+	listenerDone := make(chan struct{})
+	defer func() {
+		close(listenerDone)
+		_ = listener.Close()
+		s.clearUDPListener(listener)
+	}()
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-listenerDone:
+		}
+	}()
+
+	buffer := make([]byte, 65536)
+	for {
+		count, source, err := listener.ReadFrom(buffer)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return fmt.Errorf("read ddsT1 UDP datagram: %w", err)
+		}
+		s.recordUDPDatagram(source)
+		s.ingestUDPDatagram(string(buffer[:count]))
+	}
+}
+
+func (s *Service) ingestUDPDatagram(datagram string) {
+	maxLineBytes := s.maxLineBytes()
+	for _, line := range strings.Split(strings.ReplaceAll(datagram, "\r\n", "\n"), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if len(line) > maxLineBytes {
+			logParseError(ParsedMessage{
+				Kind:       "udp",
+				ParseError: fmt.Sprintf("UDP line is %d bytes, maximum is %d", len(line), maxLineBytes),
+			}, line)
+			continue
+		}
+		s.IngestLine(line)
+	}
+}
+
 // IngestLine parses and stores one ddsT1 line.
 func (s *Service) IngestLine(raw string) {
 	receivedAt := time.Now()
 	parsed, ok := ParseLine(raw, receivedAt)
 	if !ok {
 		return
+	}
+	if parsed.ParseError != "" {
+		logParseError(parsed, raw)
+		return
+	}
+	if parsed.DeviceInfo != nil {
+		s.setDeviceInfo(*parsed.DeviceInfo)
 	}
 	if parsed.Location != nil {
 		s.store.UpdateDeviceLocation(*parsed.Location)
@@ -240,6 +356,47 @@ func (s *Service) IngestLine(raw string) {
 	if parsed.EncryptedDID != nil {
 		s.ingestEncryptedDID(*parsed.EncryptedDID, raw, receivedAt)
 	}
+}
+
+func (s *Service) setDeviceInfo(info PositionDeviceInfo) {
+	s.mu.Lock()
+	s.deviceInfo = info
+	s.updatedAt = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *Service) setUDPListenerState(listening bool, listenError string) {
+	s.mu.Lock()
+	s.udpListening = listening
+	s.udpListenError = listenError
+	s.updatedAt = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *Service) recordUDPDatagram(source net.Addr) {
+	s.mu.Lock()
+	if source != nil {
+		s.udpSourceAddress = source.String()
+	}
+	now := s.options.Now()
+	s.udpLastMessageAt = now
+	s.updatedAt = now
+	s.mu.Unlock()
+}
+
+func logParseError(parsed ParsedMessage, raw string) {
+	key := parsed.Kind
+	if key == "" {
+		key = "unknown"
+	}
+	if _, loaded := parseErrorLogs.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 256 {
+		raw = raw[:256]
+	}
+	slog.Warn("定位报文解析失败", "kind", parsed.Kind, "error", parsed.ParseError, "raw_prefix", raw)
 }
 
 // SetDIDDecoder replaces the DID decryptor, mainly for tests.
@@ -373,7 +530,7 @@ func (s *Service) statusLocked() model.TCPListenerStatus {
 		value := s.updatedAt
 		updatedAt = &value
 	}
-	return model.TCPListenerStatus{
+	status := model.TCPListenerStatus{
 		Address:         s.addressLocked(),
 		Host:            s.options.Host,
 		Port:            s.options.Port,
@@ -381,8 +538,28 @@ func (s *Service) statusLocked() model.TCPListenerStatus {
 		ListenError:     s.listenError,
 		SourceConnected: s.sourceConnected,
 		ClientAddress:   s.clientAddress,
+		DeviceName:      s.deviceInfo.DeviceName,
+		FirmwareTime:    s.deviceInfo.FirmwareTime,
 		UpdatedAt:       updatedAt,
 	}
+	if s.options.UDPEnabled {
+		var udpLastMessageAt *time.Time
+		udpSourceActive := false
+		if !s.udpLastMessageAt.IsZero() {
+			value := s.udpLastMessageAt
+			udpLastMessageAt = &value
+			udpSourceActive = s.options.Now().Sub(value) <= s.options.UDPSourceActiveWindow
+		}
+		status.UDPEnabled = true
+		status.UDPAddress = s.udpAddressLocked()
+		status.UDPPort = s.options.UDPPort
+		status.UDPListening = s.udpListening
+		status.UDPListenError = s.udpListenError
+		status.UDPSourceAddress = s.udpSourceAddress
+		status.UDPLastMessageAt = udpLastMessageAt
+		status.UDPSourceActive = udpSourceActive
+	}
+	return status
 }
 
 func (s *Service) openListener() (net.Listener, error) {
@@ -418,8 +595,45 @@ func (s *Service) clearListener(listener net.Listener) {
 	}
 }
 
+func (s *Service) openUDPListener() (net.PacketConn, error) {
+	s.mu.RLock()
+	address := s.udpAddressLocked()
+	openListener := s.options.OpenPacketListener
+	s.mu.RUnlock()
+	listener, err := openListener("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.udpListener = listener
+	s.mu.Unlock()
+	return listener, nil
+}
+
+func (s *Service) clearUDPListener(listener net.PacketConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.udpListener == listener {
+		s.udpListener = nil
+	}
+	if s.udpListening {
+		s.udpListening = false
+		s.updatedAt = time.Now()
+	}
+}
+
 func (s *Service) addressLocked() string {
 	return net.JoinHostPort(s.options.Host, strconv.Itoa(s.options.Port))
+}
+
+func (s *Service) udpAddressLocked() string {
+	return net.JoinHostPort(s.options.Host, strconv.Itoa(s.options.UDPPort))
+}
+
+func (s *Service) udpEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.options.UDPEnabled
 }
 
 func (s *Service) bindRetryInterval() time.Duration {
@@ -434,6 +648,12 @@ func (s *Service) readIdleTimeout() time.Duration {
 	return s.options.ReadIdleTimeout
 }
 
+func (s *Service) maxLineBytes() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.options.MaxLineBytes
+}
+
 func normalizeOptions(options Options) Options {
 	options.Host = strings.TrimSpace(options.Host)
 	if options.Host == "" {
@@ -441,6 +661,12 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.Port == 0 {
 		options.Port = 10007
+	}
+	if options.UDPPort == 0 {
+		options.UDPPort = 10007
+	}
+	if options.UDPSourceActiveWindow <= 0 {
+		options.UDPSourceActiveWindow = defaultUDPSourceActiveWindow
 	}
 	if options.BindRetryInterval <= 0 {
 		options.BindRetryInterval = time.Second
@@ -450,6 +676,12 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.OpenListener == nil {
 		options.OpenListener = net.Listen
+	}
+	if options.OpenPacketListener == nil {
+		options.OpenPacketListener = net.ListenPacket
+	}
+	if options.Now == nil {
+		options.Now = time.Now
 	}
 	return options
 }

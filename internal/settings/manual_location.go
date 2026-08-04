@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"drone-management/internal/coordinate"
 	"drone-management/internal/model"
 )
 
@@ -85,14 +85,5 @@ func ClearManualDeviceLocation(path string) error {
 }
 
 func validGeoPoint(point *model.GeoPoint) bool {
-	return point != nil &&
-		!math.IsNaN(point.Latitude) &&
-		!math.IsNaN(point.Longitude) &&
-		!math.IsInf(point.Latitude, 0) &&
-		!math.IsInf(point.Longitude, 0) &&
-		point.Latitude >= -90 &&
-		point.Latitude <= 90 &&
-		point.Longitude >= -180 &&
-		point.Longitude <= 180 &&
-		!(point.Latitude == 0 && point.Longitude == 0)
+	return point != nil && coordinate.IsValid(point.Longitude, point.Latitude)
 }

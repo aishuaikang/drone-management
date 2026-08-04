@@ -132,8 +132,10 @@ func TestProjectPositionRoutesRIDAndDJIOSourcesToRIDAndDCD(t *testing.T) {
 		device model.LingyunDeviceSettings
 	}{
 		{name: "rid accepts rid", source: "RID", device: ridDevice},
+		{name: "rid accepts gb46750", source: "RID_GB46750", device: ridDevice},
 		{name: "rid accepts dji", source: "dji_O:4", device: ridDevice},
 		{name: "dcd accepts rid", source: "RID", device: dcdDevice},
+		{name: "dcd accepts gb46750", source: "RID_GB46750", device: dcdDevice},
 		{name: "dcd accepts dji", source: "dji_O:2/3", device: dcdDevice},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +161,33 @@ func TestProjectPositionRoutesRIDAndDJIOSourcesToRIDAndDCD(t *testing.T) {
 		Drone:  &model.ScreenPositionPoint{Latitude: 22.1, Longitude: 113.9},
 	}, ridDevice, now); ok {
 		t.Fatal("RID device accepted DJI-Drone placeholder")
+	}
+}
+
+func TestProjectPositionRejectsInvalidCoordinates(t *testing.T) {
+	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
+	device := model.LingyunDeviceSettingsWithDefaults(model.LingyunDeviceSettings{Type: model.LingyunDeviceRemoteID})
+	tests := []struct {
+		name  string
+		point model.ScreenPositionPoint
+	}{
+		{name: "zero longitude", point: model.ScreenPositionPoint{Latitude: 22.1, Longitude: 0}},
+		{name: "zero latitude", point: model.ScreenPositionPoint{Latitude: 0, Longitude: 113.9}},
+		{name: "near origin", point: model.ScreenPositionPoint{Latitude: -0.05, Longitude: 0.05}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := projectPosition(model.ScreenPositionTarget{
+				Source: "RID",
+				Serial: "SN",
+				Model:  "DJI",
+				Drone:  &tt.point,
+			}, device, now)
+			if ok {
+				t.Fatalf("projectPosition() accepted invalid point %#v", tt.point)
+			}
+		})
 	}
 }
 

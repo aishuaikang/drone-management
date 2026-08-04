@@ -541,16 +541,29 @@ func TestManualDeviceLocationRoutes(t *testing.T) {
 }
 
 func TestManualDeviceLocationRouteRejectsInvalidPoint(t *testing.T) {
-	s := newTestServer(t, store.New(10, 10))
-	req := httptest.NewRequest(
-		http.MethodPut,
-		"/api/v1/screen/device-location/manual",
-		strings.NewReader(`{"point":{"latitude":91,"longitude":116.3}}`),
-	)
-	rec := httptest.NewRecorder()
-	s.server.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "outside range", body: `{"point":{"latitude":91,"longitude":116.3}}`},
+		{name: "zero longitude", body: `{"point":{"latitude":39.9,"longitude":0}}`},
+		{name: "near origin", body: `{"point":{"latitude":-0.05,"longitude":0.05}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestServer(t, store.New(10, 10))
+			req := httptest.NewRequest(
+				http.MethodPut,
+				"/api/v1/screen/device-location/manual",
+				strings.NewReader(tt.body),
+			)
+			rec := httptest.NewRecorder()
+			s.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

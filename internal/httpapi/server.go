@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"drone-management/internal/config"
+	"drone-management/internal/coordinate"
 	"drone-management/internal/fpv"
 	"drone-management/internal/fpvrecord"
 	"drone-management/internal/fpvvideo"
@@ -1990,16 +1991,7 @@ func parseFPVVideoFrequency(r *http.Request) (int, error) {
 }
 
 func validGeoPoint(point *model.GeoPoint) bool {
-	return point != nil &&
-		!math.IsNaN(point.Latitude) &&
-		!math.IsNaN(point.Longitude) &&
-		!math.IsInf(point.Latitude, 0) &&
-		!math.IsInf(point.Longitude, 0) &&
-		point.Latitude >= -90 &&
-		point.Latitude <= 90 &&
-		point.Longitude >= -180 &&
-		point.Longitude <= 180 &&
-		!(point.Latitude == 0 && point.Longitude == 0)
+	return point != nil && coordinate.IsValid(point.Longitude, point.Latitude)
 }
 
 func validIntrusionRetentionDays(days *int) bool {
