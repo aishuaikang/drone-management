@@ -58,7 +58,7 @@ func New(cfg config.Config) (*App, error) {
 		seconds := model.UserSettingsPositionExpireSeconds(loaded)
 		state.SetPositionTTL(time.Duration(seconds) * time.Second)
 		cfg = configWithUserTCPPorts(cfg, loaded)
-		cfg = configWithUserFPVVideoHost(cfg, loaded)
+		cfg = configWithUserFPVVideoSettings(cfg, loaded)
 	}
 	intrusionStore, err := intrusion.NewStore(cfg.IntrusionDBPath)
 	if err != nil {
@@ -184,7 +184,16 @@ func New(cfg config.Config) (*App, error) {
 	}, nil
 }
 
-func configWithUserFPVVideoHost(cfg config.Config, userSettings model.UserSettings) config.Config {
+func configWithUserFPVVideoSettings(cfg config.Config, userSettings model.UserSettings) config.Config {
+	rtmpURL := strings.TrimSpace(userSettings.FPVVideoRTMPURL)
+	if err := fpvvideo.ValidateRTMPSettings(userSettings.FPVVideoRTMPEnabled, rtmpURL); err != nil {
+		slog.Warn("ignoring invalid saved FPV RTMP settings", "error", err)
+		cfg.FPVVideo.RTMPEnabled = false
+		cfg.FPVVideo.RTMPURL = ""
+	} else {
+		cfg.FPVVideo.RTMPEnabled = userSettings.FPVVideoRTMPEnabled
+		cfg.FPVVideo.RTMPURL = rtmpURL
+	}
 	host := strings.TrimSpace(userSettings.FPVVideoWebRTCHost)
 	if host == "" {
 		return cfg

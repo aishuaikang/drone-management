@@ -10,6 +10,7 @@ func TestLoadFPVVideoConfig(t *testing.T) {
 	t.Setenv("API_FPV_VIDEO_MEDIAMTX_PATH", "/opt/mediamtx")
 	t.Setenv("API_FPV_VIDEO_MEDIAMTX_WORK_DIR", "/tmp/drone-management-fpv-video")
 	t.Setenv("API_FPV_VIDEO_MEDIAMTX_BIN", "/opt/mediamtx/mediamtx")
+	t.Setenv("API_FPV_VIDEO_INTERNAL_RTSP_PORT", "28554")
 	t.Setenv("API_FPV_VIDEO_WEBRTC_HOST", "127.0.0.2")
 	t.Setenv("API_FPV_VIDEO_WEBRTC_PORT", "28889")
 	t.Setenv("API_FPV_VIDEO_WEBRTC_UDP_PORT", "28189")
@@ -33,6 +34,9 @@ func TestLoadFPVVideoConfig(t *testing.T) {
 	}
 	if cfg.FPVVideo.MediaMTXBin != "/opt/mediamtx/mediamtx" {
 		t.Fatalf("mediamtx bin = %q", cfg.FPVVideo.MediaMTXBin)
+	}
+	if cfg.FPVVideo.InternalRTSPPort != 28554 {
+		t.Fatalf("internal RTSP config = %#v", cfg.FPVVideo)
 	}
 	if cfg.FPVVideo.WebRTCListenHost != "127.0.0.2" ||
 		cfg.FPVVideo.WebRTCListenPort != 28889 ||

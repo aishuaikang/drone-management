@@ -1,10 +1,14 @@
 package fpvvideo
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSetWebRTCListenHostUpdatesConfigBetweenSessions(t *testing.T) {
@@ -41,6 +45,62 @@ func TestSetWebRTCListenHostRejectsInvalidOrRunning(t *testing.T) {
 	service.cmd = &exec.Cmd{}
 	if err := service.SetWebRTCListenHost("192.168.31.254"); !errors.Is(err, ErrRunning) {
 		t.Fatalf("SetWebRTCListenHost() error = %v, want ErrRunning", err)
+	}
+}
+
+func TestRestartPreservesExternalWHEPWhenRTMPEnabled(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	const rtspURL = "rtsp://192.168.100.106:554/live/1_1"
+	whepURL := upstream.URL + "/fpv/whep"
+	inputURLs := make(chan string, 1)
+	service := New(Options{
+		RTSPURL:     rtspURL,
+		WHEPURL:     whepURL,
+		RTMPEnabled: true,
+		RTMPURL:     "rtmp://example.com/live/key",
+		MediaMTXBin: "/missing/mediamtx",
+	})
+	service.publisher.mu.Lock()
+	service.publisher.options.Attempt = func(
+		ctx context.Context,
+		inputURL string,
+		_ string,
+		onConnected func(),
+		_ func(),
+	) error {
+		inputURLs <- inputURL
+		onConnected()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	service.publisher.mu.Unlock()
+	t.Cleanup(func() { _ = service.Close() })
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := service.Restart(ctx); err != nil {
+		t.Fatalf("Restart() error = %v", err)
+	}
+	if got := service.WHEPURL(); got != whepURL {
+		t.Fatalf("WHEPURL() = %q, want external URL %q", got, whepURL)
+	}
+	select {
+	case got := <-inputURLs:
+		if got != rtspURL {
+			t.Fatalf("publisher input URL = %q, want %q", got, rtspURL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RTMP publisher did not start with the upstream RTSP URL")
+	}
+	service.mu.Lock()
+	cmd := service.cmd
+	service.mu.Unlock()
+	if cmd != nil {
+		t.Fatal("Restart() started MediaMTX for external WHEP playback")
 	}
 }
 
@@ -117,6 +177,33 @@ func TestMediaMTXConfigUsesWHEPAndRTSPSource(t *testing.T) {
 		if !strings.Contains(config, want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
+	}
+}
+
+func TestMediaMTXConfigEnablesLoopbackRTSPOnlyForRTMP(t *testing.T) {
+	service := New(Options{
+		RTSPURL:          "rtsp://192.168.100.106:554/live/1_1",
+		RTMPEnabled:      true,
+		RTMPURL:          "rtmp://example.com/live/key",
+		InternalRTSPPort: 28554,
+	})
+
+	config := service.mediaMTXConfig()
+	for _, want := range []string{"rtsp: true", "rtspTransports: [tcp]", "rtspAddress: 127.0.0.1:28554"} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("config missing %q:\n%s", want, config)
+		}
+	}
+	if strings.Contains(config, "rtspAddress: 0.0.0.0") {
+		t.Fatalf("config exposes internal RTSP proxy:\n%s", config)
+	}
+}
+
+func TestSetRTMPSettingsRejectsChangesWhileMediaMTXRunning(t *testing.T) {
+	service := New(Options{})
+	service.cmd = &exec.Cmd{}
+	if err := service.SetRTMPSettings(true, "rtmp://example.com/live/key"); !errors.Is(err, ErrRunning) {
+		t.Fatalf("SetRTMPSettings() error = %v, want ErrRunning", err)
 	}
 }
 

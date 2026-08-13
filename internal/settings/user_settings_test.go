@@ -13,6 +13,8 @@ func TestUserSettingsPersistence(t *testing.T) {
 	saved, err := store.SaveEditableUser(model.UserSettings{
 		IntrusionRetentionDays: &retentionDays,
 		FPVVideoWebRTCHost:     "192.168.31.254",
+		FPVVideoRTMPEnabled:    true,
+		FPVVideoRTMPURL:        "rtmps://example.com/live/key",
 		Whitelist: []model.WhitelistItem{
 			{Serial: "DJI-001", Model: "Mini 4 Pro", Source: "manual"},
 		},
@@ -39,6 +41,9 @@ func TestUserSettingsPersistence(t *testing.T) {
 	}
 	if loaded.FPVVideoWebRTCHost != "192.168.31.254" {
 		t.Fatalf("loaded FPV WebRTC host = %q", loaded.FPVVideoWebRTCHost)
+	}
+	if !loaded.FPVVideoRTMPEnabled || loaded.FPVVideoRTMPURL != "rtmps://example.com/live/key" {
+		t.Fatalf("loaded FPV RTMP settings = enabled:%v url:%q", loaded.FPVVideoRTMPEnabled, loaded.FPVVideoRTMPURL)
 	}
 }
 

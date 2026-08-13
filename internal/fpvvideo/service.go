@@ -57,12 +57,15 @@ type Options struct {
 	MediaMTXPath     string
 	MediaMTXWorkDir  string
 	MediaMTXBin      string
+	InternalRTSPPort int
 	WebRTCListenHost string
 	WebRTCListenPort int
 	WebRTCUDPPort    int
 	PathName         string
 	WHEPURL          string
 	RecordPath       string
+	RTMPEnabled      bool
+	RTMPURL          string
 }
 
 // Service owns a MediaMTX process that converts a configured RTSP stream to WHEP/WebRTC.
@@ -75,6 +78,7 @@ type Service struct {
 	lastError string
 	config    string
 	whepURL   string
+	publisher *rtmpPublisher
 }
 
 // New creates a video stream service.
@@ -83,11 +87,17 @@ func New(options Options) *Service {
 	return &Service{
 		options: options,
 		whepURL: externalWHEPURL(options),
+		publisher: newRTMPPublisher(rtmpPublisherOptions{
+			Enabled: options.RTMPEnabled,
+			URL:     options.RTMPURL,
+		}),
 	}
 }
 
 // Enabled reports whether browser playback is configured.
 func (s *Service) Enabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return strings.TrimSpace(s.options.WHEPURL) != "" || strings.TrimSpace(s.options.RTSPURL) != ""
 }
 
@@ -139,6 +149,33 @@ func (s *Service) SetWebRTCListenHost(host string) error {
 	return nil
 }
 
+// SetRTMPSettings changes external publishing between video sessions.
+func (s *Service) SetRTMPSettings(enabled bool, rawURL string) error {
+	if err := ValidateRTMPSettings(enabled, rawURL); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.cmd != nil {
+		s.mu.Unlock()
+		return ErrRunning
+	}
+	s.options.RTMPEnabled = enabled
+	s.options.RTMPURL = strings.TrimSpace(rawURL)
+	s.publisher.Configure(enabled, rawURL)
+	s.mu.Unlock()
+	return nil
+}
+
+// RTMPSettings returns the configured external publisher values.
+func (s *Service) RTMPSettings() (bool, string) {
+	return s.publisher.Settings()
+}
+
+// RTMPStatus returns the external publisher runtime state.
+func (s *Service) RTMPStatus() RTMPStatus {
+	return s.publisher.Status()
+}
+
 // NetworkAddresses returns active non-loopback IPv4 addresses suitable for MediaMTX.
 func NetworkAddresses() ([]NetworkAddress, error) {
 	interfaces, err := net.Interfaces()
@@ -176,12 +213,12 @@ func NetworkAddresses() ([]NetworkAddress, error) {
 
 // Close stops a running MediaMTX process.
 func (s *Service) Close() error {
-	return s.stop(false)
+	return errors.Join(s.publisher.Stop(false), s.stop(false))
 }
 
 // Shutdown gracefully stops a running MediaMTX process.
 func (s *Service) Shutdown() error {
-	return s.stop(true)
+	return errors.Join(s.publisher.Stop(true), s.stop(true))
 }
 
 func (s *Service) stop(graceful bool) error {
@@ -239,10 +276,23 @@ func (s *Service) Restart(ctx context.Context) error {
 	if err := s.Close(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(s.options.WHEPURL) != "" && strings.TrimSpace(s.options.RecordPath) == "" {
-		return s.waitForWHEPEndpoint(ctx)
+	s.mu.Lock()
+	options := s.options
+	s.mu.Unlock()
+	if strings.TrimSpace(options.WHEPURL) != "" && strings.TrimSpace(options.RecordPath) == "" {
+		if err := s.waitForWHEPEndpoint(ctx); err != nil {
+			return err
+		}
+		if options.RTMPEnabled {
+			s.publisher.Start(options.RTSPURL)
+		}
+		return nil
 	}
-	return s.ensureStarted(ctx)
+	if err := s.ensureStarted(ctx); err != nil {
+		return err
+	}
+	s.publisher.Start(internalRTSPURL(options))
+	return nil
 }
 
 func (s *Service) ensureStarted(ctx context.Context) error {
@@ -435,7 +485,15 @@ func whepEndpointReachable(ctx context.Context, whepURL string) bool {
 func (s *Service) mediaMTXConfig() string {
 	var builder strings.Builder
 	builder.WriteString("logLevel: info\n")
-	builder.WriteString("rtsp: false\n")
+	if s.options.RTMPEnabled {
+		builder.WriteString("rtsp: true\n")
+		builder.WriteString("rtspTransports: [tcp]\n")
+		builder.WriteString("rtspAddress: ")
+		builder.WriteString(net.JoinHostPort("127.0.0.1", strconv.Itoa(s.options.InternalRTSPPort)))
+		builder.WriteString("\n")
+	} else {
+		builder.WriteString("rtsp: false\n")
+	}
 	builder.WriteString("rtmp: false\n")
 	builder.WriteString("hls: false\n")
 	builder.WriteString("srt: false\n")
@@ -497,6 +555,9 @@ func normalizeOptions(options Options) Options {
 		options.MediaMTXWorkDir = defaultMediaMTXWorkDir
 	}
 	options.MediaMTXBin = strings.TrimSpace(options.MediaMTXBin)
+	if options.InternalRTSPPort <= 0 || options.InternalRTSPPort > 65535 {
+		options.InternalRTSPPort = defaultInternalRTSPPort
+	}
 	options.WebRTCListenHost = strings.TrimSpace(options.WebRTCListenHost)
 	if options.WebRTCListenHost == "" {
 		options.WebRTCListenHost = defaultWebRTCListenHost
@@ -513,6 +574,7 @@ func normalizeOptions(options Options) Options {
 	}
 	options.WHEPURL = strings.TrimSpace(options.WHEPURL)
 	options.RecordPath = strings.TrimSpace(options.RecordPath)
+	options.RTMPURL = strings.TrimSpace(options.RTMPURL)
 	return options
 }
 
@@ -528,6 +590,15 @@ func localWHEPURL(options Options) string {
 		Scheme: "http",
 		Host:   net.JoinHostPort(options.WebRTCListenHost, strconv.Itoa(options.WebRTCListenPort)),
 		Path:   "/" + options.PathName + "/whep",
+	}
+	return base.String()
+}
+
+func internalRTSPURL(options Options) string {
+	base := url.URL{
+		Scheme: "rtsp",
+		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(options.InternalRTSPPort)),
+		Path:   "/" + options.PathName,
 	}
 	return base.String()
 }

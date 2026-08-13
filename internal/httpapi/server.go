@@ -66,6 +66,8 @@ type userSettingsUpdateRequest struct {
 	ScreenTitle               *string                `json:"screenTitle,omitempty"`
 	PositionExpireSeconds     *int                   `json:"positionExpireSeconds,omitempty"`
 	FPVVideoWebRTCHost        *string                `json:"fpvVideoWebRTCHost,omitempty"`
+	FPVVideoRTMPEnabled       *bool                  `json:"fpvVideoRTMPEnabled,omitempty"`
+	FPVVideoRTMPURL           *string                `json:"fpvVideoRTMPURL,omitempty"`
 	ScreenStrikeChannelLabels *[]string              `json:"screenStrikeChannelLabels,omitempty"`
 	Lingyun                   *model.LingyunSettings `json:"lingyun,omitempty"`
 	WarningZoneEnabled        *bool                  `json:"warningZoneEnabled,omitempty"`
@@ -248,11 +250,14 @@ func New(
 			MediaMTXPath:     cfg.FPVVideo.MediaMTXPath,
 			MediaMTXWorkDir:  cfg.FPVVideo.MediaMTXWorkDir,
 			MediaMTXBin:      cfg.FPVVideo.MediaMTXBin,
+			InternalRTSPPort: cfg.FPVVideo.InternalRTSPPort,
 			WebRTCListenHost: cfg.FPVVideo.WebRTCListenHost,
 			WebRTCListenPort: cfg.FPVVideo.WebRTCListenPort,
 			WebRTCUDPPort:    cfg.FPVVideo.WebRTCUDPPort,
 			WHEPURL:          cfg.FPVVideo.WHEPURL,
 			RecordPath:       "",
+			RTMPEnabled:      cfg.FPVVideo.RTMPEnabled,
+			RTMPURL:          cfg.FPVVideo.RTMPURL,
 		}),
 		fpvVideoAddresses: listFPVVideoNetworkAddresses,
 	}
@@ -710,15 +715,20 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	previousFPVVideoHost := ""
 	fpvVideoHostChanged := false
+	previousRTMPEnabled := false
+	previousRTMPURL := ""
+	fpvVideoRTMPChanged := false
 	fpvVideoSessionLocked := false
 	defer func() {
 		if fpvVideoSessionLocked {
 			s.fpvVideoMu.Unlock()
 		}
 	}()
-	if req.FPVVideoWebRTCHost != nil {
+	if req.FPVVideoWebRTCHost != nil || req.FPVVideoRTMPEnabled != nil || req.FPVVideoRTMPURL != nil {
 		s.fpvVideoMu.Lock()
 		fpvVideoSessionLocked = true
+	}
+	if req.FPVVideoWebRTCHost != nil {
 		host := strings.TrimSpace(*req.FPVVideoWebRTCHost)
 		currentHost := s.fpvVideo.WebRTCListenHost()
 		if host == "" {
@@ -772,6 +782,48 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	if fpvVideoHostChanged {
 		settings.FPVVideoWebRTCHost = strings.TrimSpace(*req.FPVVideoWebRTCHost)
 	}
+	if req.FPVVideoRTMPEnabled != nil {
+		settings.FPVVideoRTMPEnabled = *req.FPVVideoRTMPEnabled
+	}
+	if req.FPVVideoRTMPURL != nil {
+		settings.FPVVideoRTMPURL = strings.TrimSpace(*req.FPVVideoRTMPURL)
+	}
+	if req.FPVVideoRTMPEnabled != nil || req.FPVVideoRTMPURL != nil {
+		if err := fpvvideo.ValidateRTMPSettings(settings.FPVVideoRTMPEnabled, settings.FPVVideoRTMPURL); err != nil {
+			if fpvVideoHostChanged {
+				_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
+				s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+			}
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		previousRTMPEnabled, previousRTMPURL = s.fpvVideo.RTMPSettings()
+		fpvVideoRTMPChanged = previousRTMPEnabled != settings.FPVVideoRTMPEnabled || previousRTMPURL != settings.FPVVideoRTMPURL
+		if fpvVideoRTMPChanged {
+			if s.activeFPVVideoSession != 0 {
+				if fpvVideoHostChanged {
+					_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
+					s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+				}
+				respondError(w, http.StatusConflict, "close the active FPV video session before changing RTMP publishing")
+				return
+			}
+			if err := s.fpvVideo.SetRTMPSettings(settings.FPVVideoRTMPEnabled, settings.FPVVideoRTMPURL); err != nil {
+				if fpvVideoHostChanged {
+					_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
+					s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+				}
+				if errors.Is(err, fpvvideo.ErrRunning) {
+					respondError(w, http.StatusConflict, "close the active FPV video session before changing RTMP publishing")
+					return
+				}
+				respondError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			s.cfg.FPVVideo.RTMPEnabled = settings.FPVVideoRTMPEnabled
+			s.cfg.FPVVideo.RTMPURL = settings.FPVVideoRTMPURL
+		}
+	}
 	if req.ScreenStrikeChannelLabels != nil {
 		settings.ScreenStrikeChannelLabels = normalizeScreenStrikeChannelLabels(*req.ScreenStrikeChannelLabels)
 	}
@@ -813,6 +865,11 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 		if fpvVideoHostChanged {
 			_ = s.fpvVideo.SetWebRTCListenHost(previousFPVVideoHost)
 			s.cfg.FPVVideo.WebRTCListenHost = previousFPVVideoHost
+		}
+		if fpvVideoRTMPChanged {
+			_ = s.fpvVideo.SetRTMPSettings(previousRTMPEnabled, previousRTMPURL)
+			s.cfg.FPVVideo.RTMPEnabled = previousRTMPEnabled
+			s.cfg.FPVVideo.RTMPURL = previousRTMPURL
 		}
 		respondError(w, http.StatusInternalServerError, "save user settings failed")
 		return
@@ -1764,22 +1821,36 @@ func (s *Server) handleScreenStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fpvVideoStatus() model.FPVVideoStatus {
-	if s.fpvVideo == nil || !s.fpvVideo.Enabled() {
-		return model.FPVVideoStatus{}
+	if s.fpvVideo == nil {
+		return model.FPVVideoStatus{
+			RTMP: model.FPVVideoRTMPStatus{State: string(fpvvideo.RTMPStateDisabled)},
+		}
+	}
+	rtmpStatus := s.fpvVideo.RTMPStatus()
+	status := model.FPVVideoStatus{
+		RTMP: model.FPVVideoRTMPStatus{
+			Enabled:   rtmpStatus.Enabled,
+			Active:    rtmpStatus.Active,
+			State:     string(rtmpStatus.State),
+			LastError: rtmpStatus.LastError,
+			UpdatedAt: rtmpStatus.UpdatedAt,
+		},
+	}
+	if !s.fpvVideo.Enabled() {
+		return status
 	}
 	active, frequency, activeSince := s.fpvVideoSessionStatus()
 	var activeSincePtr *time.Time
 	if active {
 		activeSincePtr = &activeSince
 	}
-	return model.FPVVideoStatus{
-		Enabled:         true,
-		PlaybackURL:     s.fpvVideo.PlaybackURL(),
-		PlaybackType:    "whep",
-		Active:          active,
-		ActiveFrequency: frequency,
-		ActiveSince:     activeSincePtr,
-	}
+	status.Enabled = true
+	status.PlaybackURL = s.fpvVideo.PlaybackURL()
+	status.PlaybackType = "whep"
+	status.Active = active
+	status.ActiveFrequency = frequency
+	status.ActiveSince = activeSincePtr
+	return status
 }
 
 func (s *Server) fpvVideoSessionStatus() (bool, int, time.Time) {
@@ -2393,6 +2464,7 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 	}
 	if s != nil && s.fpvVideo != nil {
 		settings.FPVVideoWebRTCHost = s.fpvVideo.WebRTCListenHost()
+		settings.FPVVideoRTMPEnabled, settings.FPVVideoRTMPURL = s.fpvVideo.RTMPSettings()
 	}
 	if s != nil && s.store != nil {
 		location := s.store.DeviceLocation()

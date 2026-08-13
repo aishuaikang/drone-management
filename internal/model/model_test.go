@@ -20,6 +20,9 @@ func TestUserSettingsWithDefaultsAddsPositionExpireSeconds(t *testing.T) {
 	if settings.WarningZoneRadiusMeters == nil || *settings.WarningZoneRadiusMeters != DefaultWarningZoneRadiusMeters {
 		t.Fatalf("warning zone radius = %#v, want %.0f", settings.WarningZoneRadiusMeters, DefaultWarningZoneRadiusMeters)
 	}
+	if settings.FPVVideoRTMPEnabled || settings.FPVVideoRTMPURL != "" {
+		t.Fatalf("FPV RTMP defaults = enabled:%v url:%q", settings.FPVVideoRTMPEnabled, settings.FPVVideoRTMPURL)
+	}
 }
 
 func TestUserSettingsPositionExpireSeconds(t *testing.T) {

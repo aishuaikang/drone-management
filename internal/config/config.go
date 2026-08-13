@@ -53,11 +53,14 @@ type FPVVideoConfig struct {
 	MediaMTXPath     string
 	MediaMTXWorkDir  string
 	MediaMTXBin      string
+	InternalRTSPPort int
 	WebRTCListenHost string
 	WebRTCListenPort int
 	WebRTCUDPPort    int
 	WHEPURL          string
 	RecordDir        string
+	RTMPEnabled      bool
+	RTMPURL          string
 }
 
 // O3DecryptConfig configures O3+/O4 encrypted DID MQTT decryption.
@@ -109,6 +112,7 @@ func Load() Config {
 			MediaMTXPath:     envString("API_FPV_VIDEO_MEDIAMTX_PATH", "./MediaMTX"),
 			MediaMTXWorkDir:  envString("API_FPV_VIDEO_MEDIAMTX_WORK_DIR", "./tmp/fpv-video"),
 			MediaMTXBin:      envString("API_FPV_VIDEO_MEDIAMTX_BIN", ""),
+			InternalRTSPPort: envInt("API_FPV_VIDEO_INTERNAL_RTSP_PORT", 18554),
 			WebRTCListenHost: envString("API_FPV_VIDEO_WEBRTC_HOST", "127.0.0.1"),
 			WebRTCListenPort: envInt("API_FPV_VIDEO_WEBRTC_PORT", 18889),
 			WebRTCUDPPort:    envInt("API_FPV_VIDEO_WEBRTC_UDP_PORT", 18189),

@@ -743,6 +743,73 @@ func TestUpdateUserSettingsRejectsUnavailableFPVVideoWebRTCHost(t *testing.T) {
 	}
 }
 
+func TestUpdateUserSettingsSavesFPVVideoRTMP(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	settingsStore := &memoryUserSettingsStore{}
+	s.userSettings = settingsStore
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":"rtmps://example.com/live/key"}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !settingsStore.settings.FPVVideoRTMPEnabled || settingsStore.settings.FPVVideoRTMPURL != "rtmps://example.com/live/key" {
+		t.Fatalf("saved settings = %#v", settingsStore.settings)
+	}
+	enabled, rawURL := s.fpvVideo.RTMPSettings()
+	if !enabled || rawURL != "rtmps://example.com/live/key" {
+		t.Fatalf("runtime RTMP settings = enabled:%v url:%q", enabled, rawURL)
+	}
+}
+
+func TestUpdateUserSettingsRejectsInvalidFPVVideoRTMP(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	s.userSettings = &memoryUserSettingsStore{}
+	for _, body := range []string{
+		`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":""}`,
+		`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":"https://example.com/live/key"}`,
+		`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":"rtmp://example.com"}`,
+		`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":"rtmp://example.com:65536/live/key"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPut, "/api/v1/user/settings", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, response = %s", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestUpdateUserSettingsRejectsFPVVideoRTMPChangeDuringSession(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	s.userSettings = &memoryUserSettingsStore{}
+	sessionID, _, ok := s.tryBeginFPVVideoSession(1360)
+	if !ok {
+		t.Fatal("session should start")
+	}
+	defer s.finishFPVVideoSession(sessionID)
+
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/api/v1/user/settings",
+		strings.NewReader(`{"fpvVideoRTMPEnabled":true,"fpvVideoRTMPURL":"rtmp://example.com/live/key"}`),
+	)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	enabled, rawURL := s.fpvVideo.RTMPSettings()
+	if enabled || rawURL != "" {
+		t.Fatalf("runtime RTMP settings changed = enabled:%v url:%q", enabled, rawURL)
+	}
+}
+
 func TestUserSettingsRoutesNormalizeWhitelist(t *testing.T) {
 	state := store.New(10, 10)
 	s := newTestServer(t, state)
@@ -2629,10 +2696,13 @@ func newTestFPVVideo(cfg config.Config) *fpvvideo.Service {
 		MediaMTXPath:     cfg.FPVVideo.MediaMTXPath,
 		MediaMTXWorkDir:  cfg.FPVVideo.MediaMTXWorkDir,
 		MediaMTXBin:      cfg.FPVVideo.MediaMTXBin,
+		InternalRTSPPort: cfg.FPVVideo.InternalRTSPPort,
 		WebRTCListenHost: cfg.FPVVideo.WebRTCListenHost,
 		WebRTCListenPort: cfg.FPVVideo.WebRTCListenPort,
 		WebRTCUDPPort:    cfg.FPVVideo.WebRTCUDPPort,
 		WHEPURL:          cfg.FPVVideo.WHEPURL,
+		RTMPEnabled:      cfg.FPVVideo.RTMPEnabled,
+		RTMPURL:          cfg.FPVVideo.RTMPURL,
 	})
 }
 

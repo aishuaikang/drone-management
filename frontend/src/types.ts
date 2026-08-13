@@ -134,6 +134,17 @@ export interface FPVVideoStatus {
   active: boolean;
   activeFrequency?: number;
   activeSince?: string;
+  rtmp: FPVVideoRTMPStatus;
+}
+
+export type FPVVideoRTMPState = "disabled" | "idle" | "starting" | "pushing" | "retrying" | "failed";
+
+export interface FPVVideoRTMPStatus {
+  enabled: boolean;
+  active: boolean;
+  state: FPVVideoRTMPState;
+  lastError?: string;
+  updatedAt?: string;
 }
 
 export interface FPVVideoSessionPayload {
@@ -217,6 +228,8 @@ export interface UserSettings {
   positionTCPPort?: number;
   fpvTCPPort?: number;
   fpvVideoWebRTCHost?: string;
+  fpvVideoRTMPEnabled?: boolean;
+  fpvVideoRTMPURL?: string;
   lingyun?: LingyunSettings;
   screenStrikeChannelLabels?: string[];
   screenStrikeUnattended?: ScreenStrikeUnattendedConfig;

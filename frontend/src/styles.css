@@ -5636,6 +5636,65 @@ button.screen-position-card__point {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(7.8em, 0.82fr);
 }
 
+.screen-settings-form-grid--rtmp {
+  grid-template-columns: minmax(9.5em, 0.78fr) minmax(15em, 1.5fr) minmax(8.5em, 0.72fr);
+  align-items: stretch;
+}
+
+.screen-settings-rtmp-status {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 0.16em;
+  border-left: 1px solid rgba(var(--screen-primary-muted-rgb), 0.22);
+  padding: 0.14em 0 0.14em 0.58em;
+}
+
+.screen-settings-rtmp-status > span,
+.screen-settings-rtmp-status small {
+  color: rgba(204, 226, 224, 0.62);
+  font-size: 0.52em;
+  font-weight: 780;
+}
+
+.screen-settings-rtmp-status strong {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.38em;
+  color: #e7fffb;
+  font-size: 0.7em;
+  font-weight: 920;
+}
+
+.screen-settings-rtmp-status strong i {
+  width: 0.58em;
+  height: 0.58em;
+  flex: none;
+  border-radius: 999px;
+  background: rgba(204, 226, 224, 0.48);
+  box-shadow: 0 0 0.55em currentColor;
+}
+
+.screen-settings-rtmp-status--starting strong,
+.screen-settings-rtmp-status--retrying strong {
+  color: #fbbf24;
+}
+
+.screen-settings-rtmp-status--pushing strong {
+  color: #5eead4;
+}
+
+.screen-settings-rtmp-status--failed strong {
+  color: #fb7185;
+}
+
+.screen-settings-rtmp-status small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .screen-settings-form-grid label {
   display: grid;
   gap: 0.24em;
@@ -7019,6 +7078,7 @@ button.screen-position-card__point {
 @media (max-width: 1180px) {
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--rtmp,
   .screen-settings-form-grid--lingyun-main,
   .screen-settings-channel-labels {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -7180,6 +7240,7 @@ button.screen-position-card__point {
 
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--rtmp,
   .screen-settings-form-grid--lingyun-main,
   .screen-lingyun-status-grid,
   .screen-about-grid,
@@ -8622,6 +8683,7 @@ button.screen-position-card__point {
   .screen-lingyun-page,
   .screen-settings-section--warning .screen-settings-form-grid,
   .screen-settings-form-grid--ports,
+  .screen-settings-form-grid--rtmp,
   .screen-settings-form-grid--lingyun-main,
   .screen-lingyun-status-grid,
   .screen-lingyun-device-grid,

@@ -32,7 +32,7 @@ cd ..
 scripts/build-release.sh
 ```
 
-默认会在 `dist/` 下生成 Linux、Windows、macOS 的 `amd64/arm64` 软件包。只构建指定平台：
+默认会在 `dist/` 下生成 Linux ARM64、Windows AMD64、macOS ARM64 软件包。只构建指定平台：
 
 ```bash
 scripts/build-release.sh linux/arm64 windows/amd64
@@ -54,6 +54,7 @@ VERSION=2.2.6 TARGETS="linux/arm64" scripts/build-release.sh
 - `API_FPV_VIDEO_MEDIAMTX_PATH`：内置 MediaMTX 二进制目录，默认 `./MediaMTX`
 - `API_FPV_VIDEO_MEDIAMTX_WORK_DIR`：MediaMTX 临时配置目录，默认 `./tmp/fpv-video`
 - `API_FPV_VIDEO_MEDIAMTX_BIN`：手动指定 MediaMTX 二进制路径，默认按平台从 `MediaMTX/` 自动选择
+- `API_FPV_VIDEO_INTERNAL_RTSP_PORT`：RTMP 推流启用时内部 RTSP/TCP 代理端口，默认 `18554`，仅监听 `127.0.0.1`
 - `API_FPV_VIDEO_WEBRTC_HOST` / `API_FPV_VIDEO_WEBRTC_PORT` / `API_FPV_VIDEO_WEBRTC_UDP_PORT`：MediaMTX WebRTC 监听配置，默认 `127.0.0.1:18889` 和 UDP `18189`
 - `API_FPV_VIDEO_WHEP_URL`：外部 WHEP 地址；设置后后端不启动内置 MediaMTX，前端通过后端 WHEP 代理自实现 WebRTC 播放
 - `API_FPV_VIDEO_RECORD_DB_PATH`：FPV 图传录制记录数据库，默认 `./data/fpv-videos.db`
@@ -63,3 +64,5 @@ VERSION=2.2.6 TARGETS="linux/arm64" scripts/build-release.sh
 - `API_O3_DECRYPT_TIMEOUT_MS` / `API_O3_DECRYPT_CONNECT_TIMEOUT_MS`：解密请求和 MQTT 连接超时
 
 `MediaMTX/` 目录用于存放不同平台的 MediaMTX。发布脚本会按目标平台复制对应文件，例如 `mediamtx_v1.19.0_linux_arm64`、`mediamtx_v1.19.0_windows_amd64.exe`、`mediamtx_v1.19.0_darwin_arm64`。
+
+在“设置 → RTMP 推流”中可配置一个 `rtmp://` 或 `rtmps://` 地址。默认关闭且地址为空；只有打开 FPV 视频会话时才推流，关闭会话即停止。后端内置纯 Go 发布器，只复制 H.264/H.265 视频轨，不推音频、不转码，因此上游视频和目标服务必须支持相同编码。RTMP 连接失败会自动重试，不影响本地 WebRTC 播放和录像；发布包无需额外携带 FFmpeg。

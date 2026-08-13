@@ -80,6 +80,8 @@ type UserSettings struct {
 	PositionTCPPort           *int                          `json:"positionTCPPort,omitempty"`
 	FPVTCPPort                *int                          `json:"fpvTCPPort,omitempty"`
 	FPVVideoWebRTCHost        string                        `json:"fpvVideoWebRTCHost,omitempty"`
+	FPVVideoRTMPEnabled       bool                          `json:"fpvVideoRTMPEnabled"`
+	FPVVideoRTMPURL           string                        `json:"fpvVideoRTMPURL,omitempty"`
 	Lingyun                   LingyunSettings               `json:"lingyun,omitempty"`
 	ScreenStrikeChannelLabels []string                      `json:"screenStrikeChannelLabels,omitempty"`
 	ScreenStrikeUnattended    *ScreenStrikeUnattendedConfig `json:"screenStrikeUnattended,omitempty"`
@@ -737,12 +739,22 @@ type LingyunPublishLog struct {
 
 // FPVVideoStatus describes the configured FPV video playback endpoint.
 type FPVVideoStatus struct {
-	Enabled         bool       `json:"enabled"`
-	PlaybackURL     string     `json:"playbackUrl,omitempty"`
-	PlaybackType    string     `json:"playbackType,omitempty"`
-	Active          bool       `json:"active"`
-	ActiveFrequency int        `json:"activeFrequency,omitempty"`
-	ActiveSince     *time.Time `json:"activeSince,omitempty"`
+	Enabled         bool               `json:"enabled"`
+	PlaybackURL     string             `json:"playbackUrl,omitempty"`
+	PlaybackType    string             `json:"playbackType,omitempty"`
+	Active          bool               `json:"active"`
+	ActiveFrequency int                `json:"activeFrequency,omitempty"`
+	ActiveSince     *time.Time         `json:"activeSince,omitempty"`
+	RTMP            FPVVideoRTMPStatus `json:"rtmp"`
+}
+
+// FPVVideoRTMPStatus describes the external RTMP publisher state.
+type FPVVideoRTMPStatus struct {
+	Enabled   bool       `json:"enabled"`
+	Active    bool       `json:"active"`
+	State     string     `json:"state"`
+	LastError string     `json:"lastError,omitempty"`
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
 }
 
 // ScreenDeviceLocationResponse returns the latest receiver/device location.

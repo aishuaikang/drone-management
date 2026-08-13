@@ -483,6 +483,19 @@ const labels: Record<Locale, Record<string, string>> = {
     fpvVideoNetworkAddressesEmpty: "没有可用的本机 IPv4 地址",
     fpvVideoCurrentAddressUnavailable: "当前地址不可用",
     fpvVideoWebRTCHostInvalid: "请选择一个可用的本机 IPv4 地址",
+    fpvVideoRTMPSettings: "RTMP 推流",
+    fpvVideoRTMPSettingsHint: "查看 FPV 视频时同步推送；播放期间不能修改，推流失败不影响本地播放。",
+    fpvVideoRTMPEnabled: "已启用同步推流",
+    fpvVideoRTMPDisabled: "已关闭同步推流",
+    fpvVideoRTMPURL: "RTMP / RTMPS 地址",
+    fpvVideoRTMPURLInvalid: "请输入包含主机和推流路径的 RTMP 或 RTMPS 地址",
+    fpvVideoRTMPStatus: "运行状态",
+    fpvVideoRTMPStateDisabled: "已关闭",
+    fpvVideoRTMPStateIdle: "等待视频",
+    fpvVideoRTMPStateStarting: "正在连接",
+    fpvVideoRTMPStatePushing: "推流中",
+    fpvVideoRTMPStateRetrying: "重试中",
+    fpvVideoRTMPStateFailed: "推流失败",
     tcpPortInvalid: "请输入 1 到 65535 之间且不重复的端口",
     lingyunSettings: "通用MQTT协议",
     lingyunSettingsHint: "控制四类逻辑设备通过 MQTT 注册、上报和响应控制命令。",
@@ -920,6 +933,19 @@ const labels: Record<Locale, Record<string, string>> = {
     fpvVideoNetworkAddressesEmpty: "No local IPv4 addresses are available",
     fpvVideoCurrentAddressUnavailable: "Current address unavailable",
     fpvVideoWebRTCHostInvalid: "Select an available local IPv4 address",
+    fpvVideoRTMPSettings: "RTMP Publishing",
+    fpvVideoRTMPSettingsHint: "Publishes while FPV video is open. It cannot change during playback, and failures do not interrupt local video.",
+    fpvVideoRTMPEnabled: "Synchronized publishing enabled",
+    fpvVideoRTMPDisabled: "Synchronized publishing disabled",
+    fpvVideoRTMPURL: "RTMP / RTMPS URL",
+    fpvVideoRTMPURLInvalid: "Enter an RTMP or RTMPS URL with a host and stream path",
+    fpvVideoRTMPStatus: "Runtime status",
+    fpvVideoRTMPStateDisabled: "Disabled",
+    fpvVideoRTMPStateIdle: "Waiting for video",
+    fpvVideoRTMPStateStarting: "Connecting",
+    fpvVideoRTMPStatePushing: "Publishing",
+    fpvVideoRTMPStateRetrying: "Retrying",
+    fpvVideoRTMPStateFailed: "Publishing failed",
     tcpPortInvalid: "Enter unique ports from 1 to 65535",
     lingyunSettings: "General MQTT Protocol",
     lingyunSettingsHint: "Registers four logical devices through MQTT, publishes targets, and responds to platform controls.",
@@ -3644,6 +3670,8 @@ function ScreenSettingsManagement({
   const savedPositionTCPPort = resolveTCPPort(userSettings.positionTCPPort, status?.position?.port ?? 10007);
   const savedFPVTCPPort = resolveTCPPort(userSettings.fpvTCPPort, status?.fpv?.port ?? 10005);
   const savedFPVVideoWebRTCHost = userSettings.fpvVideoWebRTCHost?.trim() ?? "";
+  const savedFPVVideoRTMPEnabled = Boolean(userSettings.fpvVideoRTMPEnabled);
+  const savedFPVVideoRTMPURL = userSettings.fpvVideoRTMPURL?.trim() ?? "";
   const savedStrikeLabels = normalizeScreenStrikeChannelLabels(userSettings.screenStrikeChannelLabels);
   const savedWarningZoneEnabled = Boolean(userSettings.warningZoneEnabled);
   const savedWarningZoneRadius = resolveWarningZoneRadiusMeters(userSettings);
@@ -3652,6 +3680,8 @@ function ScreenSettingsManagement({
   const [positionTCPPortDraft, setPositionTCPPortDraft] = useState(String(savedPositionTCPPort));
   const [fpvTCPPortDraft, setFPVTCPPortDraft] = useState(String(savedFPVTCPPort));
   const [fpvVideoWebRTCHostDraft, setFPVVideoWebRTCHostDraft] = useState(savedFPVVideoWebRTCHost);
+  const [fpvVideoRTMPEnabledDraft, setFPVVideoRTMPEnabledDraft] = useState(savedFPVVideoRTMPEnabled);
+  const [fpvVideoRTMPURLDraft, setFPVVideoRTMPURLDraft] = useState(savedFPVVideoRTMPURL);
   const [fpvVideoNetworkAddresses, setFPVVideoNetworkAddresses] = useState<FPVVideoNetworkAddress[]>([]);
   const [fpvVideoNetworkAddressesLoading, setFPVVideoNetworkAddressesLoading] = useState(true);
   const [warningZoneEnabledDraft, setWarningZoneEnabledDraft] = useState(savedWarningZoneEnabled);
@@ -3679,6 +3709,14 @@ function ScreenSettingsManagement({
   useEffect(() => {
     setFPVVideoWebRTCHostDraft(savedFPVVideoWebRTCHost);
   }, [savedFPVVideoWebRTCHost]);
+
+  useEffect(() => {
+    setFPVVideoRTMPEnabledDraft(savedFPVVideoRTMPEnabled);
+  }, [savedFPVVideoRTMPEnabled]);
+
+  useEffect(() => {
+    setFPVVideoRTMPURLDraft(savedFPVVideoRTMPURL);
+  }, [savedFPVVideoRTMPURL]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3728,6 +3766,12 @@ function ScreenSettingsManagement({
   const fpvVideoWebRTCHostValid = fpvVideoWebRTCHostDraft === savedFPVVideoWebRTCHost ||
     fpvVideoNetworkAddresses.some((item) => item.address === fpvVideoWebRTCHostDraft);
   const savedFPVVideoWebRTCHostAvailable = fpvVideoNetworkAddresses.some((item) => item.address === savedFPVVideoWebRTCHost);
+  const normalizedFPVVideoRTMPURL = fpvVideoRTMPURLDraft.trim();
+  const fpvVideoRTMPURLValid = normalizedFPVVideoRTMPURL
+    ? validRTMPURL(normalizedFPVVideoRTMPURL)
+    : !fpvVideoRTMPEnabledDraft;
+  const fpvVideoRTMPStatus = status?.fpvVideo?.rtmp;
+  const fpvVideoRTMPState = fpvVideoRTMPStatus?.state ?? (savedFPVVideoRTMPEnabled ? "idle" : "disabled");
   const warningZoneRadius = Number(warningZoneRadiusDraft);
   const warningZoneRadiusValid = Number.isInteger(warningZoneRadius) &&
     warningZoneRadius >= minWarningZoneRadiusMeters &&
@@ -3737,6 +3781,10 @@ function ScreenSettingsManagement({
     (expireValid && expireSeconds !== savedExpireSeconds) ||
     (tcpPortsValid && (positionTCPPort !== savedPositionTCPPort || fpvTCPPort !== savedFPVTCPPort)) ||
     (fpvVideoWebRTCHostValid && fpvVideoWebRTCHostDraft !== savedFPVVideoWebRTCHost) ||
+    (fpvVideoRTMPURLValid && (
+      fpvVideoRTMPEnabledDraft !== savedFPVVideoRTMPEnabled ||
+      normalizedFPVVideoRTMPURL !== savedFPVVideoRTMPURL
+    )) ||
     warningZoneEnabledDraft !== savedWarningZoneEnabled ||
     (warningZoneRadiusValid && warningZoneRadius !== savedWarningZoneRadius) ||
     strikeLabelsChanged;
@@ -3754,6 +3802,10 @@ function ScreenSettingsManagement({
       setBanner(t.fpvVideoWebRTCHostInvalid);
       return;
     }
+    if (!fpvVideoRTMPURLValid) {
+      setBanner(t.fpvVideoRTMPURLInvalid);
+      return;
+    }
     if (!warningZoneRadiusValid) {
       setBanner(t.warningZoneRadiusInvalid);
       return;
@@ -3765,6 +3817,8 @@ function ScreenSettingsManagement({
         screenTitle: normalizedTitle,
         positionExpireSeconds: expireSeconds,
         fpvVideoWebRTCHost: fpvVideoWebRTCHostDraft,
+        fpvVideoRTMPEnabled: fpvVideoRTMPEnabledDraft,
+        fpvVideoRTMPURL: normalizedFPVVideoRTMPURL,
         warningZoneEnabled: warningZoneEnabledDraft,
         warningZoneRadiusMeters: warningZoneRadius,
         screenStrikeChannelLabels: normalizedStrikeLabels,
@@ -3776,6 +3830,8 @@ function ScreenSettingsManagement({
           fpvTCPPort,
         });
         onStatusChange(nextStatus);
+      } else {
+        onStatusChange(await getScreenStatus());
       }
       setBanner(t.settingsSaved);
     } catch (error) {
@@ -3947,6 +4003,50 @@ function ScreenSettingsManagement({
           </div>
         </section>
 
+        <section className="screen-settings-section screen-settings-section--fpv-video-rtmp">
+          <header>
+            <span className="screen-settings-section__icon">
+              <Antenna size={15} aria-hidden="true" />
+            </span>
+            <span className="screen-settings-section__heading">
+              <strong>{t.fpvVideoRTMPSettings}</strong>
+              <span>{t.fpvVideoRTMPSettingsHint}</span>
+            </span>
+          </header>
+          <div className="screen-settings-form-grid screen-settings-form-grid--rtmp">
+            <label className="screen-settings-toggle-row">
+              <span>{fpvVideoRTMPEnabledDraft ? t.fpvVideoRTMPEnabled : t.fpvVideoRTMPDisabled}</span>
+              <input
+                type="checkbox"
+                checked={fpvVideoRTMPEnabledDraft}
+                onChange={(event) => setFPVVideoRTMPEnabledDraft(event.target.checked)}
+              />
+            </label>
+            <label>
+              <span>{t.fpvVideoRTMPURL}</span>
+              <input
+                value={fpvVideoRTMPURLDraft}
+                type="text"
+                spellCheck={false}
+                autoCapitalize="none"
+                placeholder="rtmp://host/app/stream"
+                aria-invalid={!fpvVideoRTMPURLValid}
+                onChange={(event) => setFPVVideoRTMPURLDraft(event.target.value)}
+              />
+            </label>
+            <div className={`screen-settings-rtmp-status screen-settings-rtmp-status--${fpvVideoRTMPState}`}>
+              <span>{t.fpvVideoRTMPStatus}</span>
+              <strong>
+                <i aria-hidden="true" />
+                {formatFPVVideoRTMPState(fpvVideoRTMPState, t)}
+              </strong>
+              {fpvVideoRTMPStatus?.lastError ? (
+                <small title={fpvVideoRTMPStatus.lastError}>{fpvVideoRTMPStatus.lastError}</small>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
         <section className="screen-settings-section screen-settings-section--expire">
           <header>
             <span className="screen-settings-section__icon">
@@ -4017,6 +4117,8 @@ function ScreenSettingsManagement({
             setExpireDraft(String(defaultPositionExpireSeconds));
             setWarningZoneEnabledDraft(false);
             setWarningZoneRadiusDraft(String(defaultWarningZoneRadiusMeters));
+            setFPVVideoRTMPEnabledDraft(false);
+            setFPVVideoRTMPURLDraft("");
             setStrikeLabelDrafts(defaultStrikeChannelLabels());
           }}
         >
@@ -7892,6 +7994,36 @@ function validTCPPort(value: number) {
   return Number.isInteger(value) && value >= minTCPPort && value <= maxTCPPort;
 }
 
+function validRTMPURL(value: string) {
+  try {
+    const parsed = new URL(value);
+    const port = parsed.port ? Number(parsed.port) : null;
+    return (parsed.protocol === "rtmp:" || parsed.protocol === "rtmps:") &&
+      Boolean(parsed.hostname) &&
+      parsed.pathname.split("/").some(Boolean) &&
+      (port === null || (Number.isInteger(port) && port >= minTCPPort && port <= maxTCPPort));
+  } catch {
+    return false;
+  }
+}
+
+function formatFPVVideoRTMPState(state: string, t: Record<string, string>) {
+  switch (state) {
+    case "idle":
+      return t.fpvVideoRTMPStateIdle;
+    case "starting":
+      return t.fpvVideoRTMPStateStarting;
+    case "pushing":
+      return t.fpvVideoRTMPStatePushing;
+    case "retrying":
+      return t.fpvVideoRTMPStateRetrying;
+    case "failed":
+      return t.fpvVideoRTMPStateFailed;
+    default:
+      return t.fpvVideoRTMPStateDisabled;
+  }
+}
+
 function resolveTCPPort(value: number | undefined, fallback: number) {
   if (validTCPPort(value ?? Number.NaN)) {
     return Math.floor(value!);
@@ -8112,6 +8244,8 @@ function defaultUserSettings(): UserSettings {
     positionTCPPort: undefined,
     fpvTCPPort: undefined,
     fpvVideoWebRTCHost: "",
+    fpvVideoRTMPEnabled: false,
+    fpvVideoRTMPURL: "",
     lingyun: defaultLingyunSettings(),
     screenTitle: "",
     screenStrikeChannelLabels: defaultStrikeChannelLabels(),
@@ -8129,6 +8263,8 @@ function resolveUserSettings(settings?: UserSettings | null): UserSettings {
     positionTCPPort: settings?.positionTCPPort,
     fpvTCPPort: settings?.fpvTCPPort,
     fpvVideoWebRTCHost: settings?.fpvVideoWebRTCHost ?? "",
+    fpvVideoRTMPEnabled: Boolean(settings?.fpvVideoRTMPEnabled),
+    fpvVideoRTMPURL: settings?.fpvVideoRTMPURL ?? "",
     lingyun: resolveLingyunSettings(settings?.lingyun),
     screenTitle: settings?.screenTitle ?? "",
     screenStrikeChannelLabels: normalizeScreenStrikeChannelLabels(settings?.screenStrikeChannelLabels),
