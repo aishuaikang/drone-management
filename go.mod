@@ -8,6 +8,7 @@ require (
 	github.com/bluenviron/mediacommon/v2 v2.9.0
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/pion/rtp v1.10.2
+	github.com/tjfoc/gmsm v1.4.1
 	modernc.org/sqlite v1.50.1
 )
 

@@ -196,6 +196,26 @@ func TestLingyunSettingsWithDefaultsKeepsCustomProtocolVersion(t *testing.T) {
 	}
 }
 
+func TestCounterStrikeSettingsWithDefaults(t *testing.T) {
+	settings := CounterStrikeSettingsWithDefaults(CounterStrikeSettings{})
+	if settings.BridgeCode != DefaultCounterStrikeBridgeCode || settings.ProtocolVersion != "1.0" {
+		t.Fatalf("counter strike defaults = %#v", settings)
+	}
+	if settings.Device.DeviceTypeAbbr != "fffd" || settings.Device.CountermeasureRange != 3000 {
+		t.Fatalf("counter strike device defaults = %#v", settings.Device)
+	}
+	if settings.RegisterIntervalSeconds != 300 || settings.StatusIntervalSeconds != 10 {
+		t.Fatalf("counter strike intervals = %d/%d", settings.RegisterIntervalSeconds, settings.StatusIntervalSeconds)
+	}
+}
+
+func TestCounterStrikeSettingsWithGeneratedClientID(t *testing.T) {
+	settings := CounterStrikeSettingsWithGeneratedClientID(CounterStrikeSettings{})
+	if !strings.HasPrefix(settings.ClientID, DefaultCounterStrikeClientIDPrefix) {
+		t.Fatalf("client id = %q, want prefix %q", settings.ClientID, DefaultCounterStrikeClientIDPrefix)
+	}
+}
+
 func TestLingyunSettingsWithDefaultsKeepsValidInstallMode(t *testing.T) {
 	settings := LingyunSettingsWithDefaults(LingyunSettings{
 		Devices: []LingyunDeviceSettings{

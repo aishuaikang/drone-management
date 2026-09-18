@@ -5925,6 +5925,130 @@ button.screen-position-card__point {
   gap: 0.58em;
 }
 
+.screen-protocol-management {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.56em;
+  overflow: hidden;
+  padding: 0.62em 0.72em 0.72em;
+}
+
+.screen-protocol-management > .screen-management {
+  min-height: 0;
+  padding: 0.3em 0 0;
+}
+
+.screen-protocol-selector {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.72em;
+  border-bottom: 1px solid rgba(var(--screen-primary-muted-rgb), 0.16);
+  padding: 0 0 0.56em;
+}
+
+.screen-protocol-selector__intro {
+  display: grid;
+  min-width: 11em;
+  gap: 0.12em;
+}
+
+.screen-protocol-selector__intro strong {
+  color: #f7fbfa;
+  font-size: 0.72em;
+  font-weight: 920;
+}
+
+.screen-protocol-selector__intro em {
+  color: rgba(204, 226, 224, 0.58);
+  font-size: 0.5em;
+  font-style: normal;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.screen-protocol-selector__items {
+  display: inline-flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: 0.34em;
+  border: 1px solid rgba(168, 185, 183, 0.14);
+  border-radius: 0.64em;
+  padding: 0.24em;
+  background: rgba(4, 8, 10, 0.28);
+}
+
+.screen-protocol-selector__item {
+  display: grid;
+  min-width: 10.8em;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.42em;
+  border: 1px solid transparent;
+  border-radius: 0.48em;
+  padding: 0.42em 0.54em;
+  color: rgba(204, 226, 224, 0.72);
+  background: transparent;
+  cursor: pointer;
+}
+
+.screen-protocol-selector__item > span {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.34em;
+}
+
+.screen-protocol-selector__item strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.58em;
+  font-weight: 880;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-protocol-selector__item em {
+  flex: none;
+  color: rgba(204, 226, 224, 0.48);
+  font-size: 0.46em;
+  font-style: normal;
+  font-weight: 780;
+}
+
+.screen-protocol-selector__item--active {
+  border-color: rgba(var(--screen-primary-muted-rgb), 0.34);
+  color: #effffc;
+  background: rgba(var(--screen-primary-rgb), 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.screen-protocol-selector__item--active svg {
+  color: var(--screen-primary);
+}
+
+.screen-protocol-state {
+  width: 0.48em;
+  height: 0.48em;
+  border-radius: 50%;
+  background: rgba(168, 185, 183, 0.42);
+}
+
+.screen-protocol-state--enabled {
+  background: #fbbf24;
+  box-shadow: 0 0 0.5em rgba(251, 191, 36, 0.38);
+}
+
+.screen-protocol-state--connected {
+  background: #48e8a6;
+  box-shadow: 0 0 0.5em rgba(72, 232, 166, 0.42);
+}
+
 .screen-lingyun-loading-pill {
   display: inline-flex;
   flex: 0 0 auto;
@@ -6025,8 +6149,17 @@ button.screen-position-card__point {
   align-items: end;
 }
 
+.screen-settings-form-grid--counter-strike-main {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+}
+
 .screen-lingyun-status-grid {
   grid-template-columns: minmax(8em, 0.7fr) minmax(12em, 1fr) minmax(14em, 1.3fr);
+}
+
+.screen-counter-strike-status-grid {
+  grid-template-columns: minmax(8em, 0.65fr) minmax(12em, 1fr) minmax(10em, 0.8fr) minmax(14em, 1.25fr);
 }
 
 .screen-about-section {
@@ -6316,6 +6449,14 @@ button.screen-position-card__point {
   background:
     linear-gradient(180deg, rgba(var(--screen-primary-muted-rgb), 0.055), rgba(4, 8, 10, 0.08)),
     rgba(4, 8, 10, 0.3);
+}
+
+.screen-counter-strike-device {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.screen-counter-strike-device-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .screen-lingyun-device header {
@@ -7080,6 +7221,7 @@ button.screen-position-card__point {
   .screen-settings-form-grid--ports,
   .screen-settings-form-grid--rtmp,
   .screen-settings-form-grid--lingyun-main,
+  .screen-settings-form-grid--counter-strike-main,
   .screen-settings-channel-labels {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -7104,6 +7246,10 @@ button.screen-position-card__point {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .screen-counter-strike-device-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .screen-offline-map-dashboard {
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -7115,6 +7261,33 @@ button.screen-position-card__point {
 }
 
 @media (max-width: 900px) {
+  .screen-protocol-management {
+    height: auto;
+    overflow: visible;
+  }
+
+  .screen-protocol-selector {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .screen-protocol-selector__intro {
+    min-width: 0;
+  }
+
+  .screen-protocol-selector__items {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .screen-protocol-selector__item {
+    flex: 1 0 12em;
+  }
+
+  .screen-counter-strike-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .screen-settings-workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -8531,6 +8704,12 @@ button.screen-position-card__point {
 }
 
 @media (max-width: 720px) {
+  .screen-counter-strike-device-form,
+  .screen-settings-form-grid--counter-strike-main,
+  .screen-counter-strike-status-grid {
+    grid-template-columns: 1fr;
+  }
+
   .screen-position-card__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

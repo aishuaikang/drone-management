@@ -83,6 +83,7 @@ type UserSettings struct {
 	FPVVideoRTMPEnabled       bool                          `json:"fpvVideoRTMPEnabled"`
 	FPVVideoRTMPURL           string                        `json:"fpvVideoRTMPURL,omitempty"`
 	Lingyun                   LingyunSettings               `json:"lingyun,omitempty"`
+	CounterStrike             CounterStrikeSettings         `json:"counterStrike,omitempty"`
 	ScreenStrikeChannelLabels []string                      `json:"screenStrikeChannelLabels,omitempty"`
 	ScreenStrikeUnattended    *ScreenStrikeUnattendedConfig `json:"screenStrikeUnattended,omitempty"`
 	WarningZoneEnabled        *bool                         `json:"warningZoneEnabled,omitempty"`
@@ -112,6 +113,10 @@ const (
 	DefaultLingyunBandWidth             = "20MHz"
 	DefaultLingyunClientIDPrefix        = "drone-management-lingyun-"
 	DefaultLingyunDeviceSNPrefix        = "drone-management-"
+	DefaultCounterStrikeClientIDPrefix  = "drone-management-counter-strike-"
+	DefaultCounterStrikeBridgeCode      = "ZKXTHAKJG1LRBFDW"
+	DefaultCounterStrikeProtocolVersion = "1.0"
+	DefaultCounterStrikeDeviceTypeAbbr  = "fffd"
 )
 
 // LingyunSettings stores generic MQTT protocol configuration.
@@ -162,6 +167,45 @@ type LingyunDeviceSpec struct {
 	DevHWVer   string `json:"devHWVer"`
 	DevSoftVer string `json:"devSoftVer"`
 	InstLoc    string `json:"instLoc"`
+}
+
+// CounterStrikeSettings stores the V1.0 generic counter-device strike protocol configuration.
+type CounterStrikeSettings struct {
+	Enabled                 bool                        `json:"enabled"`
+	Broker                  string                      `json:"broker"`
+	ClientID                string                      `json:"clientId"`
+	Username                string                      `json:"username"`
+	Password                string                      `json:"password"`
+	ProviderCode            string                      `json:"providerCode"`
+	BridgeCode              string                      `json:"bridgeCode"`
+	ProtocolVersion         string                      `json:"protocolVersion"`
+	RegisterIntervalSeconds int                         `json:"registerIntervalSeconds"`
+	StatusIntervalSeconds   int                         `json:"statusIntervalSeconds"`
+	SM4Key                  string                      `json:"sm4Key"`
+	SM4IV                   string                      `json:"sm4Iv"`
+	Device                  CounterStrikeDeviceSettings `json:"device"`
+}
+
+// CounterStrikeDeviceSettings stores the local countermeasure device exposed by the strike protocol.
+type CounterStrikeDeviceSettings struct {
+	Enabled                      bool              `json:"enabled"`
+	DeviceTypeAbbr               string            `json:"deviceTypeAbbr"`
+	DeviceID                     string            `json:"deviceId"`
+	DeviceName                   string            `json:"deviceName"`
+	DeviceLongitude              float64           `json:"deviceLongitude"`
+	DeviceLatitude               float64           `json:"deviceLatitude"`
+	DeviceAltitude               float64           `json:"deviceAltitude"`
+	InstallMode                  int               `json:"installMode"`
+	CountermeasureRange          float64           `json:"countermeasureRange"`
+	Bands                        []string          `json:"bands"`
+	InterferenceTypes            []int             `json:"ifrTypes"`
+	AntennaType                  int               `json:"antennaType"`
+	ActiveAntennaType            int               `json:"activeAntennaType"`
+	HorizontalCoverageStartAngle float64           `json:"horizontalCoverageStartAngle"`
+	HorizontalCoverageEndAngle   float64           `json:"horizontalCoverageEndAngle"`
+	VerticalCoverageStartAngle   float64           `json:"verticalCoverageStartAngle"`
+	VerticalCoverageEndAngle     float64           `json:"verticalCoverageEndAngle"`
+	DeviceSpec                   LingyunDeviceSpec `json:"deviceSpec"`
 }
 
 // WarningZone describes a user-defined map circle used to scope live alarms.
@@ -220,6 +264,7 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 		settings.FPVTCPPort = nil
 	}
 	settings.Lingyun = LingyunSettingsWithSystemDeviceIdentity(settings.Lingyun)
+	settings.CounterStrike = CounterStrikeSettingsWithDefaults(settings.CounterStrike)
 	legacyZones := settings.WarningZones
 	if settings.WarningZoneEnabled == nil {
 		enabled := false
@@ -240,6 +285,95 @@ func UserSettingsWithDefaults(settings UserSettings) UserSettings {
 		settings.WarningZoneRadiusMeters = &radius
 	}
 	settings.WarningZones = nil
+	return settings
+}
+
+// CounterStrikeSettingsWithDefaults fills optional strike protocol settings.
+func CounterStrikeSettingsWithDefaults(settings CounterStrikeSettings) CounterStrikeSettings {
+	deviceUnset := strings.TrimSpace(settings.Device.DeviceTypeAbbr) == "" &&
+		strings.TrimSpace(settings.Device.DeviceID) == "" &&
+		strings.TrimSpace(settings.Device.DeviceName) == "" &&
+		len(settings.Device.Bands) == 0 &&
+		settings.Device.CountermeasureRange == 0
+	settings.ClientID = strings.TrimSpace(settings.ClientID)
+	settings.ProviderCode = strings.TrimSpace(settings.ProviderCode)
+	settings.BridgeCode = strings.TrimSpace(settings.BridgeCode)
+	settings.ProtocolVersion = strings.TrimSpace(settings.ProtocolVersion)
+	settings.Device.DeviceTypeAbbr = strings.ToLower(strings.TrimSpace(settings.Device.DeviceTypeAbbr))
+	settings.Device.DeviceID = strings.TrimSpace(settings.Device.DeviceID)
+	settings.Device.DeviceName = strings.TrimSpace(settings.Device.DeviceName)
+	if deviceUnset {
+		settings.Device.Enabled = true
+	}
+	if settings.BridgeCode == "" {
+		settings.BridgeCode = DefaultCounterStrikeBridgeCode
+	}
+	if settings.ProtocolVersion == "" {
+		settings.ProtocolVersion = DefaultCounterStrikeProtocolVersion
+	}
+	if settings.RegisterIntervalSeconds <= 0 {
+		settings.RegisterIntervalSeconds = DefaultLingyunRegisterIntervalSec
+	}
+	if settings.StatusIntervalSeconds <= 0 {
+		settings.StatusIntervalSeconds = DefaultLingyunStatusIntervalSec
+	}
+	switch settings.Device.DeviceTypeAbbr {
+	case "fffd", "fifd", "ifr":
+	default:
+		settings.Device.DeviceTypeAbbr = DefaultCounterStrikeDeviceTypeAbbr
+	}
+	switch settings.Device.InstallMode {
+	case 0, 1:
+	default:
+		settings.Device.InstallMode = 0
+	}
+	if settings.Device.CountermeasureRange <= 0 {
+		settings.Device.CountermeasureRange = lingyunDefaultCountermeasureRange()
+	}
+	if settings.Device.HorizontalCoverageStartAngle == 0 && settings.Device.HorizontalCoverageEndAngle == 0 {
+		settings.Device.HorizontalCoverageEndAngle = 360
+	}
+	if settings.Device.VerticalCoverageStartAngle == 0 && settings.Device.VerticalCoverageEndAngle == 0 {
+		settings.Device.VerticalCoverageStartAngle = -90
+		settings.Device.VerticalCoverageEndAngle = 90
+	}
+	if len(settings.Device.Bands) == 0 {
+		settings.Device.Bands = lingyunDefaultInterferenceBands()
+	}
+	if len(settings.Device.InterferenceTypes) == 0 {
+		settings.Device.InterferenceTypes = []int{0, 1, 2}
+	}
+	if settings.Device.AntennaType < 0 || settings.Device.AntennaType > 2 {
+		settings.Device.AntennaType = 0
+	}
+	if settings.Device.ActiveAntennaType < 0 || settings.Device.ActiveAntennaType > 1 {
+		settings.Device.ActiveAntennaType = 0
+	}
+	if strings.TrimSpace(settings.Device.DeviceSpec.DevHWVer) == "" {
+		settings.Device.DeviceSpec.DevHWVer = "unknown"
+	}
+	if strings.TrimSpace(settings.Device.DeviceSpec.DevSoftVer) == "" {
+		settings.Device.DeviceSpec.DevSoftVer = "unknown"
+	}
+	return settings
+}
+
+// CounterStrikeSettingsWithGeneratedClientID creates a stable runtime MQTT client ID when omitted.
+func CounterStrikeSettingsWithGeneratedClientID(settings CounterStrikeSettings) CounterStrikeSettings {
+	settings = CounterStrikeSettingsWithDefaults(settings)
+	if settings.ClientID == "" {
+		settings.ClientID = newRandomClientID(DefaultCounterStrikeClientIDPrefix)
+	}
+	return settings
+}
+
+// CounterStrikeSettingsWithDeviceLocation applies the current receiver location to the strike device.
+func CounterStrikeSettingsWithDeviceLocation(settings CounterStrikeSettings, point *GeoPoint) CounterStrikeSettings {
+	if point == nil || !coordinate.IsValid(point.Longitude, point.Latitude) {
+		return settings
+	}
+	settings.Device.DeviceLongitude = point.Longitude
+	settings.Device.DeviceLatitude = point.Latitude
 	return settings
 }
 
@@ -292,11 +426,15 @@ func LingyunSettingsWithGeneratedClientID(settings LingyunSettings) LingyunSetti
 
 // NewLingyunClientID returns a random client ID for MQTT connections.
 func NewLingyunClientID() string {
+	return newRandomClientID(DefaultLingyunClientIDPrefix)
+}
+
+func newRandomClientID(prefix string) string {
 	var bytes [6]byte
 	if _, err := rand.Read(bytes[:]); err == nil {
-		return DefaultLingyunClientIDPrefix + hex.EncodeToString(bytes[:])
+		return prefix + hex.EncodeToString(bytes[:])
 	}
-	return DefaultLingyunClientIDPrefix + strconv.FormatInt(time.Now().UnixNano(), 36)
+	return prefix + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 // LingyunSettingsWithSystemDeviceIdentity fills empty Lingyun device IDs and serials from the host MAC address.
@@ -688,13 +826,34 @@ type TCPClientStatus struct {
 
 // ScreenRuntimeStatus returns the network edition runtime state.
 type ScreenRuntimeStatus struct {
-	Position            TCPListenerStatus `json:"position"`
-	FPV                 TCPListenerStatus `json:"fpv"`
-	Interference        TCPClientStatus   `json:"interference"`
-	DeviceTargetAddress string            `json:"deviceTargetAddress"`
-	FPVVideo            FPVVideoStatus    `json:"fpvVideo"`
-	Lingyun             LingyunStatus     `json:"lingyun"`
-	ServerTime          time.Time         `json:"serverTime"`
+	Position            TCPListenerStatus   `json:"position"`
+	FPV                 TCPListenerStatus   `json:"fpv"`
+	Interference        TCPClientStatus     `json:"interference"`
+	DeviceTargetAddress string              `json:"deviceTargetAddress"`
+	FPVVideo            FPVVideoStatus      `json:"fpvVideo"`
+	Lingyun             LingyunStatus       `json:"lingyun"`
+	CounterStrike       CounterStrikeStatus `json:"counterStrike"`
+	ServerTime          time.Time           `json:"serverTime"`
+}
+
+// CounterStrikeStatus describes the generic strike protocol runtime state.
+type CounterStrikeStatus struct {
+	Enabled           bool                `json:"enabled"`
+	Configured        bool                `json:"configured"`
+	Connected         bool                `json:"connected"`
+	Connecting        bool                `json:"connecting"`
+	ClientID          string              `json:"clientId,omitempty"`
+	Broker            string              `json:"broker,omitempty"`
+	DeviceTypeAbbr    string              `json:"deviceTypeAbbr,omitempty"`
+	DeviceID          string              `json:"deviceId,omitempty"`
+	WorkState         int                 `json:"workState"`
+	LastRegisterAt    *time.Time          `json:"lastRegisterAt,omitempty"`
+	LastStatusAt      *time.Time          `json:"lastStatusAt,omitempty"`
+	LastControlAt     *time.Time          `json:"lastControlAt,omitempty"`
+	LastControlResult string              `json:"lastControlResult,omitempty"`
+	LastError         string              `json:"lastError,omitempty"`
+	UpdatedAt         *time.Time          `json:"updatedAt,omitempty"`
+	PublishLogs       []LingyunPublishLog `json:"publishLogs,omitempty"`
 }
 
 // LingyunStatus describes the MQTT protocol runtime state.

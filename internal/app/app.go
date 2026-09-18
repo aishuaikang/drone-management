@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"drone-management/internal/config"
+	"drone-management/internal/counterstrike"
 	"drone-management/internal/fpv"
 	"drone-management/internal/fpvrecord"
 	"drone-management/internal/fpvvideo"
@@ -23,6 +24,7 @@ import (
 	networkmanager "drone-management/internal/network"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
+	"drone-management/internal/protocol"
 	"drone-management/internal/settings"
 	"drone-management/internal/store"
 )
@@ -120,6 +122,8 @@ func New(cfg config.Config) (*App, error) {
 		CommandTimeout:    cfg.FPVCommandTimeout,
 	})
 	lingyunSvc := lingyun.NewService(state, loadedUserSettings, lingyun.WithInterferenceController(interferenceSvc))
+	counterStrikeSvc := counterstrike.NewService(state, loadedUserSettings, counterstrike.WithInterferenceController(interferenceSvc))
+	protocolManager := protocol.NewManager(lingyunSvc, counterStrikeSvc)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -137,7 +141,7 @@ func New(cfg config.Config) (*App, error) {
 		}()
 		go func() {
 			defer wg.Done()
-			lingyunSvc.Run(ctx)
+			protocolManager.Run(ctx)
 		}()
 		go func() {
 			defer wg.Done()
@@ -166,6 +170,7 @@ func New(cfg config.Config) (*App, error) {
 			fpvSvc,
 			httpapi.WithUserSettingsStore(userSettings),
 			httpapi.WithLingyunService(lingyunSvc),
+			httpapi.WithCounterStrikeService(counterStrikeSvc),
 			httpapi.WithIntrusionStore(intrusionStore),
 			httpapi.WithFPVVideoRecordStore(fpvRecordStore),
 			httpapi.WithInterferenceService(interferenceSvc),

@@ -80,6 +80,7 @@ export interface ScreenRuntimeStatus {
   deviceTargetAddress: string;
   fpvVideo: FPVVideoStatus;
   lingyun: LingyunStatus;
+  counterStrike: CounterStrikeStatus;
   serverTime: string;
 }
 
@@ -120,6 +121,25 @@ export interface LingyunPublishLog {
   success: boolean;
   at: string;
   error?: string;
+}
+
+export interface CounterStrikeStatus {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  connecting?: boolean;
+  clientId?: string;
+  broker?: string;
+  deviceTypeAbbr?: string;
+  deviceId?: string;
+  workState: number;
+  lastRegisterAt?: string;
+  lastStatusAt?: string;
+  lastControlAt?: string;
+  lastControlResult?: string;
+  lastError?: string;
+  updatedAt?: string;
+  publishLogs?: LingyunPublishLog[];
 }
 
 export interface ScreenTCPPortRequest {
@@ -231,6 +251,7 @@ export interface UserSettings {
   fpvVideoRTMPEnabled?: boolean;
   fpvVideoRTMPURL?: string;
   lingyun?: LingyunSettings;
+  counterStrike?: CounterStrikeSettings;
   screenStrikeChannelLabels?: string[];
   screenStrikeUnattended?: ScreenStrikeUnattendedConfig;
   warningZoneEnabled?: boolean;
@@ -289,6 +310,45 @@ export interface LingyunDeviceSpec {
   devHWVer?: string;
   devSoftVer?: string;
   instLoc?: string;
+}
+
+export type CounterStrikeDeviceType = "fffd" | "fifd" | "ifr";
+
+export interface CounterStrikeSettings {
+  enabled: boolean;
+  broker?: string;
+  clientId?: string;
+  username?: string;
+  password?: string;
+  providerCode?: string;
+  bridgeCode?: string;
+  protocolVersion?: string;
+  registerIntervalSeconds?: number;
+  statusIntervalSeconds?: number;
+  sm4Key?: string;
+  sm4Iv?: string;
+  device: CounterStrikeDeviceSettings;
+}
+
+export interface CounterStrikeDeviceSettings {
+  enabled: boolean;
+  deviceTypeAbbr: CounterStrikeDeviceType | string;
+  deviceId?: string;
+  deviceName?: string;
+  deviceLongitude?: number;
+  deviceLatitude?: number;
+  deviceAltitude?: number;
+  installMode?: number;
+  countermeasureRange?: number;
+  bands?: string[];
+  ifrTypes?: number[];
+  antennaType?: number;
+  activeAntennaType?: number;
+  horizontalCoverageStartAngle?: number;
+  horizontalCoverageEndAngle?: number;
+  verticalCoverageStartAngle?: number;
+  verticalCoverageEndAngle?: number;
+  deviceSpec?: LingyunDeviceSpec;
 }
 
 export interface WarningZone {

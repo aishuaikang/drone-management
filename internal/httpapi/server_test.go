@@ -945,6 +945,50 @@ func TestUserSettingsRoutesSaveLingyunAndApplyService(t *testing.T) {
 	}
 }
 
+func TestUserSettingsRoutesSaveCounterStrikeAndApplyService(t *testing.T) {
+	state := store.New(10, 10)
+	s := newTestServer(t, state)
+	settingsStore := &memoryUserSettingsStore{}
+	service := &memoryCounterStrikeService{}
+	s.userSettings = settingsStore
+	s.counterStrike = service
+
+	body := `{
+		"counterStrike": {
+			"enabled": true,
+			"broker": "tcp://127.0.0.1:1883",
+			"clientId": "strike-client",
+			"providerCode": "AB",
+			"bridgeCode": "ZKXTHAKJG1LRBFDW",
+			"protocolVersion": "1.0",
+			"sm4Key": "0123456789abcdef",
+			"sm4Iv": "abcdef0123456789",
+			"device": {
+				"enabled": true,
+				"deviceTypeAbbr": "fffd",
+				"deviceId": "fffd-AB-000001",
+				"deviceName": "counter device"
+			}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/user/settings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var saved model.UserSettings
+	if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if saved.CounterStrike.ClientID != "strike-client" || saved.CounterStrike.SM4Key != "0123456789abcdef" {
+		t.Fatalf("saved counter strike settings = %#v", saved.CounterStrike)
+	}
+	if service.applied.CounterStrike.Device.DeviceID != "fffd-AB-000001" || !service.applied.CounterStrike.Enabled {
+		t.Fatalf("applied counter strike settings = %#v", service.applied.CounterStrike)
+	}
+}
+
 func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomSettings(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
@@ -2417,6 +2461,19 @@ func (s *memoryUserSettingsStore) SaveEditableUser(settings model.UserSettings) 
 type memoryLingyunService struct {
 	applied model.UserSettings
 	status  model.LingyunStatus
+}
+
+type memoryCounterStrikeService struct {
+	applied model.UserSettings
+	status  model.CounterStrikeStatus
+}
+
+func (s *memoryCounterStrikeService) ApplySettings(settings model.UserSettings) {
+	s.applied = settings
+}
+
+func (s *memoryCounterStrikeService) Status() model.CounterStrikeStatus {
+	return s.status
 }
 
 func (s *memoryLingyunService) ApplySettings(settings model.UserSettings) {

@@ -45,6 +45,7 @@ func (s *UserStore) LoadUser() (model.UserSettings, bool, error) {
 func (s *UserStore) SaveEditableUser(settings model.UserSettings) (model.UserSettings, error) {
 	settings = model.UserSettingsWithDefaults(settings)
 	settings.Lingyun = model.LingyunSettingsWithGeneratedClientID(settings.Lingyun)
+	settings.CounterStrike = model.CounterStrikeSettingsWithGeneratedClientID(settings.CounterStrike)
 	if s == nil || s.path == "" {
 		return settings, nil
 	}

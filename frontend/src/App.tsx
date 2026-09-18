@@ -95,6 +95,8 @@ import selectedUavIconUrl from "./assets/images/selectedUavIcon.svg";
 import uavBlackFlyIconUrl from "./assets/images/uavBlackFlyIcon.svg";
 import uavIconUrl from "./assets/images/uavIcon.svg";
 import type {
+  CounterStrikeDeviceSettings,
+  CounterStrikeDeviceType,
   GeoPoint,
   FPVVideoRecord,
   FPVVideoNetworkAddress,
@@ -237,6 +239,9 @@ const lingyunDeviceTypes: LingyunDeviceType[] = ["aoa", "dcd", "rid", "ifr"];
 const defaultLingyunClientID = createLingyunClientID();
 const defaultLingyunProtocolVersion = "V1.3";
 const defaultLingyunBandWidth = "20MHz";
+const defaultCounterStrikeClientID = createProtocolClientID("drone-management-counter-strike-");
+const defaultCounterStrikeBridgeCode = "ZKXTHAKJG1LRBFDW";
+const defaultCounterStrikeProtocolVersion = "1.0";
 const referenceMapCenter: L.LatLngTuple = [39.909181, 116.397472];
 const referenceMapZoom = 13;
 const referenceMapLayerStorageKey = "drone-management.mapLayer";
@@ -466,7 +471,7 @@ const labels: Record<Locale, Record<string, string>> = {
     generalSettingsView: "通用设置",
     offlineMapView: "离线地图",
     networkView: "网络管理",
-    lingyunView: "通用MQTT协议",
+    lingyunView: "协议管理",
     aboutView: "关于",
     settingsTitle: "大屏设置",
     displaySettings: "显示设置",
@@ -549,6 +554,30 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunPublishKindDeviceState: "状态",
     lingyunPublishKindDeviceData: "数据",
     lingyunPublishKindControlResp: "控制响应",
+    protocolManagement: "协议管理",
+    protocolManagementHint: "各协议独立配置、启停和运行，可同时连接不同平台。",
+    protocolExisting: "通用 MQTT 协议",
+    protocolCounterStrike: "通用反制开启打击",
+    protocolVersionLabel: "V1.0",
+    counterStrikeSettings: "通用反制开启打击协议",
+    counterStrikeSettingsHint: "接收 strike.open / strike.close 指令，并上报加密的设备注册与状态。",
+    counterStrikeEnabled: "反制打击协议已开启",
+    counterStrikeDisabled: "反制打击协议已关闭",
+    counterStrikeBridgeCode: "桥接平台编码",
+    counterStrikeDeviceType: "设备类型",
+    counterStrikeDevice: "反制设备",
+    counterStrikeSM4Key: "SM4 密钥",
+    counterStrikeSM4IV: "SM4 IV",
+    counterStrikeSM4Hint: "支持 16 字节文本或 32 位十六进制。",
+    counterStrikeInvalid: "开启协议时必须填写 Broker、厂商编码、设备名称、设备 ID、设备型号、安装位置，以及有效的 SM4 密钥和 IV；设备名称不能与 ID 相同",
+    counterStrikeRegisterTopic: "注册发布（SM4）",
+    counterStrikeStatusTopic: "状态发布（SM4）",
+    counterStrikeControlTopic: "设备控制订阅",
+    counterStrikeCompatibleTopic: "兼容控制订阅",
+    counterStrikeResponseTopic: "执行结果发布",
+    counterStrikeLastControl: "最近控制",
+    counterStrikeWorking: "打击中",
+    counterStrikeStandby: "待机",
     aboutTitle: "关于软件",
     productName: "软件名称",
     softwareIdentityHint: "软件唯一 SN 由本机 MAC 地址生成，后续授权校验使用同一个 SN。",
@@ -916,7 +945,7 @@ const labels: Record<Locale, Record<string, string>> = {
     generalSettingsView: "General Settings",
     offlineMapView: "Offline Map",
     networkView: "Network",
-    lingyunView: "General MQTT Protocol",
+    lingyunView: "Protocol Management",
     aboutView: "About",
     settingsTitle: "Screen Settings",
     displaySettings: "Display",
@@ -999,6 +1028,30 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunPublishKindDeviceState: "Status",
     lingyunPublishKindDeviceData: "Data",
     lingyunPublishKindControlResp: "Control response",
+    protocolManagement: "Protocol Management",
+    protocolManagementHint: "Configure and run each protocol independently, including simultaneous platform connections.",
+    protocolExisting: "General MQTT Protocol",
+    protocolCounterStrike: "Generic Counter Strike",
+    protocolVersionLabel: "V1.0",
+    counterStrikeSettings: "Generic Counter-Device Strike Protocol",
+    counterStrikeSettingsHint: "Receives strike.open / strike.close and publishes encrypted device registration and status.",
+    counterStrikeEnabled: "Counter strike protocol enabled",
+    counterStrikeDisabled: "Counter strike protocol disabled",
+    counterStrikeBridgeCode: "Bridge platform code",
+    counterStrikeDeviceType: "Device type",
+    counterStrikeDevice: "Countermeasure device",
+    counterStrikeSM4Key: "SM4 key",
+    counterStrikeSM4IV: "SM4 IV",
+    counterStrikeSM4Hint: "Use 16 UTF-8 bytes or 32 hexadecimal characters.",
+    counterStrikeInvalid: "When enabled, broker, provider code, distinct device name and ID, device model, installation location, and valid SM4 key/IV are required",
+    counterStrikeRegisterTopic: "Registration publish (SM4)",
+    counterStrikeStatusTopic: "Status publish (SM4)",
+    counterStrikeControlTopic: "Device control subscribe",
+    counterStrikeCompatibleTopic: "Compatible control subscribe",
+    counterStrikeResponseTopic: "Result publish",
+    counterStrikeLastControl: "Last control",
+    counterStrikeWorking: "Striking",
+    counterStrikeStandby: "Standby",
     aboutTitle: "About",
     productName: "Product",
     softwareIdentityHint: "The software SN is generated from this machine's MAC address and will be reused for license checks.",
@@ -2565,12 +2618,17 @@ function buildBaseLayers(tileNetworkMode: TileNetworkMode): Record<ReferenceMapL
   return {
     "leaflet.map.gaodeMap": L.tileLayer(
       tileURLs.amapRoad,
-      { coordFunction: "gps84ToGcj02" },
+      {
+        coordFunction: "gps84ToGcj02",
+        maxNativeZoom: 18,
+        maxZoom: 19,
+      },
     ),
     "leaflet.map.gaodeSatellite": L.tileLayer(tileURLs.amapSatellite, {
       coordFunction: "gps84ToGcj02",
       minZoom: 3,
-      maxZoom: 16,
+      maxNativeZoom: 18,
+      maxZoom: 19,
     }),
     "leaflet.map.googleMap": L.tileLayer(tileURLs.googleRoad, {
       coordFunction: "gps84ToGcj02",
@@ -3303,7 +3361,7 @@ function ManagementView({
   ) : view === "interferenceReports" ? (
     <InterferenceReportsManagement t={t} locale={locale} userSettings={userSettings} />
   ) : view === "lingyun" ? (
-    <LingyunSettingsManagement
+    <ProtocolSettingsManagement
       t={t}
       locale={locale}
       userSettings={userSettings}
@@ -4129,6 +4187,245 @@ function ScreenSettingsManagement({
           {saving ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}
           <span>{t.save}</span>
         </button>
+      </div>
+    </div>
+  );
+}
+
+type ProtocolSettingsProps = {
+  t: Record<string, string>;
+  locale: Locale;
+  userSettings: UserSettings;
+  settingsLoaded: boolean;
+  settingsError: string;
+  strikeState: ScreenStrikeState | null;
+  deviceLocation: ScreenDeviceLocationResponse | null;
+  status: ScreenRuntimeStatus | null;
+  onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
+};
+
+function ProtocolSettingsManagement(props: ProtocolSettingsProps) {
+  const { t, status, userSettings } = props;
+  const [activeProtocol, setActiveProtocol] = useState<"lingyun" | "counterStrike">("lingyun");
+  const items = [
+    {
+      id: "lingyun" as const,
+      label: t.protocolExisting,
+      version: "V1.3",
+      enabled: Boolean(userSettings.lingyun?.enabled),
+      connected: Boolean(status?.lingyun?.connected),
+      icon: <Radio size={14} aria-hidden="true" />,
+    },
+    {
+      id: "counterStrike" as const,
+      label: t.protocolCounterStrike,
+      version: t.protocolVersionLabel,
+      enabled: Boolean(userSettings.counterStrike?.enabled),
+      connected: Boolean(status?.counterStrike?.connected),
+      icon: <ShieldPlus size={14} aria-hidden="true" />,
+    },
+  ];
+
+  return (
+    <div className="screen-protocol-management">
+      <div className="screen-protocol-selector" role="tablist" aria-label={t.protocolManagement}>
+        <span className="screen-protocol-selector__intro">
+          <strong>{t.protocolManagement}</strong>
+          <em>{t.protocolManagementHint}</em>
+        </span>
+        <div className="screen-protocol-selector__items">
+          {items.map((item) => {
+            const active = activeProtocol === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={active ? "screen-protocol-selector__item screen-protocol-selector__item--active" : "screen-protocol-selector__item"}
+                onClick={() => setActiveProtocol(item.id)}
+              >
+                {item.icon}
+                <span>
+                  <strong>{item.label}</strong>
+                  <em>{item.version}</em>
+                </span>
+                <i className={item.connected ? "screen-protocol-state screen-protocol-state--connected" : item.enabled ? "screen-protocol-state screen-protocol-state--enabled" : "screen-protocol-state"} aria-hidden="true" />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {activeProtocol === "lingyun" ? <LingyunSettingsManagement {...props} /> : <CounterStrikeSettingsManagement {...props} />}
+    </div>
+  );
+}
+
+function CounterStrikeSettingsManagement({
+  t,
+  locale,
+  userSettings,
+  settingsLoaded,
+  settingsError,
+  strikeState,
+  deviceLocation,
+  status,
+  onSaveUserSettings,
+}: ProtocolSettingsProps) {
+  const savedSettings = resolveCounterStrikeSettings(userSettings.counterStrike);
+  const [draft, setDraft] = useState(savedSettings);
+  const dirtyRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [banner, setBanner] = useState("");
+  const [topicsExpanded, setTopicsExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!dirtyRef.current) {
+      setDraft(savedSettings);
+    }
+  }, [userSettings.counterStrike]);
+
+  const draftWithLocation = counterStrikeSettingsWithRuntimeLocation(draft, deviceLocation);
+  const normalized = resolveCounterStrikeSettingsWithDeviceLocation(draft, deviceLocation);
+  const savedWithLocation = resolveCounterStrikeSettingsWithDeviceLocation(savedSettings, deviceLocation);
+  const changed = JSON.stringify(normalized) !== JSON.stringify(savedWithLocation);
+  const runtime = status?.counterStrike;
+  const localBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
+  const topics = counterStrikeTopics(draftWithLocation, t);
+  const publishLogs = runtime?.publishLogs ?? [];
+  const bannerText = banner || settingsError;
+  const settingsPending = !settingsLoaded && !settingsError;
+
+  const update = (patch: Partial<NonNullable<UserSettings["counterStrike"]>>) => {
+    dirtyRef.current = true;
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+  const updateDevice = (patch: Partial<CounterStrikeDeviceSettings>) => {
+    dirtyRef.current = true;
+    setDraft((current) => ({ ...current, device: { ...current.device, ...patch } }));
+  };
+
+  const save = async () => {
+    if (settingsPending) {
+      setBanner(t.waiting);
+      return;
+    }
+    if (!validCounterStrikeSettings(normalized)) {
+      setBanner(t.counterStrikeInvalid);
+      return;
+    }
+    setSaving(true);
+    setBanner("");
+    try {
+      const saved = await onSaveUserSettings({ counterStrike: normalized });
+      dirtyRef.current = false;
+      setDraft(resolveCounterStrikeSettings(saved.counterStrike));
+      setBanner(t.settingsSaved);
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : t.saveFailed);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (settingsPending) {
+    return (
+      <div className="screen-management screen-management--lingyun">
+        <div className="screen-management__header">
+          <div className="screen-panel-title">
+            <span className="screen-panel-title__icon screen-panel-title__icon--target"><ShieldPlus aria-hidden="true" /></span>
+            <span className="screen-panel-title__text"><em>{t.protocolCounterStrike}</em><strong>{t.waiting}</strong></span>
+          </div>
+          <Loader2 className="app-spinner" size={16} aria-hidden="true" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={bannerText ? "screen-management screen-management--lingyun screen-management--with-banner" : "screen-management screen-management--lingyun"}>
+      <div className="screen-management__header">
+        <div className="screen-panel-title">
+          <span className="screen-panel-title__icon screen-panel-title__icon--target"><ShieldPlus aria-hidden="true" /></span>
+          <span className="screen-panel-title__text">
+            <em>{t.protocolCounterStrike} {t.protocolVersionLabel}</em>
+            <strong>{t.counterStrikeSettings}</strong>
+          </span>
+        </div>
+      </div>
+
+      <div className="screen-lingyun-page">
+        <section className="screen-settings-section screen-lingyun-connection">
+          <header>
+            <span className="screen-settings-section__icon"><Signal size={15} aria-hidden="true" /></span>
+            <span className="screen-settings-section__heading">
+              <strong>{t.lingyunConnectionSettings}</strong>
+              <span>{t.counterStrikeSettingsHint}</span>
+            </span>
+          </header>
+          <div className="screen-lingyun-settings">
+            <div className="screen-settings-form-grid screen-settings-form-grid--counter-strike-main">
+              <label className="screen-settings-toggle-row">
+                <span>{draft.enabled ? t.counterStrikeEnabled : t.counterStrikeDisabled}</span>
+                <input type="checkbox" checked={draft.enabled} onChange={(event) => update({ enabled: event.target.checked })} />
+              </label>
+              <label><span>{t.lingyunBroker}</span><input value={draft.broker ?? ""} placeholder="tcp://127.0.0.1:1883" onChange={(event) => update({ broker: event.target.value })} /></label>
+              <label><span>{t.lingyunProviderCode}</span><input value={draft.providerCode ?? ""} maxLength={64} onChange={(event) => update({ providerCode: event.target.value.trim() })} /></label>
+              <label><span>{t.counterStrikeBridgeCode}</span><input value={draft.bridgeCode ?? ""} maxLength={64} onChange={(event) => update({ bridgeCode: event.target.value.trim() })} /></label>
+              <label><span>{t.lingyunClientId}</span><input value={draft.clientId ?? ""} maxLength={128} onChange={(event) => update({ clientId: event.target.value })} /></label>
+              <label><span>{t.lingyunUsername}</span><input value={draft.username ?? ""} maxLength={64} onChange={(event) => update({ username: event.target.value })} /></label>
+              <label><span>{t.lingyunPassword}</span><input type="password" value={draft.password ?? ""} maxLength={128} onChange={(event) => update({ password: event.target.value })} /></label>
+              <label><span>{t.lingyunProtocolVersion}</span><input value={draft.protocolVersion ?? defaultCounterStrikeProtocolVersion} maxLength={16} onChange={(event) => update({ protocolVersion: event.target.value.trim() })} /></label>
+              <label><span>{t.lingyunRegisterInterval}</span><input inputMode="numeric" value={numberInputValue(draft.registerIntervalSeconds)} onChange={(event) => update({ registerIntervalSeconds: parseOptionalNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })} /></label>
+              <label><span>{t.lingyunStatusInterval}</span><input inputMode="numeric" value={numberInputValue(draft.statusIntervalSeconds)} onChange={(event) => update({ statusIntervalSeconds: parseOptionalNumberInput(event.target.value.replace(/\D/g, "").slice(0, 5)) })} /></label>
+              <label title={t.counterStrikeSM4Hint}><span>{t.counterStrikeSM4Key}</span><input type="password" value={draft.sm4Key ?? ""} maxLength={32} onChange={(event) => update({ sm4Key: event.target.value })} /></label>
+              <label title={t.counterStrikeSM4Hint}><span>{t.counterStrikeSM4IV}</span><input type="password" value={draft.sm4Iv ?? ""} maxLength={32} onChange={(event) => update({ sm4Iv: event.target.value })} /></label>
+            </div>
+            <div className="screen-info-grid screen-counter-strike-status-grid">
+              <div className="screen-info-block"><span>{t.status}</span><strong>{counterStrikeStatusLabel(runtime, t, draft.enabled)}</strong></div>
+              <div className="screen-info-block"><span>{t.lingyunBroker}</span><strong title={runtime?.broker || draft.broker || "-"}>{runtime?.broker || draft.broker || "-"}</strong></div>
+              <div className="screen-info-block"><span>{t.counterStrikeLastControl}</span><strong>{runtime?.lastControlResult || "-"}</strong></div>
+              <div className="screen-info-block"><span>{t.lingyunLastError}</span><strong title={runtime?.lastError || "-"}>{runtime?.lastError || "-"}</strong></div>
+            </div>
+          </div>
+        </section>
+
+        <section className="screen-lingyun-device-section">
+          <header className="screen-lingyun-device-section__header"><span><strong>{t.counterStrikeDevice}</strong><em>{t.counterStrikeSettingsHint}</em></span></header>
+          <article className="screen-lingyun-device screen-counter-strike-device">
+            <header><strong>{draft.device.deviceName || draft.device.deviceId || t.counterStrikeDevice}</strong><em>{runtime?.workState === 1 ? t.counterStrikeWorking : t.counterStrikeStandby}</em></header>
+            <div className="screen-lingyun-device-form screen-counter-strike-device-form">
+              <label className="screen-settings-toggle-row"><span>{draft.device.enabled ? t.enabled : t.disabled}</span><input type="checkbox" checked={draft.device.enabled} onChange={(event) => updateDevice({ enabled: event.target.checked })} /></label>
+              <label><span>{t.counterStrikeDeviceType}</span><select value={draft.device.deviceTypeAbbr} onChange={(event) => updateDevice({ deviceTypeAbbr: event.target.value as CounterStrikeDeviceType })}><option value="fffd">fffd</option><option value="fifd">fifd</option><option value="ifr">ifr</option></select></label>
+              <label><span>{t.lingyunDeviceId}</span><input value={draft.device.deviceId ?? ""} maxLength={64} placeholder="fffd-AB-000001" onChange={(event) => updateDevice({ deviceId: event.target.value })} /></label>
+              <label><span>{t.lingyunDeviceName}</span><input value={draft.device.deviceName ?? ""} maxLength={50} onChange={(event) => updateDevice({ deviceName: event.target.value })} /></label>
+              <label><span>{t.longitude}</span><LingyunStaticValue value={draftWithLocation.device.deviceLongitude ?? 0} /></label>
+              <label><span>{t.latitude}</span><LingyunStaticValue value={draftWithLocation.device.deviceLatitude ?? 0} /></label>
+              <label><span>{t.altitude}</span><input inputMode="decimal" value={numberInputValue(draft.device.deviceAltitude)} onChange={(event) => updateDevice({ deviceAltitude: parseOptionalNumberInput(event.target.value) })} /></label>
+              <label><span>{t.lingyunInstallMode}</span><select value={String(draft.device.installMode ?? 0)} onChange={(event) => updateDevice({ installMode: Number(event.target.value) })}><option value="0">{t.lingyunInstallModeFixed}</option><option value="1">{t.lingyunInstallModeMobile}</option></select></label>
+              <label><span>{t.lingyunCountermeasureRange}</span><input inputMode="numeric" value={numberInputValue(draft.device.countermeasureRange)} onChange={(event) => updateDevice({ countermeasureRange: parseOptionalNumberInput(event.target.value) })} /></label>
+              <label><span>{t.lingyunInterferenceBands}</span><LingyunStaticValue value={localBands.join(", ") || "-"} /></label>
+              <label><span>{t.lingyunInstallLocation}</span><input value={draft.device.deviceSpec?.instLoc ?? ""} maxLength={50} onChange={(event) => updateDevice({ deviceSpec: { ...draft.device.deviceSpec, instLoc: event.target.value } })} /></label>
+              <label><span>{t.lingyunDevModel}</span><input value={draft.device.deviceSpec?.devModel ?? ""} maxLength={32} onChange={(event) => updateDevice({ deviceSpec: { ...draft.device.deviceSpec, devModel: event.target.value } })} /></label>
+              <label><span>H min</span><input inputMode="decimal" value={numberInputValue(draft.device.horizontalCoverageStartAngle)} onChange={(event) => updateDevice({ horizontalCoverageStartAngle: parseOptionalNumberInput(event.target.value) })} /></label>
+              <label><span>H max</span><input inputMode="decimal" value={numberInputValue(draft.device.horizontalCoverageEndAngle)} onChange={(event) => updateDevice({ horizontalCoverageEndAngle: parseOptionalNumberInput(event.target.value) })} /></label>
+              <label><span>V min</span><input inputMode="decimal" value={numberInputValue(draft.device.verticalCoverageStartAngle)} onChange={(event) => updateDevice({ verticalCoverageStartAngle: parseOptionalNumberInput(event.target.value) })} /></label>
+              <label><span>V max</span><input inputMode="decimal" value={numberInputValue(draft.device.verticalCoverageEndAngle)} onChange={(event) => updateDevice({ verticalCoverageEndAngle: parseOptionalNumberInput(event.target.value) })} /></label>
+            </div>
+            <div className="screen-lingyun-publish-log" aria-label={t.lingyunPublishLogs}>
+              <div className="screen-lingyun-publish-log__header"><span>{t.lingyunPublishLogs}</span></div>
+              {publishLogs.length ? <div className="screen-lingyun-publish-log__rows">{publishLogs.map((log, index) => <div key={`${log.at}-${index}`} className={log.success ? "screen-lingyun-publish-log-row" : "screen-lingyun-publish-log-row screen-lingyun-publish-log-row--error"}><time dateTime={log.at}>{formatLingyunPublishTime(log.at, locale)}</time><span>{counterStrikePublishKindLabel(log.kind, t)}</span><strong>{log.success ? t.lingyunPublishSuccess : t.lingyunPublishFailed}</strong><code>{log.topic}</code>{log.payload ? <div className="screen-lingyun-publish-log-row__payload"><span>{t.lingyunPublishPayload}</span><pre>{log.payload}</pre></div> : null}{log.error ? <em>{log.error}</em> : null}</div>)}</div> : <p>{t.lingyunPublishLogEmpty}</p>}
+            </div>
+            <div className="screen-lingyun-topic-summary"><span>{t.lingyunTopics}</span><button type="button" aria-expanded={topicsExpanded} onClick={() => setTopicsExpanded((current) => !current)}><ChevronDown aria-hidden="true" className={topicsExpanded ? "screen-lingyun-topic-toggle-icon screen-lingyun-topic-toggle-icon--open" : "screen-lingyun-topic-toggle-icon"} /><span>{topicsExpanded ? t.lingyunHideTopics : t.lingyunShowTopics}</span></button></div>
+            {topicsExpanded ? <div className="screen-lingyun-topic-list">{topics.map((topic) => <div key={topic.label} className="screen-lingyun-topic-row"><span>{topic.label}</span><code>{topic.value}</code></div>)}</div> : null}
+          </article>
+        </section>
+      </div>
+
+      {bannerText ? <div className="screen-management__banner">{bannerText}</div> : null}
+      <div className="screen-management__footer screen-settings-actions">
+        <button type="button" disabled={saving} onClick={() => { dirtyRef.current = true; setDraft(defaultCounterStrikeSettings(createProtocolClientID("drone-management-counter-strike-"))); }}><RefreshCw size={14} aria-hidden="true" /><span>{t.restoreDefault}</span></button>
+        <button type="button" disabled={saving || !changed} onClick={() => void save()}>{saving ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}<span>{t.save}</span></button>
       </div>
     </div>
   );
@@ -8227,7 +8524,10 @@ function intrusionCoordinateParts(record: IntrusionRecord, t: Record<string, str
 }
 
 function createLingyunClientID() {
-  const prefix = "drone-management-lingyun-";
+  return createProtocolClientID("drone-management-lingyun-");
+}
+
+function createProtocolClientID(prefix: string) {
   const cryptoAPI = globalThis.crypto;
   if (cryptoAPI?.getRandomValues) {
     const bytes = new Uint8Array(6);
@@ -8247,6 +8547,7 @@ function defaultUserSettings(): UserSettings {
     fpvVideoRTMPEnabled: false,
     fpvVideoRTMPURL: "",
     lingyun: defaultLingyunSettings(),
+    counterStrike: defaultCounterStrikeSettings(),
     screenTitle: "",
     screenStrikeChannelLabels: defaultStrikeChannelLabels(),
     screenStrikeUnattended: { enabled: false, channelIds: [], durationSeconds: screenStrikeDefaultDurationSeconds },
@@ -8266,6 +8567,7 @@ function resolveUserSettings(settings?: UserSettings | null): UserSettings {
     fpvVideoRTMPEnabled: Boolean(settings?.fpvVideoRTMPEnabled),
     fpvVideoRTMPURL: settings?.fpvVideoRTMPURL ?? "",
     lingyun: resolveLingyunSettings(settings?.lingyun),
+    counterStrike: resolveCounterStrikeSettings(settings?.counterStrike),
     screenTitle: settings?.screenTitle ?? "",
     screenStrikeChannelLabels: normalizeScreenStrikeChannelLabels(settings?.screenStrikeChannelLabels),
     screenStrikeUnattended: resolveUnattendedConfig(settings?.screenStrikeUnattended),
@@ -8273,6 +8575,162 @@ function resolveUserSettings(settings?: UserSettings | null): UserSettings {
     warningZoneRadiusMeters: resolveWarningZoneRadiusMeters(settings),
     whitelist: settings?.whitelist ?? [],
   };
+}
+
+function defaultCounterStrikeSettings(clientId = defaultCounterStrikeClientID): NonNullable<UserSettings["counterStrike"]> {
+  return {
+    enabled: false,
+    broker: "",
+    clientId,
+    username: "",
+    password: "",
+    providerCode: "",
+    bridgeCode: defaultCounterStrikeBridgeCode,
+    protocolVersion: defaultCounterStrikeProtocolVersion,
+    registerIntervalSeconds: 300,
+    statusIntervalSeconds: 10,
+    sm4Key: "",
+    sm4Iv: "",
+    device: {
+      enabled: true,
+      deviceTypeAbbr: "fffd",
+      deviceId: "",
+      deviceName: "",
+      deviceLongitude: 0,
+      deviceLatitude: 0,
+      deviceAltitude: 0,
+      installMode: 0,
+      countermeasureRange: 3000,
+      bands: defaultLingyunInterferenceBands(),
+      ifrTypes: [0, 1, 2],
+      antennaType: 0,
+      activeAntennaType: 0,
+      horizontalCoverageStartAngle: 0,
+      horizontalCoverageEndAngle: 360,
+      verticalCoverageStartAngle: -90,
+      verticalCoverageEndAngle: 90,
+      deviceSpec: {
+        devModel: "",
+        devMfr: "",
+        devSN: "",
+        devHWVer: "unknown",
+        devSoftVer: "unknown",
+        instLoc: "",
+      },
+    },
+  };
+}
+
+function resolveCounterStrikeSettings(settings?: UserSettings["counterStrike"] | null): NonNullable<UserSettings["counterStrike"]> {
+  const defaults = defaultCounterStrikeSettings();
+  const type = settings?.device?.deviceTypeAbbr;
+  const deviceTypeAbbr: CounterStrikeDeviceType = type === "fifd" || type === "ifr" ? type : "fffd";
+  return {
+    ...defaults,
+    ...settings,
+    clientId: settings?.clientId?.trim() || defaults.clientId,
+    providerCode: settings?.providerCode?.trim() || "",
+    bridgeCode: settings?.bridgeCode?.trim() || defaultCounterStrikeBridgeCode,
+    protocolVersion: settings?.protocolVersion?.trim() || defaultCounterStrikeProtocolVersion,
+    registerIntervalSeconds: positiveInteger(settings?.registerIntervalSeconds, 300),
+    statusIntervalSeconds: positiveInteger(settings?.statusIntervalSeconds, 10),
+    device: {
+      ...defaults.device,
+      ...settings?.device,
+      enabled: settings?.device?.enabled ?? defaults.device.enabled,
+      deviceTypeAbbr,
+      deviceId: settings?.device?.deviceId?.trim() || "",
+      deviceName: settings?.device?.deviceName?.trim() || "",
+      installMode: lingyunInstallMode(settings?.device?.installMode, 0),
+      countermeasureRange: resolveLingyunCountermeasureRange(settings?.device?.countermeasureRange, 3000),
+      bands: resolveLingyunBands(settings?.device?.bands, defaults.device.bands ?? []),
+      ifrTypes: resolveLingyunInterferenceTypes(settings?.device?.ifrTypes, [0, 1, 2]),
+      horizontalCoverageStartAngle: finiteNumber(settings?.device?.horizontalCoverageStartAngle, 0),
+      horizontalCoverageEndAngle: finiteNumber(settings?.device?.horizontalCoverageEndAngle, 360),
+      verticalCoverageStartAngle: finiteNumber(settings?.device?.verticalCoverageStartAngle, -90),
+      verticalCoverageEndAngle: finiteNumber(settings?.device?.verticalCoverageEndAngle, 90),
+      deviceSpec: { ...defaults.device.deviceSpec, ...settings?.device?.deviceSpec },
+    },
+  };
+}
+
+function resolveCounterStrikeSettingsWithDeviceLocation(
+  settings: UserSettings["counterStrike"] | null | undefined,
+  deviceLocation: ScreenDeviceLocationResponse | null,
+) {
+  const resolved = resolveCounterStrikeSettings(settings);
+  return counterStrikeSettingsWithRuntimeLocation(resolved, deviceLocation);
+}
+
+function counterStrikeSettingsWithRuntimeLocation(
+  settings: NonNullable<UserSettings["counterStrike"]>,
+  deviceLocation: ScreenDeviceLocationResponse | null,
+) {
+  if (!deviceLocation?.valid || !validMapPoint(deviceLocation.point)) {
+    return settings;
+  }
+  return {
+    ...settings,
+    device: {
+      ...settings.device,
+      deviceLongitude: deviceLocation.point.longitude,
+      deviceLatitude: deviceLocation.point.latitude,
+    },
+  };
+}
+
+function validCounterStrikeSettings(settings: NonNullable<UserSettings["counterStrike"]>) {
+  if (!settings.enabled) {
+    return true;
+  }
+  const validSM4 = (value?: string) => {
+    const text = value?.trim() ?? "";
+    return new TextEncoder().encode(text).length === 16 || /^[0-9a-fA-F]{32}$/.test(text);
+  };
+  return Boolean(
+    settings.broker?.trim()
+    && settings.providerCode?.trim()
+    && settings.bridgeCode?.trim()
+    && settings.device.enabled
+    && settings.device.deviceId?.trim()
+    && settings.device.deviceName?.trim()
+    && settings.device.deviceName.trim().toLowerCase() !== settings.device.deviceId.trim().toLowerCase()
+    && settings.device.deviceSpec?.devModel?.trim()
+    && settings.device.deviceSpec?.instLoc?.trim()
+    && validSM4(settings.sm4Key)
+    && validSM4(settings.sm4Iv),
+  );
+}
+
+function counterStrikeTopics(settings: NonNullable<UserSettings["counterStrike"]>, t: Record<string, string>) {
+  const providerCode = settings.providerCode?.trim() || "{providerCode}";
+  const bridgeCode = settings.bridgeCode?.trim() || defaultCounterStrikeBridgeCode;
+  const type = settings.device.deviceTypeAbbr || "{deviceTypeAbbr}";
+  const deviceId = settings.device.deviceId?.trim() || "{deviceId}";
+  return [
+    { label: t.counterStrikeRegisterTopic, value: `bridge/${bridgeCode}/device/${type}/${deviceId}` },
+    { label: t.counterStrikeStatusTopic, value: `bridge/${bridgeCode}/device_state/${type}/${deviceId}` },
+    { label: t.counterStrikeControlTopic, value: `platform/${providerCode}/counter_device_control/${type}/${deviceId}` },
+    { label: t.counterStrikeCompatibleTopic, value: "platform/counter/strike/down" },
+    { label: t.counterStrikeResponseTopic, value: "platform/counter/strike/up" },
+  ];
+}
+
+function counterStrikeStatusLabel(status: ScreenRuntimeStatus["counterStrike"] | undefined, t: Record<string, string>, fallbackEnabled: boolean) {
+  if (!status) return fallbackEnabled ? t.connecting : t.disabled;
+  if (!status.enabled) return t.disabled;
+  if (!status.configured) return t.lingyunUnconfigured;
+  if (status.connecting && !status.connected) return t.connecting;
+  return status.connected ? t.connected : t.disconnected;
+}
+
+function counterStrikePublishKindLabel(kind: string, t: Record<string, string>) {
+  switch (kind) {
+    case "device": return t.lingyunPublishKindDevice;
+    case "device_state": return t.lingyunPublishKindDeviceState;
+    case "strike_response": return t.lingyunPublishKindControlResp;
+    default: return kind || "-";
+  }
 }
 
 function defaultLingyunSettings(clientId = defaultLingyunClientID, deviceIdentity = ""): NonNullable<UserSettings["lingyun"]> {

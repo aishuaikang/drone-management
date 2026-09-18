@@ -15,6 +15,15 @@ func TestUserSettingsPersistence(t *testing.T) {
 		FPVVideoWebRTCHost:     "192.168.31.254",
 		FPVVideoRTMPEnabled:    true,
 		FPVVideoRTMPURL:        "rtmps://example.com/live/key",
+		CounterStrike: model.CounterStrikeSettings{
+			Enabled:      true,
+			ProviderCode: "AB",
+			Device: model.CounterStrikeDeviceSettings{
+				Enabled:        true,
+				DeviceTypeAbbr: "fffd",
+				DeviceID:       "fffd-AB-000001",
+			},
+		},
 		Whitelist: []model.WhitelistItem{
 			{Serial: "DJI-001", Model: "Mini 4 Pro", Source: "manual"},
 		},
@@ -44,6 +53,9 @@ func TestUserSettingsPersistence(t *testing.T) {
 	}
 	if !loaded.FPVVideoRTMPEnabled || loaded.FPVVideoRTMPURL != "rtmps://example.com/live/key" {
 		t.Fatalf("loaded FPV RTMP settings = enabled:%v url:%q", loaded.FPVVideoRTMPEnabled, loaded.FPVVideoRTMPURL)
+	}
+	if !loaded.CounterStrike.Enabled || loaded.CounterStrike.Device.DeviceID != "fffd-AB-000001" || loaded.CounterStrike.ClientID == "" {
+		t.Fatalf("loaded counter strike settings = %#v", loaded.CounterStrike)
 	}
 }
 

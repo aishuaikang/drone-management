@@ -62,24 +62,31 @@ type UserSettingsStore interface {
 }
 
 type userSettingsUpdateRequest struct {
-	IntrusionRetentionDays    *int                   `json:"intrusionRetentionDays,omitempty"`
-	ScreenTitle               *string                `json:"screenTitle,omitempty"`
-	PositionExpireSeconds     *int                   `json:"positionExpireSeconds,omitempty"`
-	FPVVideoWebRTCHost        *string                `json:"fpvVideoWebRTCHost,omitempty"`
-	FPVVideoRTMPEnabled       *bool                  `json:"fpvVideoRTMPEnabled,omitempty"`
-	FPVVideoRTMPURL           *string                `json:"fpvVideoRTMPURL,omitempty"`
-	ScreenStrikeChannelLabels *[]string              `json:"screenStrikeChannelLabels,omitempty"`
-	Lingyun                   *model.LingyunSettings `json:"lingyun,omitempty"`
-	WarningZoneEnabled        *bool                  `json:"warningZoneEnabled,omitempty"`
-	WarningZoneRadiusMeters   *float64               `json:"warningZoneRadiusMeters,omitempty"`
-	WarningZones              *[]model.WarningZone   `json:"warningZones,omitempty"`
-	Whitelist                 *[]model.WhitelistItem `json:"whitelist,omitempty"`
+	IntrusionRetentionDays    *int                         `json:"intrusionRetentionDays,omitempty"`
+	ScreenTitle               *string                      `json:"screenTitle,omitempty"`
+	PositionExpireSeconds     *int                         `json:"positionExpireSeconds,omitempty"`
+	FPVVideoWebRTCHost        *string                      `json:"fpvVideoWebRTCHost,omitempty"`
+	FPVVideoRTMPEnabled       *bool                        `json:"fpvVideoRTMPEnabled,omitempty"`
+	FPVVideoRTMPURL           *string                      `json:"fpvVideoRTMPURL,omitempty"`
+	ScreenStrikeChannelLabels *[]string                    `json:"screenStrikeChannelLabels,omitempty"`
+	Lingyun                   *model.LingyunSettings       `json:"lingyun,omitempty"`
+	CounterStrike             *model.CounterStrikeSettings `json:"counterStrike,omitempty"`
+	WarningZoneEnabled        *bool                        `json:"warningZoneEnabled,omitempty"`
+	WarningZoneRadiusMeters   *float64                     `json:"warningZoneRadiusMeters,omitempty"`
+	WarningZones              *[]model.WarningZone         `json:"warningZones,omitempty"`
+	Whitelist                 *[]model.WhitelistItem       `json:"whitelist,omitempty"`
 }
 
 // LingyunService controls the optional generic MQTT protocol connector.
 type LingyunService interface {
 	ApplySettings(model.UserSettings)
 	Status() model.LingyunStatus
+}
+
+// CounterStrikeService controls the optional generic strike protocol connector.
+type CounterStrikeService interface {
+	ApplySettings(model.UserSettings)
+	Status() model.CounterStrikeStatus
 }
 
 // IntrusionStore persists disappeared positioning and FPV targets.
@@ -113,6 +120,7 @@ type Server struct {
 	interference         *interference.Service
 	fpvVideo             *fpvvideo.Service
 	lingyun              LingyunService
+	counterStrike        CounterStrikeService
 	server               *http.Server
 	userSettings         UserSettingsStore
 	intrusions           IntrusionStore
@@ -174,6 +182,13 @@ func WithUserSettingsStore(store UserSettingsStore) Option {
 func WithLingyunService(service LingyunService) Option {
 	return func(s *Server) {
 		s.lingyun = service
+	}
+}
+
+// WithCounterStrikeService injects the optional generic strike protocol service.
+func WithCounterStrikeService(service CounterStrikeService) Option {
+	return func(s *Server) {
+		s.counterStrike = service
 	}
 }
 
@@ -829,6 +844,9 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 	}
 	if req.Lingyun != nil {
 		settings.Lingyun = model.LingyunSettingsWithGeneratedClientID(*req.Lingyun)
+	}
+	if req.CounterStrike != nil {
+		settings.CounterStrike = model.CounterStrikeSettingsWithGeneratedClientID(*req.CounterStrike)
 	}
 	if req.WarningZoneEnabled != nil {
 		settings.WarningZoneEnabled = req.WarningZoneEnabled
@@ -2414,6 +2432,9 @@ func (s *Server) applyUserSettings(settings model.UserSettings) {
 	if s.lingyun != nil {
 		s.lingyun.ApplySettings(settings)
 	}
+	if s.counterStrike != nil {
+		s.counterStrike.ApplySettings(settings)
+	}
 }
 
 func (s *Server) applyTCPPorts(positionPort, fpvPort int) {
@@ -2449,6 +2470,9 @@ func (s *Server) screenRuntimeStatus() model.ScreenRuntimeStatus {
 	if s.lingyun != nil {
 		status.Lingyun = s.lingyun.Status()
 	}
+	if s.counterStrike != nil {
+		status.CounterStrike = s.counterStrike.Status()
+	}
 	return status
 }
 
@@ -2470,11 +2494,17 @@ func (s *Server) userSettingsWithRuntimeDefaults(settings model.UserSettings) mo
 		location := s.store.DeviceLocation()
 		if location.Valid && location.Point != nil {
 			settings.Lingyun = model.LingyunSettingsWithDeviceLocation(settings.Lingyun, location.Point)
+			settings.CounterStrike = model.CounterStrikeSettingsWithDeviceLocation(settings.CounterStrike, location.Point)
 		}
 	}
 	if s != nil && s.lingyun != nil {
 		if clientID := strings.TrimSpace(s.lingyun.Status().ClientID); settings.Lingyun.ClientID == "" && clientID != "" {
 			settings.Lingyun.ClientID = clientID
+		}
+	}
+	if s != nil && s.counterStrike != nil {
+		if clientID := strings.TrimSpace(s.counterStrike.Status().ClientID); settings.CounterStrike.ClientID == "" && clientID != "" {
+			settings.CounterStrike.ClientID = clientID
 		}
 	}
 	return model.UserSettingsWithDefaults(settings)
