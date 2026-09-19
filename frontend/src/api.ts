@@ -26,6 +26,8 @@ import type {
   OfflineMapStatus,
   OfflineMapUploadLog,
   OfflineMapUploadResponse,
+  ProtocolDebugRecord,
+  ProtocolID,
   ScreenDeviceLocationResponse,
   ScreenFPVTarget,
   ScreenTCPPortRequest,
@@ -451,10 +453,27 @@ export type ProtocolDebugPublishResponse = {
   sentAt: string;
 };
 
-export function publishProtocolDebug(protocol: "lingyun" | "counterStrike", topic: string, payload: string, encrypt = false) {
+export function publishProtocolDebug(protocol: ProtocolID, topic: string, payload: string, encrypt = false) {
   return requestJson<ProtocolDebugPublishResponse>(`/protocols/${encodeURIComponent(protocol)}/debug-publish`, {
     method: "POST",
     body: JSON.stringify({ topic, payload, encrypt }),
+    timeoutMs: 10000,
+  });
+}
+
+export function getProtocolDebugRecords(protocol: ProtocolID, limit = 100) {
+  return requestJson<ListResponse<ProtocolDebugRecord>>(`/protocols/${encodeURIComponent(protocol)}/debug-records?limit=${limit}`);
+}
+
+export function clearProtocolDebugRecords(protocol: ProtocolID) {
+  return requestJson<{ protocol: string; deleted: number }>(`/protocols/${encodeURIComponent(protocol)}/debug-records`, {
+    method: "DELETE",
+  });
+}
+
+export function reconnectProtocol(protocol: ProtocolID) {
+  return requestJson<{ protocol: string; state: string; requestedAt: string }>(`/protocols/${encodeURIComponent(protocol)}/reconnect`, {
+    method: "POST",
     timeoutMs: 10000,
   });
 }

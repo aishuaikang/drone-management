@@ -39,6 +39,7 @@ import (
 	networkmanager "drone-management/internal/network"
 	"drone-management/internal/offlinemap"
 	"drone-management/internal/position"
+	"drone-management/internal/protocol"
 	"drone-management/internal/settings"
 	"drone-management/internal/store"
 	"drone-management/internal/webassets"
@@ -89,9 +90,12 @@ type CounterStrikeService interface {
 	Status() model.CounterStrikeStatus
 }
 
-// ProtocolDebugService publishes a manually supplied protocol payload.
+// ProtocolDebugService exposes process-local diagnostics for one protocol connector.
 type ProtocolDebugService interface {
 	PublishDebug(context.Context, string, []byte, bool) error
+	DebugRecords(int) []model.ProtocolDebugRecord
+	ClearDebugRecords() int
+	Reconnect() error
 }
 
 type protocolDebugPublishRequest struct {
@@ -361,6 +365,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/network/backups/{name}", s.requireLicense(s.handleDeleteNetworkBackup))
 	mux.HandleFunc("GET /api/v1/screen/status", s.requireLicense(s.handleScreenStatus))
 	mux.HandleFunc("POST /api/v1/protocols/{protocol}/debug-publish", s.requireLicense(s.handleProtocolDebugPublish))
+	mux.HandleFunc("GET /api/v1/protocols/{protocol}/debug-records", s.requireLicense(s.handleProtocolDebugRecords))
+	mux.HandleFunc("DELETE /api/v1/protocols/{protocol}/debug-records", s.requireLicense(s.handleClearProtocolDebugRecords))
+	mux.HandleFunc("POST /api/v1/protocols/{protocol}/reconnect", s.requireLicense(s.handleProtocolReconnect))
 	mux.HandleFunc("GET /api/v1/screen/fpv-video/network-addresses", s.requireLicense(s.handleFPVVideoNetworkAddresses))
 	mux.HandleFunc("GET /api/v1/screen/positions", s.requireLicense(s.handleScreenPositions))
 	mux.HandleFunc("GET /api/v1/screen/fpv", s.requireLicense(s.handleScreenFPV))
@@ -515,18 +522,9 @@ func (s *Server) handleProtocolDebugPublish(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusBadRequest, "debug payload must be valid JSON")
 		return
 	}
-	var service ProtocolDebugService
-	switch strings.TrimSpace(r.PathValue("protocol")) {
-	case "lingyun":
-		service = s.lingyunDebug
-	case "counterStrike":
-		service = s.counterStrikeDebug
-	default:
-		respondError(w, http.StatusNotFound, "unsupported protocol")
-		return
-	}
-	if service == nil {
-		respondError(w, http.StatusServiceUnavailable, "protocol debug publishing is unavailable")
+	protocolName := strings.TrimSpace(r.PathValue("protocol"))
+	service, ok := s.protocolDebugService(w, protocolName)
+	if !ok {
 		return
 	}
 	if err := service.PublishDebug(r.Context(), topic, []byte(payload), req.Encrypt); err != nil {
@@ -534,12 +532,78 @@ func (s *Server) handleProtocolDebugPublish(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
-		"protocol":  strings.TrimSpace(r.PathValue("protocol")),
+		"protocol":  protocolName,
 		"topic":     topic,
 		"payload":   payload,
 		"encrypted": req.Encrypt,
 		"sentAt":    time.Now(),
 	})
+}
+
+func (s *Server) handleProtocolDebugRecords(w http.ResponseWriter, r *http.Request) {
+	protocolName := strings.TrimSpace(r.PathValue("protocol"))
+	service, ok := s.protocolDebugService(w, protocolName)
+	if !ok {
+		return
+	}
+	limit := protocol.MaxDebugRecords
+	if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > protocol.MaxDebugRecords {
+			respondError(w, http.StatusBadRequest, "debug record limit must be between 1 and 100")
+			return
+		}
+		limit = parsed
+	}
+	items := service.DebugRecords(limit)
+	respondJSON(w, http.StatusOK, model.ListResponse[model.ProtocolDebugRecord]{Items: items, Count: len(items)})
+}
+
+func (s *Server) handleClearProtocolDebugRecords(w http.ResponseWriter, r *http.Request) {
+	protocolName := strings.TrimSpace(r.PathValue("protocol"))
+	service, ok := s.protocolDebugService(w, protocolName)
+	if !ok {
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"protocol": protocolName,
+		"deleted":  service.ClearDebugRecords(),
+	})
+}
+
+func (s *Server) handleProtocolReconnect(w http.ResponseWriter, r *http.Request) {
+	protocolName := strings.TrimSpace(r.PathValue("protocol"))
+	service, ok := s.protocolDebugService(w, protocolName)
+	if !ok {
+		return
+	}
+	if err := service.Reconnect(); err != nil {
+		respondError(w, http.StatusConflict, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusAccepted, map[string]any{
+		"protocol":    protocolName,
+		"state":       "connecting",
+		"requestedAt": time.Now(),
+	})
+}
+
+func (s *Server) protocolDebugService(w http.ResponseWriter, protocolName string) (ProtocolDebugService, bool) {
+	var service ProtocolDebugService
+	switch protocolName {
+	case "lingyun":
+		service = s.lingyunDebug
+	case "counterStrike":
+		service = s.counterStrikeDebug
+	default:
+		respondError(w, http.StatusNotFound, "unsupported protocol")
+		return nil, false
+	}
+	if service == nil {
+		respondError(w, http.StatusServiceUnavailable, "protocol diagnostics are unavailable")
+		return nil, false
+	}
+	return service, true
 }
 
 func (s *Server) handleFPVVideoNetworkAddresses(w http.ResponseWriter, _ *http.Request) {

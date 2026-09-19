@@ -65,10 +65,12 @@ type Service struct {
 	interference interferenceController
 	now          func() time.Time
 	wake         chan struct{}
+	debug        *protocol.DebugRecorder
 
 	mu                   sync.RWMutex
 	settings             model.CounterStrikeSettings
 	settingsKey          string
+	connectionGeneration uint64
 	status               model.CounterStrikeStatus
 	subscribed           bool
 	nextConnectAttemptAt time.Time
@@ -85,6 +87,7 @@ func NewService(state *store.Store, settings model.UserSettings, opts ...Option)
 		transport: newPahoTransport(),
 		now:       time.Now,
 		wake:      make(chan struct{}, 1),
+		debug:     protocol.NewDebugRecorder("counterStrike", protocol.MaxDebugRecords),
 		responses: map[string]controlResponse{},
 	}
 	for _, opt := range opts {
@@ -108,17 +111,18 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 	s.settings = next
 	s.settingsKey = key
 	s.status.Enabled = next.Enabled
-	s.status.Configured = configured(next)
+	s.status.Configured = counterStrikeConfigurationComplete(next)
 	s.status.ClientID = strings.TrimSpace(next.ClientID)
 	s.status.Broker = strings.TrimSpace(next.Broker)
 	s.status.DeviceTypeAbbr = strings.TrimSpace(next.Device.DeviceTypeAbbr)
 	s.status.DeviceID = strings.TrimSpace(next.Device.DeviceID)
 	s.status.UpdatedAt = cloneTime(now)
 	if changed {
+		s.connectionGeneration++
 		s.subscribed = false
 		s.nextConnectAttemptAt = time.Time{}
 		s.status.Connected = false
-		s.status.Connecting = next.Enabled && configured(next)
+		s.status.Connecting = next.Enabled && counterStrikeConfigurationComplete(next)
 		s.status.LastError = ""
 		s.status.LastRegisterAt = nil
 		s.status.LastStatusAt = nil
@@ -136,7 +140,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 func (s *Service) Status() model.CounterStrikeStatus {
 	s.mu.RLock()
 	status := s.status
-	status.Connected = s.transport.Connected()
+	status.Connected = status.Connected && s.transport.Connected()
 	status.PublishLogs = cloneLogs(status.PublishLogs)
 	s.mu.RUnlock()
 	if s.interference != nil && s.interference.ScreenStrikeActive() {
@@ -154,26 +158,79 @@ func (s *Service) PublishDebug(ctx context.Context, topic string, payload []byte
 	if topic == "" {
 		return fmt.Errorf("debug topic is required")
 	}
+	attemptedAt := s.now()
 	settings := s.settingsSnapshot()
-	if !configured(settings) {
-		return fmt.Errorf("counter strike protocol is not configured")
+	encoding := protocol.DebugEncodingPlainJSON
+	if encrypt {
+		encoding = protocol.DebugEncodingSM4CBCBase64
+	}
+	if !settings.Enabled {
+		err := fmt.Errorf("counter strike protocol is disabled")
+		s.recordPublish(protocol.DebugSourceManual, "debug", topic, string(payload), "", encoding, err, attemptedAt)
+		return err
+	}
+	if !counterStrikeConfigurationComplete(settings) {
+		err := fmt.Errorf("counter strike protocol is not configured")
+		s.recordPublish(protocol.DebugSourceManual, "debug", topic, string(payload), "", encoding, err, attemptedAt)
+		return err
 	}
 	if !s.transport.Connected() {
-		return fmt.Errorf("MQTT is not connected")
+		err := fmt.Errorf("MQTT is not connected")
+		s.recordPublish(protocol.DebugSourceManual, "debug", topic, string(payload), "", encoding, err, attemptedAt)
+		return err
 	}
 	data := append([]byte(nil), payload...)
 	if encrypt {
 		var err error
 		data, err = encryptSM4CBC(data, settings.SM4Key, settings.SM4IV)
 		if err != nil {
+			s.recordPublish(protocol.DebugSourceManual, "debug", topic, string(payload), "", encoding, err, attemptedAt)
 			return err
 		}
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
 	err := s.transport.Publish(publishCtx, topic, data)
 	cancel()
-	s.recordPublish("debug", topic, string(payload), err)
+	wirePayload := ""
+	if encrypt {
+		wirePayload = string(data)
+	}
+	s.recordPublish(protocol.DebugSourceManual, "debug", topic, string(payload), wirePayload, encoding, err, attemptedAt)
 	return err
+}
+
+// DebugRecords returns recent protocol traffic in newest-first order.
+func (s *Service) DebugRecords(limit int) []model.ProtocolDebugRecord {
+	return s.debug.List(limit)
+}
+
+// ClearDebugRecords clears process-local protocol traffic history.
+func (s *Service) ClearDebugRecords() int {
+	return s.debug.Clear()
+}
+
+// Reconnect forces the enabled connector to reconnect without changing saved settings.
+func (s *Service) Reconnect() error {
+	s.mu.Lock()
+	if !s.settings.Enabled {
+		s.mu.Unlock()
+		return fmt.Errorf("counter strike protocol is disabled")
+	}
+	if !counterStrikeConfigurationComplete(s.settings) {
+		s.mu.Unlock()
+		return fmt.Errorf("counter strike protocol is not configured")
+	}
+	s.connectionGeneration++
+	s.subscribed = false
+	s.nextConnectAttemptAt = time.Time{}
+	s.status.Connected = false
+	s.status.Connecting = true
+	s.status.LastError = ""
+	s.status.UpdatedAt = cloneTime(s.now())
+	s.mu.Unlock()
+	s.transport.Disconnect()
+	s.signal()
+	return nil
 }
 
 // Run processes protocol timers until ctx is cancelled.
@@ -194,45 +251,50 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 func (s *Service) tick(ctx context.Context) {
-	settings := s.settingsSnapshot()
+	settings, generation := s.connectionSnapshot()
 	if !settings.Enabled {
 		s.transport.Disconnect()
-		s.setConnectionState(false, false, "")
+		s.setConnectionState(generation, false, false, "")
 		return
 	}
-	if !configured(settings) {
+	if !counterStrikeConfigurationComplete(settings) {
 		s.transport.Disconnect()
-		s.setConnectionState(false, false, "MQTT, device, and SM4 configuration is incomplete")
+		s.setConnectionState(generation, false, false, "MQTT, device, and SM4 configuration is incomplete")
 		return
 	}
 	if !s.transport.Connected() {
-		if s.connectRetryPending(s.now()) {
+		if s.connectRetryPending(generation, s.now()) {
 			return
 		}
-		s.mu.Lock()
-		s.subscribed = false
-		s.mu.Unlock()
-		s.setConnectionState(false, true, "")
+		if !s.resetSubscriptions(generation) || !s.setConnectionState(generation, false, true, "") {
+			return
+		}
 		connectCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
 		err := s.transport.Connect(connectCtx, transportConfig{
 			Broker: settings.Broker, ClientID: settings.ClientID,
 			Username: settings.Username, Password: settings.Password,
 		})
 		cancel()
+		if !s.connectionGenerationMatches(generation) {
+			return
+		}
 		if err != nil {
-			s.setNextConnectAttempt(s.now().Add(connectRetryDelay))
-			s.setConnectionState(false, false, err.Error())
+			s.setConnectFailure(generation, s.now().Add(connectRetryDelay), err.Error())
 			return
 		}
 	}
-	if err := s.ensureSubscriptions(ctx, settings); err != nil {
-		s.transport.Disconnect()
-		s.setNextConnectAttempt(s.now().Add(connectRetryDelay))
-		s.setConnectionState(false, false, err.Error())
+	current, err := s.ensureSubscriptions(ctx, settings, generation)
+	if !current {
 		return
 	}
-	s.clearNextConnectAttempt()
-	s.setConnectionState(true, false, "")
+	if err != nil {
+		s.transport.Disconnect()
+		s.setConnectFailure(generation, s.now().Add(connectRetryDelay), err.Error())
+		return
+	}
+	if !s.setConnectionSuccess(generation) {
+		return
+	}
 
 	settings = s.settingsWithRuntimeDevice(settings)
 	now := s.now()
@@ -241,7 +303,9 @@ func (s *Service) tick(ctx context.Context) {
 		payload := buildRegistrationPayload(settings, status.WorkState)
 		s.publishEncrypted(ctx, "device", registrationTopic(settings), payload, settings, func(at time.Time) {
 			s.mu.Lock()
-			s.status.LastRegisterAt = cloneTime(at)
+			if s.connectionGeneration == generation {
+				s.status.LastRegisterAt = cloneTime(at)
+			}
 			s.mu.Unlock()
 		})
 	}
@@ -253,18 +317,24 @@ func (s *Service) tick(ctx context.Context) {
 		payload := buildStatusPayload(settings.Device, status.WorkState)
 		s.publishEncrypted(ctx, "device_state", statusTopic(settings), payload, settings, func(at time.Time) {
 			s.mu.Lock()
-			s.status.LastStatusAt = cloneTime(at)
+			if s.connectionGeneration == generation {
+				s.status.LastStatusAt = cloneTime(at)
+			}
 			s.mu.Unlock()
 		})
 	}
 }
 
-func (s *Service) ensureSubscriptions(ctx context.Context, settings model.CounterStrikeSettings) error {
+func (s *Service) ensureSubscriptions(ctx context.Context, settings model.CounterStrikeSettings, generation uint64) (bool, error) {
 	s.mu.RLock()
+	current := s.connectionGeneration == generation
 	subscribed := s.subscribed
 	s.mu.RUnlock()
+	if !current {
+		return false, nil
+	}
 	if subscribed {
-		return nil
+		return true, nil
 	}
 	handler := func(topic string, payload []byte) { s.handleControl(topic, payload) }
 	for _, topic := range []string{controlTopic(settings), legacyControlPath} {
@@ -272,16 +342,24 @@ func (s *Service) ensureSubscriptions(ctx context.Context, settings model.Counte
 		err := s.transport.Subscribe(subscribeCtx, topic, handler)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("subscribe %s: %w", topic, err)
+			return s.connectionGenerationMatches(generation), fmt.Errorf("subscribe %s: %w", topic, err)
+		}
+		if !s.connectionGenerationMatches(generation) {
+			return false, nil
 		}
 	}
 	s.mu.Lock()
+	if s.connectionGeneration != generation {
+		s.mu.Unlock()
+		return false, nil
+	}
 	s.subscribed = true
 	s.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (s *Service) handleControl(topic string, payload []byte) {
+	receivedAt := s.now()
 	s.controlMu.Lock()
 	defer s.controlMu.Unlock()
 
@@ -289,17 +367,21 @@ func (s *Service) handleControl(topic string, payload []byte) {
 	var req controlEnvelope
 	if err := json.Unmarshal(payload, &req); err != nil {
 		if topic == legacyControlPath {
+			s.recordInbound(topic, payload, protocol.DebugOutcomeError, "invalid JSON payload", "", "", receivedAt)
 			return
 		}
 		s.publishControlResponse(settings, buildControlResponse(req, 1, "invalid JSON payload", nil, s.now()))
+		s.recordInbound(topic, payload, protocol.DebugOutcomeError, "invalid JSON payload", settings.Device.DeviceTypeAbbr, settings.Device.DeviceID, receivedAt)
 		return
 	}
 	if topic == legacyControlPath && (strings.TrimSpace(req.DeviceID) != strings.TrimSpace(settings.Device.DeviceID) ||
 		strings.TrimSpace(req.DeviceTypeAbbr) != strings.TrimSpace(settings.Device.DeviceTypeAbbr)) {
+		s.recordInbound(topic, payload, protocol.DebugOutcomeIgnored, "message targets another device", req.DeviceTypeAbbr, req.DeviceID, receivedAt)
 		return
 	}
 	if cached, ok := s.responses[strings.TrimSpace(req.TaskID)]; ok && strings.TrimSpace(req.TaskID) != "" {
 		s.publishControlResponse(settings, cached)
+		s.recordInbound(topic, payload, protocol.DebugOutcomeSuccess, "duplicate task; cached response replayed", req.DeviceTypeAbbr, req.DeviceID, receivedAt)
 		return
 	}
 
@@ -316,6 +398,11 @@ func (s *Service) handleControl(topic string, payload []byte) {
 	s.status.LastStatusAt = nil
 	s.mu.Unlock()
 	s.signal()
+	outcome := protocol.DebugOutcomeSuccess
+	if code != 0 {
+		outcome = protocol.DebugOutcomeError
+	}
+	s.recordInbound(topic, payload, outcome, message, req.DeviceTypeAbbr, req.DeviceID, receivedAt)
 }
 
 func (s *Service) executeControl(settings model.CounterStrikeSettings, req controlEnvelope) (int, string, map[string]any) {
@@ -538,9 +625,10 @@ func (s *Service) publishEncrypted(
 	settings model.CounterStrikeSettings,
 	onSuccess func(time.Time),
 ) {
+	attemptedAt := s.now()
 	plain, err := json.Marshal(payload)
 	if err != nil {
-		s.recordPublish(kind, topic, "", err)
+		s.recordPublish(protocol.DebugSourceAutomatic, kind, topic, "", "", protocol.DebugEncodingSM4CBCBase64, err, attemptedAt)
 		return
 	}
 	encrypted, err := encryptSM4CBC(plain, settings.SM4Key, settings.SM4IV)
@@ -549,20 +637,21 @@ func (s *Service) publishEncrypted(
 		err = s.transport.Publish(publishCtx, topic, encrypted)
 		cancel()
 	}
-	s.recordPublish(kind, topic, string(plain), err)
+	s.recordPublish(protocol.DebugSourceAutomatic, kind, topic, string(plain), string(encrypted), protocol.DebugEncodingSM4CBCBase64, err, attemptedAt)
 	if err == nil && onSuccess != nil {
 		onSuccess(s.now())
 	}
 }
 
 func (s *Service) publishControlResponse(settings model.CounterStrikeSettings, response controlResponse) {
+	attemptedAt := s.now()
 	data, err := json.Marshal(response)
 	if err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultMQTTTimeout)
 		err = s.transport.Publish(ctx, controlResponsePath, data)
 		cancel()
 	}
-	s.recordPublish("strike_response", controlResponsePath, string(data), err)
+	s.recordPublish(protocol.DebugSourceAutomatic, "strike_response", controlResponsePath, string(data), "", protocol.DebugEncodingPlainJSON, err, attemptedAt)
 	if err != nil {
 		s.setError(err.Error())
 	}
@@ -627,8 +716,8 @@ func bandsFromChannels(channels []model.InterferenceChannel) []string {
 	return bands
 }
 
-func configured(settings model.CounterStrikeSettings) bool {
-	if !settings.Enabled || !settings.Device.Enabled ||
+func counterStrikeConfigurationComplete(settings model.CounterStrikeSettings) bool {
+	if !settings.Device.Enabled ||
 		strings.TrimSpace(settings.Broker) == "" ||
 		strings.TrimSpace(settings.ProviderCode) == "" ||
 		strings.TrimSpace(settings.BridgeCode) == "" ||
@@ -667,8 +756,20 @@ func (s *Service) settingsSnapshot() model.CounterStrikeSettings {
 	return s.settings
 }
 
-func (s *Service) recordPublish(kind, topic, payload string, err error) {
-	entry := model.LingyunPublishLog{Kind: kind, Topic: topic, Payload: payload, Success: err == nil, At: s.now()}
+func (s *Service) connectionSnapshot() (model.CounterStrikeSettings, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings, s.connectionGeneration
+}
+
+func (s *Service) connectionGenerationMatches(generation uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connectionGeneration == generation
+}
+
+func (s *Service) recordPublish(source, kind, topic, payload, wirePayload, encoding string, err error, attemptedAt time.Time) {
+	entry := model.LingyunPublishLog{Kind: kind, Topic: topic, Payload: payload, Success: err == nil, At: attemptedAt}
 	if err != nil {
 		entry.Error = err.Error()
 	}
@@ -680,17 +781,87 @@ func (s *Service) recordPublish(kind, topic, payload string, err error) {
 	if err != nil {
 		s.status.LastError = err.Error()
 	}
-	s.status.UpdatedAt = cloneTime(entry.At)
+	if s.status.UpdatedAt == nil || entry.At.After(*s.status.UpdatedAt) {
+		s.status.UpdatedAt = cloneTime(entry.At)
+	}
+	deviceType := s.settings.Device.DeviceTypeAbbr
+	deviceID := s.settings.Device.DeviceID
 	s.mu.Unlock()
+	outcome := protocol.DebugOutcomeSuccess
+	message := ""
+	if err != nil {
+		outcome = protocol.DebugOutcomeError
+		message = err.Error()
+	}
+	s.debug.Add(model.ProtocolDebugRecord{
+		Direction: protocol.DebugDirectionOutbound,
+		Source:    source, Kind: kind, Topic: topic, Payload: payload,
+		WirePayload: wirePayload, Encoding: encoding, Outcome: outcome, Message: message,
+		DeviceType: deviceType, DeviceID: deviceID, At: entry.At,
+	})
 }
 
-func (s *Service) setConnectionState(connected, connecting bool, errorMessage string) {
+func (s *Service) recordInbound(topic string, payload []byte, outcome, message, deviceType, deviceID string, receivedAt time.Time) {
+	s.debug.Add(model.ProtocolDebugRecord{
+		Direction: protocol.DebugDirectionInbound,
+		Source:    protocol.DebugSourceBroker, Kind: "control", Topic: topic,
+		Payload: string(payload), Encoding: protocol.DebugEncodingPlainJSON,
+		Outcome: outcome, Message: message, DeviceType: strings.TrimSpace(deviceType),
+		DeviceID: strings.TrimSpace(deviceID), At: receivedAt,
+	})
+}
+
+func (s *Service) setConnectionState(generation uint64, connected, connecting bool, errorMessage string) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
+	s.status.Enabled = s.settings.Enabled
+	s.status.Configured = counterStrikeConfigurationComplete(s.settings)
 	s.status.Connected = connected
 	s.status.Connecting = connecting
 	s.status.LastError = errorMessage
 	s.status.UpdatedAt = cloneTime(s.now())
-	s.mu.Unlock()
+	return true
+}
+
+func (s *Service) setConnectionSuccess(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
+	s.nextConnectAttemptAt = time.Time{}
+	s.status.Connected = true
+	s.status.Connecting = false
+	s.status.LastError = ""
+	s.status.UpdatedAt = cloneTime(s.now())
+	return true
+}
+
+func (s *Service) setConnectFailure(generation uint64, nextAttempt time.Time, message string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
+	s.nextConnectAttemptAt = nextAttempt
+	s.status.Connected = false
+	s.status.Connecting = false
+	s.status.LastError = message
+	s.status.UpdatedAt = cloneTime(s.now())
+	return true
+}
+
+func (s *Service) resetSubscriptions(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
+	s.subscribed = false
+	return true
 }
 
 func (s *Service) setError(message string) {
@@ -700,22 +871,13 @@ func (s *Service) setError(message string) {
 	s.mu.Unlock()
 }
 
-func (s *Service) connectRetryPending(now time.Time) bool {
+func (s *Service) connectRetryPending(generation uint64, now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.connectionGeneration != generation {
+		return true
+	}
 	return !s.nextConnectAttemptAt.IsZero() && now.Before(s.nextConnectAttemptAt)
-}
-
-func (s *Service) setNextConnectAttempt(at time.Time) {
-	s.mu.Lock()
-	s.nextConnectAttemptAt = at
-	s.mu.Unlock()
-}
-
-func (s *Service) clearNextConnectAttempt() {
-	s.mu.Lock()
-	s.nextConnectAttemptAt = time.Time{}
-	s.mu.Unlock()
 }
 
 func (s *Service) signal() {

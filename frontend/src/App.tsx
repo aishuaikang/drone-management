@@ -51,6 +51,7 @@ import { createPortal } from "react-dom";
 
 import {
   FPV_VIDEO_SESSION_BUSY_CODE,
+  clearProtocolDebugRecords,
   clearManualDeviceLocation,
   closeFPVVideoSessionEventually,
   deleteFailedInterferenceReport,
@@ -63,6 +64,7 @@ import {
   getIntrusions,
   getLicenseStatus,
   getOfflineMapStatus,
+  getProtocolDebugRecords,
   getScreenDeviceLocation,
   getScreenFPV,
   getScreenPositions,
@@ -72,6 +74,7 @@ import {
   openFPVVideoSession,
   openScreenStream,
   publishProtocolDebug,
+  reconnectProtocol,
   setManualDeviceLocation,
   updateScreenTCPPorts,
   updateScreenStrike,
@@ -111,6 +114,9 @@ import type {
   LingyunDeviceType,
   OfflineMapStatus,
   OfflineMapUploadLog,
+  ProtocolDebugDirection,
+  ProtocolDebugRecord,
+  ProtocolID,
   ScreenDeviceLocationResponse,
   ScreenFPVTarget,
   ScreenPositionPoint,
@@ -558,9 +564,22 @@ const labels: Record<Locale, Record<string, string>> = {
     protocolManagement: "协议管理",
     protocolManagementHint: "各协议独立配置、启停和运行，可同时连接不同平台。",
     protocolList: "协议列表",
-    protocolListHint: "选择协议后配置连接，或进入调试台手工发包。",
+    protocolListHint: "集中查看连接状态、配置协议并调试真实 MQTT 收发链路。",
     protocolConfigure: "配置",
     protocolDebug: "调试",
+    protocolStatus: "状态",
+    protocolEndpoint: "连接端点",
+    protocolIdentity: "客户端标识",
+    protocolDevices: "设备",
+    protocolLastActivity: "最近活动",
+    protocolConfigured: "已配置",
+    protocolUnconfigured: "未配置",
+    protocolTestConnection: "测试连接",
+    protocolReconnect: "立即重连",
+    protocolReconnectTriggered: "已触发重连，正在等待连接结果",
+    protocolReconnectUnavailable: "请先启用协议并保存完整配置",
+    protocolConfigurationTitle: "协议配置",
+    protocolDiscardChanges: "当前配置尚未保存，确定放弃修改吗？",
     protocolDebugTitle: "协议调试台",
     protocolDebugHint: "编辑 Topic 和 JSON 后直接通过当前 MQTT 连接发送。",
     protocolDebugMode: "报文方向",
@@ -576,8 +595,25 @@ const labels: Record<Locale, Record<string, string>> = {
     protocolDebugSend: "发送测试数据",
     protocolDebugSending: "发送中",
     protocolDebugSent: "已发送",
-    protocolDebugHistory: "本地发送记录",
-    protocolDebugHistoryEmpty: "暂无手工发包记录",
+    protocolDebugHistory: "实时收发记录",
+    protocolDebugHistoryEmpty: "暂无协议收发记录",
+    protocolDebugFilterAll: "全部",
+    protocolDebugFilterOutbound: "发送",
+    protocolDebugFilterInbound: "接收",
+    protocolDebugFilterFailed: "失败",
+    protocolDebugClearConfirm: "确定清空该协议的全部调试记录吗？",
+    protocolDebugDownlinkConfirm: "下发测试命令将经过真实 MQTT Broker，可能触发实际设备动作。确定继续吗？",
+    protocolDebugLogicalPayload: "逻辑 JSON",
+    protocolDebugWirePayload: "线上报文",
+    protocolDebugCopyTopic: "复制 Topic",
+    protocolDebugCopyWire: "复制线上报文",
+    protocolDebugSourceAutomatic: "自动上报",
+    protocolDebugSourceManual: "手工发送",
+    protocolDebugSourceBroker: "Broker 接收",
+    protocolDebugOutcomeSuccess: "成功",
+    protocolDebugOutcomeError: "失败",
+    protocolDebugOutcomeIgnored: "已忽略",
+    protocolDebugLoading: "正在读取调试记录",
     protocolDebugUnavailable: "该协议暂未接入手工发包",
     protocolDebugInvalidJSON: "JSON 格式不正确",
     protocolDebugNeedConnection: "请先保存配置并等待 MQTT 连接成功",
@@ -1061,9 +1097,22 @@ const labels: Record<Locale, Record<string, string>> = {
     protocolManagement: "Protocol Management",
     protocolManagementHint: "Configure and run each protocol independently, including simultaneous platform connections.",
     protocolList: "Protocols",
-    protocolListHint: "Choose a protocol to configure the connection or open its debug console.",
+    protocolListHint: "Inspect connections, configure protocols, and debug real MQTT traffic in one place.",
     protocolConfigure: "Configure",
     protocolDebug: "Debug",
+    protocolStatus: "Status",
+    protocolEndpoint: "Endpoint",
+    protocolIdentity: "Client identity",
+    protocolDevices: "Devices",
+    protocolLastActivity: "Last activity",
+    protocolConfigured: "Configured",
+    protocolUnconfigured: "Not configured",
+    protocolTestConnection: "Test connection",
+    protocolReconnect: "Reconnect now",
+    protocolReconnectTriggered: "Reconnect requested; waiting for the connection result",
+    protocolReconnectUnavailable: "Enable the protocol and save a complete configuration first",
+    protocolConfigurationTitle: "Protocol configuration",
+    protocolDiscardChanges: "Discard the unsaved configuration changes?",
     protocolDebugTitle: "Protocol Debug Console",
     protocolDebugHint: "Edit the topic and JSON, then send through the active MQTT connection.",
     protocolDebugMode: "Direction",
@@ -1079,8 +1128,25 @@ const labels: Record<Locale, Record<string, string>> = {
     protocolDebugSend: "Send test data",
     protocolDebugSending: "Sending",
     protocolDebugSent: "Sent",
-    protocolDebugHistory: "Local send history",
-    protocolDebugHistoryEmpty: "No manual sends yet",
+    protocolDebugHistory: "Live traffic",
+    protocolDebugHistoryEmpty: "No protocol traffic yet",
+    protocolDebugFilterAll: "All",
+    protocolDebugFilterOutbound: "Sent",
+    protocolDebugFilterInbound: "Received",
+    protocolDebugFilterFailed: "Failed",
+    protocolDebugClearConfirm: "Clear all debug records for this protocol?",
+    protocolDebugDownlinkConfirm: "This command will pass through the real MQTT broker and may operate physical equipment. Continue?",
+    protocolDebugLogicalPayload: "Logical JSON",
+    protocolDebugWirePayload: "Wire payload",
+    protocolDebugCopyTopic: "Copy topic",
+    protocolDebugCopyWire: "Copy wire payload",
+    protocolDebugSourceAutomatic: "Automatic",
+    protocolDebugSourceManual: "Manual",
+    protocolDebugSourceBroker: "Broker receive",
+    protocolDebugOutcomeSuccess: "Success",
+    protocolDebugOutcomeError: "Failed",
+    protocolDebugOutcomeIgnored: "Ignored",
+    protocolDebugLoading: "Loading debug records",
     protocolDebugUnavailable: "Manual publishing is not available for this protocol yet",
     protocolDebugInvalidJSON: "Invalid JSON",
     protocolDebugNeedConnection: "Save the configuration and wait for MQTT to connect",
@@ -3429,6 +3495,7 @@ function ManagementView({
       strikeState={strikeState}
       deviceLocation={deviceLocation}
       status={status}
+      onStatusChange={onStatusChange}
       onSaveUserSettings={onSaveUserSettings}
     />
   ) : view === "settings" ? (
@@ -4260,107 +4327,226 @@ type ProtocolSettingsProps = {
   strikeState: ScreenStrikeState | null;
   deviceLocation: ScreenDeviceLocationResponse | null;
   status: ScreenRuntimeStatus | null;
+  onStatusChange: (status: ScreenRuntimeStatus) => void;
   onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
+  onConfigurationSaved?: () => void;
+  onConfigurationDirtyChange?: (dirty: boolean) => void;
+  onConfigurationSavingChange?: (saving: boolean) => void;
+  onCancelConfiguration?: () => void;
 };
 
 function ProtocolSettingsManagement(props: ProtocolSettingsProps) {
-  const { t, status, userSettings } = props;
-  const [selectedProtocol, setSelectedProtocol] = useState<"lingyun" | "counterStrike">("counterStrike");
-  const [panelMode, setPanelMode] = useState<"configure" | "debug">("configure");
+  const { t, locale, status, userSettings, onStatusChange } = props;
+  const [debugProtocol, setDebugProtocol] = useState<ProtocolID | null>(null);
+  const [configurationProtocol, setConfigurationProtocol] = useState<ProtocolID | null>(null);
+  const [configurationDirty, setConfigurationDirty] = useState(false);
+  const [reconnectingProtocol, setReconnectingProtocol] = useState<ProtocolID | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ protocol: ProtocolID; error: boolean; text: string } | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const lingyunDevices = userSettings.lingyun?.devices ?? [];
+  const lingyunRuntimeDevices = status?.lingyun?.devices ?? [];
+  const lingyunLastActivity = latestProtocolActivity(
+    ...lingyunRuntimeDevices.flatMap((device) => [
+      device.lastRegisterAt,
+      device.lastStatusAt,
+      device.lastDataAt,
+      device.lastControlAt,
+      ...(device.publishLogs ?? []).map((entry) => entry.at),
+    ]),
+  );
+  const counterStrikeLastActivity = latestProtocolActivity(
+    status?.counterStrike?.lastRegisterAt,
+    status?.counterStrike?.lastStatusAt,
+    status?.counterStrike?.lastControlAt,
+    ...(status?.counterStrike?.publishLogs ?? []).map((entry) => entry.at),
+  );
   const items = [
     {
       id: "lingyun" as const,
       label: t.protocolExisting,
-      version: "V1.3",
-      enabled: Boolean(userSettings.lingyun?.enabled),
+      version: userSettings.lingyun?.protocolVersion || "V1.3",
+      enabled: Boolean(status?.lingyun?.enabled ?? userSettings.lingyun?.enabled),
+      configured: Boolean(status?.lingyun?.configured),
       connected: Boolean(status?.lingyun?.connected),
+      connecting: Boolean(status?.lingyun?.connecting),
+      broker: status?.lingyun?.broker || userSettings.lingyun?.broker || "-",
+      clientId: status?.lingyun?.clientId || userSettings.lingyun?.clientId || "-",
+      devices: `${lingyunDevices.filter((device) => device.enabled).length}/${lingyunDevices.length}`,
+      updatedAt: lingyunLastActivity,
+      lastError: status?.lingyun?.lastError || lingyunRuntimeDevices.find((device) => device.lastError)?.lastError || "",
       icon: <Radio size={14} aria-hidden="true" />,
     },
     {
       id: "counterStrike" as const,
       label: t.protocolCounterStrike,
       version: t.protocolVersionLabel,
-      enabled: Boolean(userSettings.counterStrike?.enabled),
+      enabled: Boolean(status?.counterStrike?.enabled ?? userSettings.counterStrike?.enabled),
+      configured: Boolean(status?.counterStrike?.configured),
       connected: Boolean(status?.counterStrike?.connected),
+      connecting: Boolean(status?.counterStrike?.connecting),
+      broker: status?.counterStrike?.broker || userSettings.counterStrike?.broker || "-",
+      clientId: status?.counterStrike?.clientId || userSettings.counterStrike?.clientId || "-",
+      devices: [status?.counterStrike?.deviceTypeAbbr || userSettings.counterStrike?.device?.deviceTypeAbbr, status?.counterStrike?.deviceId || userSettings.counterStrike?.device?.deviceId].filter(Boolean).join(" · ") || "-",
+      updatedAt: counterStrikeLastActivity,
+      lastError: status?.counterStrike?.lastError || "",
       icon: <ShieldPlus size={14} aria-hidden="true" />,
     },
   ];
-  const selectedItem = items.find((item) => item.id === selectedProtocol) ?? items[0];
+
+  useEffect(() => () => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+    }
+  }, []);
+
+  const pollReconnect = (protocol: ProtocolID, deadline: number) => {
+    reconnectTimerRef.current = window.setTimeout(async () => {
+      try {
+        const nextStatus = await getScreenStatus();
+        onStatusChange(nextStatus);
+        const runtime = protocol === "lingyun" ? nextStatus.lingyun : nextStatus.counterStrike;
+        if (runtime.connected) {
+          setActionMessage({ protocol, error: false, text: t.connected });
+          setReconnectingProtocol(null);
+          return;
+        }
+        if (!runtime.connecting && runtime.lastError) {
+          setActionMessage({ protocol, error: true, text: runtime.lastError });
+          setReconnectingProtocol(null);
+          return;
+        }
+      } catch (error) {
+        if (Date.now() >= deadline) {
+          setActionMessage({ protocol, error: true, text: error instanceof Error ? error.message : t.saveFailed });
+          setReconnectingProtocol(null);
+          return;
+        }
+      }
+      if (Date.now() >= deadline) {
+        setReconnectingProtocol(null);
+        return;
+      }
+      pollReconnect(protocol, deadline);
+    }, 1000);
+  };
+
+  const requestReconnect = async (protocol: ProtocolID) => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+    }
+    setReconnectingProtocol(protocol);
+    setActionMessage(null);
+    try {
+      await reconnectProtocol(protocol);
+      setActionMessage({ protocol, error: false, text: t.protocolReconnectTriggered });
+      pollReconnect(protocol, Date.now() + 15000);
+    } catch (error) {
+      setActionMessage({ protocol, error: true, text: error instanceof Error ? error.message : t.saveFailed });
+      setReconnectingProtocol(null);
+    }
+  };
+
+  const requestCloseConfiguration = (force = false) => {
+    if (!force && configurationDirty && !window.confirm(t.protocolDiscardChanges)) {
+      return;
+    }
+    setConfigurationDirty(false);
+    setConfigurationProtocol(null);
+  };
 
   return (
     <div className="screen-protocol-management">
-      <div className="screen-protocol-workbench">
-        <aside className="screen-protocol-list" aria-label={t.protocolList}>
-          <header className="screen-protocol-list__header">
-            <div>
-              <strong>{t.protocolList}</strong>
-              <span>{t.protocolListHint}</span>
-            </div>
-            <span className="screen-protocol-list__count">{items.length}</span>
-          </header>
-          <div className="screen-protocol-list__items">
-            {items.map((item) => {
-              const active = selectedProtocol === item.id;
-              const stateText = item.connected ? t.connected : item.enabled ? t.enabled : t.disabled;
-              return (
-                <article key={item.id} className={active ? "screen-protocol-card screen-protocol-card--active" : "screen-protocol-card"}>
-                  <button
-                    type="button"
-                    className="screen-protocol-card__select"
-                    onClick={() => { setSelectedProtocol(item.id); setPanelMode("configure"); }}
-                    aria-pressed={active}
-                  >
-                    <span className="screen-protocol-card__icon">{item.icon}</span>
-                    <span className="screen-protocol-card__body">
-                      <strong>{item.label}</strong>
-                      <small>{item.version} · {stateText}</small>
-                    </span>
-                    <i className={item.connected ? "screen-protocol-state screen-protocol-state--connected" : item.enabled ? "screen-protocol-state screen-protocol-state--enabled" : "screen-protocol-state"} aria-hidden="true" />
-                  </button>
-                  <div className="screen-protocol-card__actions">
-                    <button type="button" className={active && panelMode === "configure" ? "screen-protocol-card__action screen-protocol-card__action--active" : "screen-protocol-card__action"} onClick={() => { setSelectedProtocol(item.id); setPanelMode("configure"); }} title={t.protocolConfigure}>
-                      <Settings size={13} aria-hidden="true" /><span>{t.protocolConfigure}</span>
-                    </button>
-                    <button type="button" className={active && panelMode === "debug" ? "screen-protocol-card__action screen-protocol-card__action--active" : "screen-protocol-card__action"} onClick={() => { setSelectedProtocol(item.id); setPanelMode("debug"); }} title={t.protocolDebug}>
-                      <Zap size={13} aria-hidden="true" /><span>{t.protocolDebug}</span>
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </aside>
-        <main className="screen-protocol-detail">
-          <div className="screen-protocol-detail__header">
-            <div className="screen-protocol-detail__title">
-              <span className="screen-protocol-detail__icon">{selectedItem.icon}</span>
-              <span><strong>{selectedItem.label}</strong><small>{selectedItem.version}</small></span>
-            </div>
-            <div className="screen-protocol-detail__modes" role="tablist" aria-label={t.protocolManagement}>
-              <button type="button" role="tab" aria-selected={panelMode === "configure"} className={panelMode === "configure" ? "screen-protocol-mode screen-protocol-mode--active" : "screen-protocol-mode"} onClick={() => setPanelMode("configure")}><Settings size={13} aria-hidden="true" /><span>{t.protocolConfigure}</span></button>
-              <button type="button" role="tab" aria-selected={panelMode === "debug"} className={panelMode === "debug" ? "screen-protocol-mode screen-protocol-mode--active" : "screen-protocol-mode"} onClick={() => setPanelMode("debug")}><Zap size={13} aria-hidden="true" /><span>{t.protocolDebug}</span></button>
-            </div>
-          </div>
-          {panelMode === "debug" ? <ProtocolDebugPanel {...props} protocol={selectedProtocol} /> : selectedProtocol === "lingyun" ? <LingyunSettingsManagement {...props} /> : <CounterStrikeSettingsManagement {...props} />}
-        </main>
-      </div>
+      <section className="screen-protocol-list" aria-label={t.protocolList}>
+        <header className="screen-protocol-list__header">
+          <div><strong>{t.protocolList}</strong><span>{t.protocolListHint}</span></div>
+          <span className="screen-protocol-list__count">{items.length}</span>
+        </header>
+        <div className="screen-protocol-table__head" aria-hidden="true">
+          <span>{t.protocolList}</span><span>{t.protocolStatus}</span><span>{t.protocolEndpoint}</span><span>{t.protocolIdentity}</span><span>{t.protocolDevices}</span><span>{t.protocolLastActivity}</span><span>{t.actions}</span>
+        </div>
+        <div className="screen-protocol-list__items">
+          {items.map((item) => {
+            const stateText = protocolRuntimeLabel(item, t);
+            const canReconnect = item.enabled && item.configured;
+            const reconnecting = reconnectingProtocol === item.id;
+            return (
+              <article key={item.id} className={debugProtocol === item.id ? "screen-protocol-row screen-protocol-row--active" : "screen-protocol-row"}>
+                <div className="screen-protocol-row__identity" data-label={t.protocolList}>
+                  <span className="screen-protocol-card__icon">{item.icon}</span>
+                  <span><strong>{item.label}</strong><small>{item.version} · {item.configured ? t.protocolConfigured : t.protocolUnconfigured}</small></span>
+                </div>
+                <div className="screen-protocol-row__status" data-label={t.protocolStatus}>
+                  <span className={`screen-protocol-status screen-protocol-status--${protocolRuntimeTone(item)}`}><i aria-hidden="true" />{stateText}</span>
+                  {item.lastError ? <small title={item.lastError}>{item.lastError}</small> : null}
+                </div>
+                <code data-label={t.protocolEndpoint} title={item.broker}>{item.broker}</code>
+                <code data-label={t.protocolIdentity} title={item.clientId}>{item.clientId}</code>
+                <span className="screen-protocol-row__devices" data-label={t.protocolDevices} title={item.devices}>{item.devices}</span>
+                <time data-label={t.protocolLastActivity} dateTime={item.updatedAt}>{formatProtocolActivity(item.updatedAt, locale)}</time>
+                <div className="screen-protocol-row__actions" data-label={t.actions}>
+                  <button type="button" onClick={() => { setConfigurationDirty(false); setConfigurationProtocol(item.id); }} title={t.protocolConfigure}><Settings size={13} aria-hidden="true" /><span>{t.protocolConfigure}</span></button>
+                  <button type="button" disabled={!canReconnect || reconnecting} onClick={() => void requestReconnect(item.id)} title={canReconnect ? (item.connected ? t.protocolReconnect : t.protocolTestConnection) : t.protocolReconnectUnavailable}>{reconnecting ? <Loader2 className="app-spinner" size={13} aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}<span>{item.connected ? t.protocolReconnect : t.protocolTestConnection}</span></button>
+                  <button type="button" className={debugProtocol === item.id ? "screen-protocol-row__action--active" : undefined} onClick={() => setDebugProtocol((current) => current === item.id ? null : item.id)} title={t.protocolDebug}><Zap size={13} aria-hidden="true" /><span>{t.protocolDebug}</span></button>
+                </div>
+                {actionMessage?.protocol === item.id ? <div className={actionMessage.error ? "screen-protocol-row__message screen-protocol-row__message--error" : "screen-protocol-row__message"}>{actionMessage.text}</div> : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+      {debugProtocol ? <ProtocolDebugPanel key={debugProtocol} {...props} protocol={debugProtocol} onClose={() => setDebugProtocol(null)} /> : null}
+      {configurationProtocol ? (
+        <ProtocolConfigurationModal
+          {...props}
+          protocol={configurationProtocol}
+          onDirtyChange={setConfigurationDirty}
+          onClose={() => requestCloseConfiguration()}
+          onSaved={() => {
+            requestCloseConfiguration(true);
+            void getScreenStatus().then(onStatusChange).catch(() => undefined);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-type ProtocolDebugDirection = "outbound" | "inbound";
 type ProtocolDebugPreset = "register" | "status" | "open" | "close" | "control";
 
-type ProtocolDebugHistoryEntry = {
-  topic: string;
-  payload: string;
-  encrypted: boolean;
-  at: string;
-  success: boolean;
-  error?: string;
-};
+function ProtocolConfigurationModal({ protocol, onDirtyChange, onClose, onSaved, ...props }: ProtocolSettingsProps & { protocol: ProtocolID; onDirtyChange: (dirty: boolean) => void; onClose: () => void; onSaved: () => void }) {
+  const { t } = props;
+  const [configurationSaving, setConfigurationSaving] = useState(false);
+  const requestClose = useCallback(() => {
+    if (!configurationSaving) onClose();
+  }, [configurationSaving, onClose]);
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") requestClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [requestClose]);
+  const modal = (
+    <div className="app-modal-backdrop screen-protocol-config-modal" role="presentation" onClick={requestClose}>
+      <section className="app-modal-card screen-protocol-config-modal__card" role="dialog" aria-modal="true" aria-labelledby="screen-protocol-config-title" onClick={(event) => event.stopPropagation()}>
+        <header className="screen-protocol-config-modal__header">
+          <div><span>{t.protocolConfigurationTitle}</span><h2 id="screen-protocol-config-title">{protocol === "lingyun" ? t.protocolExisting : t.protocolCounterStrike}</h2></div>
+          <button type="button" disabled={configurationSaving} onClick={requestClose} aria-label={t.close}><X size={16} aria-hidden="true" /></button>
+        </header>
+        <div className="screen-protocol-config-modal__body">
+          {protocol === "lingyun" ? (
+            <LingyunSettingsManagement {...props} onConfigurationDirtyChange={onDirtyChange} onConfigurationSavingChange={setConfigurationSaving} onConfigurationSaved={onSaved} onCancelConfiguration={requestClose} />
+          ) : (
+            <CounterStrikeSettingsManagement {...props} onConfigurationDirtyChange={onDirtyChange} onConfigurationSavingChange={setConfigurationSaving} onConfigurationSaved={onSaved} onCancelConfiguration={requestClose} />
+          )}
+        </div>
+      </section>
+    </div>
+  );
+  return createPortal(modal, document.body);
+}
 
-function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: ProtocolSettingsProps & { protocol: "lingyun" | "counterStrike" }) {
+function ProtocolDebugPanel({ t, locale, userSettings, status, protocol, onClose }: ProtocolSettingsProps & { protocol: ProtocolID; onClose: () => void }) {
   const counterSettings = resolveCounterStrikeSettings(userSettings.counterStrike);
   const lingyunSettings = resolveLingyunSettings(userSettings.lingyun);
   const lingyunDevice = lingyunSettings.devices?.find((device) => device.enabled) ?? lingyunSettings.devices?.[0] ?? defaultLingyunDevice("aoa", lingyunDeviceIdentity(lingyunSettings));
@@ -4384,8 +4570,32 @@ function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: Proto
   const [encrypt, setEncrypt] = useState(sample.encrypt);
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState("");
-  const [history, setHistory] = useState<ProtocolDebugHistoryEntry[]>([]);
+  const [records, setRecords] = useState<ProtocolDebugRecord[]>([]);
+  const [recordFilter, setRecordFilter] = useState<"all" | "outbound" | "inbound" | "failed">("all");
+  const [recordsLoading, setRecordsLoading] = useState(true);
+  const [recordsError, setRecordsError] = useState("");
+  const [clearingRecords, setClearingRecords] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedRecordKey, setCopiedRecordKey] = useState("");
+
+  const loadRecords = useCallback(async (showLoading = false) => {
+    if (showLoading) setRecordsLoading(true);
+    try {
+      const response = await getProtocolDebugRecords(protocol, 100);
+      setRecords(response.items ?? []);
+      setRecordsError("");
+    } catch (error) {
+      setRecordsError(error instanceof Error ? error.message : t.saveFailed);
+    } finally {
+      if (showLoading) setRecordsLoading(false);
+    }
+  }, [protocol, t.saveFailed]);
+
+  useEffect(() => {
+    void loadRecords(true);
+    const timer = window.setInterval(() => void loadRecords(), 2000);
+    return () => window.clearInterval(timer);
+  }, [loadRecords]);
 
   useEffect(() => {
     setTopic(sample.topic);
@@ -4396,6 +4606,11 @@ function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: Proto
 
   const connected = protocol === "counterStrike" ? Boolean(status?.counterStrike?.connected) : Boolean(status?.lingyun?.connected);
   const protocolEnabled = protocol === "counterStrike" ? Boolean(status?.counterStrike?.enabled) : Boolean(status?.lingyun?.enabled);
+  const visibleRecords = records.filter((record) => {
+    if (recordFilter === "failed") return record.outcome === "error";
+    if (recordFilter === "outbound" || recordFilter === "inbound") return record.direction === recordFilter;
+    return true;
+  });
 
   const resetSample = () => {
     setTopic(sample.topic);
@@ -4439,19 +4654,43 @@ function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: Proto
       setMessage(t.protocolDebugTopic);
       return;
     }
+    if ((direction === "inbound" || isProtocolControlTopic(protocol, topic)) && !window.confirm(t.protocolDebugDownlinkConfirm)) {
+      return;
+    }
     setSending(true);
     setMessage("");
     try {
-      const result = await publishProtocolDebug(protocol, topic.trim(), JSON.stringify(parsed), encrypt);
-      const entry: ProtocolDebugHistoryEntry = { topic: result.topic, payload: result.payload, encrypted: result.encrypted, at: result.sentAt, success: true };
-      setHistory((current) => [entry, ...current].slice(0, 10));
+      await publishProtocolDebug(protocol, topic.trim(), JSON.stringify(parsed), encrypt);
       setMessage(t.protocolDebugSent);
     } catch (error) {
       const errorText = error instanceof Error ? error.message : t.saveFailed;
-      setHistory((current) => [{ topic: topic.trim(), payload, encrypted: encrypt, at: new Date().toISOString(), success: false, error: errorText }, ...current].slice(0, 10));
       setMessage(errorText);
     } finally {
       setSending(false);
+      void loadRecords();
+    }
+  };
+
+  const clearRecords = async () => {
+    if (!window.confirm(t.protocolDebugClearConfirm)) return;
+    setClearingRecords(true);
+    try {
+      await clearProtocolDebugRecords(protocol);
+      setRecords([]);
+      setRecordsError("");
+    } catch (error) {
+      setRecordsError(error instanceof Error ? error.message : t.saveFailed);
+    } finally {
+      setClearingRecords(false);
+    }
+  };
+
+  const copyRecordValue = async (value: string, key: string) => {
+    if (await copyTextToClipboard(value)) {
+      setCopiedRecordKey(key);
+      window.setTimeout(() => setCopiedRecordKey(""), 1400);
+    } else {
+      setRecordsError(t.copyFailed);
     }
   };
 
@@ -4465,6 +4704,7 @@ function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: Proto
         <span className={connected ? "screen-protocol-debug__connection screen-protocol-debug__connection--connected" : "screen-protocol-debug__connection"}>
           <i aria-hidden="true" />{connected ? t.connected : protocolEnabled ? t.disconnected : t.disabled}
         </span>
+        <button type="button" className="screen-protocol-debug__close" onClick={onClose} aria-label={t.close}><X size={14} aria-hidden="true" /></button>
       </div>
       <p className="screen-protocol-debug__hint">{t.protocolDebugHint}</p>
       <div className="screen-protocol-debug__toolbar">
@@ -4485,20 +4725,128 @@ function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: Proto
       </div>
       <div className="screen-protocol-debug__actions">
         <span className="screen-protocol-debug__encoding-hint">{encrypt ? t.protocolDebugEncryptedHint : t.protocolDebugPlainHint}</span>
-        <button type="button" className="screen-protocol-debug__send" disabled={sending} onClick={() => void sendPayload()}>{sending ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Zap size={14} aria-hidden="true" />}<span>{sending ? t.protocolDebugSending : t.protocolDebugSend}</span></button>
+        <button type="button" className="screen-protocol-debug__send" disabled={sending || !connected} title={connected ? t.protocolDebugSend : t.protocolDebugNeedConnection} onClick={() => void sendPayload()}>{sending ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Zap size={14} aria-hidden="true" />}<span>{sending ? t.protocolDebugSending : t.protocolDebugSend}</span></button>
       </div>
       {message ? <div className={message === t.protocolDebugSent ? "screen-protocol-debug__message screen-protocol-debug__message--success" : "screen-protocol-debug__message"}>{message}</div> : null}
       <section className="screen-protocol-debug__history">
-        <header><strong>{t.protocolDebugHistory}</strong><span>{history.length}</span></header>
-        {history.length === 0 ? <p>{t.protocolDebugHistoryEmpty}</p> : <div className="screen-protocol-debug__history-list">{history.map((entry, index) => <article key={`${entry.at}-${index}`} className={entry.success ? "screen-protocol-debug__history-item" : "screen-protocol-debug__history-item screen-protocol-debug__history-item--error"}><div><time dateTime={entry.at}>{new Date(entry.at).toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><strong>{entry.success ? t.protocolDebugSent : t.lingyunPublishFailed}</strong><span>{entry.encrypted ? t.protocolDebugSM4 : t.protocolDebugPlain}</span></div><code>{entry.topic}</code><pre>{entry.payload}</pre>{entry.error ? <em>{entry.error}</em> : null}</article>)}</div>}
+        <header className="screen-protocol-debug__history-header">
+          <div><strong>{t.protocolDebugHistory}</strong><span>{visibleRecords.length}/{records.length}</span></div>
+          <div className="screen-protocol-debug__history-tools">
+            <div className="screen-protocol-debug__filters" role="tablist" aria-label={t.protocolDebugHistory}>
+              {(["all", "outbound", "inbound", "failed"] as const).map((filter) => <button key={filter} type="button" role="tab" aria-selected={recordFilter === filter} className={recordFilter === filter ? "active" : undefined} onClick={() => setRecordFilter(filter)}>{filter === "all" ? t.protocolDebugFilterAll : filter === "outbound" ? t.protocolDebugFilterOutbound : filter === "inbound" ? t.protocolDebugFilterInbound : t.protocolDebugFilterFailed}</button>)}
+            </div>
+            <button type="button" onClick={() => void loadRecords(true)} disabled={recordsLoading} title={t.refresh}>{recordsLoading ? <Loader2 className="app-spinner" size={13} aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}</button>
+            <button type="button" onClick={() => void clearRecords()} disabled={clearingRecords || records.length === 0} title={t.clear}>{clearingRecords ? <Loader2 className="app-spinner" size={13} aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}</button>
+          </div>
+        </header>
+        {recordsError ? <div className="screen-protocol-debug__message">{recordsError}</div> : null}
+        {recordsLoading && records.length === 0 ? <p>{t.protocolDebugLoading}</p> : visibleRecords.length === 0 ? <p>{t.protocolDebugHistoryEmpty}</p> : (
+          <div className="screen-protocol-debug__history-list">
+            {visibleRecords.map((entry) => (
+              <article key={entry.id} className={`screen-protocol-debug__history-item screen-protocol-debug__history-item--${entry.outcome} screen-protocol-debug__history-item--${entry.direction}`}>
+                <div className="screen-protocol-debug__history-meta">
+                  <time dateTime={entry.at}>{new Date(entry.at).toLocaleString(locale === "zh-CN" ? "zh-CN" : "en-US", { hour12: false })}</time>
+                  <strong>{protocolDebugOutcomeLabel(entry.outcome, t)}</strong>
+                  <span>{entry.direction === "outbound" ? t.protocolDebugFilterOutbound : t.protocolDebugFilterInbound}</span>
+                  <span>{protocolDebugSourceLabel(entry.source, t)}</span>
+                  <span>{entry.kind || "-"}</span>
+                  <span>{entry.encoding === "sm4-cbc-base64" ? t.protocolDebugSM4 : t.protocolDebugPlain}</span>
+                  {entry.deviceId ? <span>{entry.deviceType ? `${entry.deviceType} · ` : ""}{entry.deviceId}</span> : null}
+                </div>
+                <div className="screen-protocol-debug__history-topic"><code title={entry.topic}>{entry.topic}</code><button type="button" onClick={() => void copyRecordValue(entry.topic, `${entry.id}:topic`)} title={t.protocolDebugCopyTopic}><Copy size={12} aria-hidden="true" /><span>{copiedRecordKey === `${entry.id}:topic` ? t.copied : t.protocolDebugCopyTopic}</span></button></div>
+                {entry.payload ? <div className="screen-protocol-debug__payload-block"><header><span>{t.protocolDebugLogicalPayload}</span><button type="button" onClick={() => void copyRecordValue(entry.payload || "", `${entry.id}:payload`)}><Copy size={11} aria-hidden="true" /><span>{copiedRecordKey === `${entry.id}:payload` ? t.copied : t.protocolDebugCopy}</span></button></header><pre>{formatProtocolDebugPayload(entry.payload)}</pre></div> : null}
+                {entry.wirePayload && entry.wirePayload !== entry.payload ? <div className="screen-protocol-debug__payload-block screen-protocol-debug__payload-block--wire"><header><span>{t.protocolDebugWirePayload}</span><button type="button" onClick={() => void copyRecordValue(entry.wirePayload || "", `${entry.id}:wire`)}><Copy size={11} aria-hidden="true" /><span>{copiedRecordKey === `${entry.id}:wire` ? t.copied : t.protocolDebugCopyWire}</span></button></header><pre>{entry.wirePayload}</pre></div> : null}
+                {entry.message ? <em>{entry.message}</em> : null}
+              </article>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );
 }
 
+type ProtocolRuntimeListItem = {
+  enabled: boolean;
+  configured: boolean;
+  connected: boolean;
+  connecting: boolean;
+};
+
+function protocolRuntimeLabel(item: ProtocolRuntimeListItem, t: Record<string, string>) {
+  if (!item.enabled) return t.disabled;
+  if (!item.configured) return t.protocolUnconfigured;
+  if (item.connected) return t.connected;
+  if (item.connecting) return t.connecting;
+  return t.disconnected;
+}
+
+function protocolRuntimeTone(item: ProtocolRuntimeListItem) {
+  if (item.connected) return "connected";
+  if (item.connecting) return "connecting";
+  if (!item.enabled) return "disabled";
+  return "error";
+}
+
+function formatProtocolActivity(value: string | undefined, locale: Locale) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString(locale === "zh-CN" ? "zh-CN" : "en-US", { hour12: false });
+}
+
+function latestProtocolActivity(...values: Array<string | undefined>) {
+  let latestValue: string | undefined;
+  let latestTime = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (!value) continue;
+    const time = new Date(value).getTime();
+    if (!Number.isNaN(time) && time > latestTime) {
+      latestTime = time;
+      latestValue = value;
+    }
+  }
+  return latestValue;
+}
+
+function protocolDebugOutcomeLabel(outcome: ProtocolDebugRecord["outcome"], t: Record<string, string>) {
+  if (outcome === "success") return t.protocolDebugOutcomeSuccess;
+  if (outcome === "ignored") return t.protocolDebugOutcomeIgnored;
+  return t.protocolDebugOutcomeError;
+}
+
+function protocolDebugSourceLabel(source: string, t: Record<string, string>) {
+  if (source === "automatic") return t.protocolDebugSourceAutomatic;
+  if (source === "manual") return t.protocolDebugSourceManual;
+  if (source === "broker") return t.protocolDebugSourceBroker;
+  return source || "-";
+}
+
+function isProtocolControlTopic(protocol: ProtocolID, topic: string) {
+  const normalized = topic.trim();
+  if (protocol === "counterStrike" && normalized === "platform/counter/strike/down") {
+    return true;
+  }
+  const parts = normalized.split("/");
+  if (parts.length !== 5 || parts.some((part) => !part)) {
+    return false;
+  }
+  if (protocol === "lingyun") {
+    return parts[0] === "bridge" && parts[2] === "device_control";
+  }
+  return parts[0] === "platform" && parts[2] === "counter_device_control";
+}
+
+function formatProtocolDebugPayload(payload: string) {
+  try {
+    return JSON.stringify(JSON.parse(payload), null, 2);
+  } catch {
+    return payload;
+  }
+}
+
 function CounterStrikeSettingsManagement({
   t,
-  locale,
   userSettings,
   settingsLoaded,
   settingsError,
@@ -4506,6 +4854,10 @@ function CounterStrikeSettingsManagement({
   deviceLocation,
   status,
   onSaveUserSettings,
+  onConfigurationSaved,
+  onConfigurationDirtyChange,
+  onConfigurationSavingChange,
+  onCancelConfiguration,
 }: ProtocolSettingsProps) {
   const savedSettings = resolveCounterStrikeSettings(userSettings.counterStrike);
   const [draft, setDraft] = useState(savedSettings);
@@ -4527,9 +4879,12 @@ function CounterStrikeSettingsManagement({
   const runtime = status?.counterStrike;
   const localBands = lingyunInterferenceBandsForDisplay(strikeState, userSettings);
   const topics = counterStrikeTopics(draftWithLocation, t);
-  const publishLogs = runtime?.publishLogs ?? [];
   const bannerText = banner || settingsError;
   const settingsPending = !settingsLoaded && !settingsError;
+
+  useEffect(() => {
+    onConfigurationDirtyChange?.(changed);
+  }, [changed, onConfigurationDirtyChange]);
 
   const update = (patch: Partial<NonNullable<UserSettings["counterStrike"]>>) => {
     dirtyRef.current = true;
@@ -4550,17 +4905,23 @@ function CounterStrikeSettingsManagement({
       return;
     }
     setSaving(true);
+    onConfigurationSavingChange?.(true);
     setBanner("");
+    let savedSuccessfully = false;
     try {
       const saved = await onSaveUserSettings({ counterStrike: normalized });
       dirtyRef.current = false;
       setDraft(resolveCounterStrikeSettings(saved.counterStrike));
       setBanner(t.settingsSaved);
+      onConfigurationDirtyChange?.(false);
+      savedSuccessfully = true;
     } catch (error) {
       setBanner(error instanceof Error ? error.message : t.saveFailed);
     } finally {
       setSaving(false);
+      onConfigurationSavingChange?.(false);
     }
+    if (savedSuccessfully) onConfigurationSaved?.();
   };
 
   if (settingsPending) {
@@ -4647,10 +5008,6 @@ function CounterStrikeSettingsManagement({
               <label><span>V min</span><input inputMode="decimal" value={numberInputValue(draft.device.verticalCoverageStartAngle)} onChange={(event) => updateDevice({ verticalCoverageStartAngle: parseOptionalNumberInput(event.target.value) })} /></label>
               <label><span>V max</span><input inputMode="decimal" value={numberInputValue(draft.device.verticalCoverageEndAngle)} onChange={(event) => updateDevice({ verticalCoverageEndAngle: parseOptionalNumberInput(event.target.value) })} /></label>
             </div>
-            <div className="screen-lingyun-publish-log" aria-label={t.lingyunPublishLogs}>
-              <div className="screen-lingyun-publish-log__header"><span>{t.lingyunPublishLogs}</span></div>
-              {publishLogs.length ? <div className="screen-lingyun-publish-log__rows">{publishLogs.map((log, index) => <div key={`${log.at}-${index}`} className={log.success ? "screen-lingyun-publish-log-row" : "screen-lingyun-publish-log-row screen-lingyun-publish-log-row--error"}><time dateTime={log.at}>{formatLingyunPublishTime(log.at, locale)}</time><span>{counterStrikePublishKindLabel(log.kind, t)}</span><strong>{log.success ? t.lingyunPublishSuccess : t.lingyunPublishFailed}</strong><code>{log.topic}</code>{log.payload ? <div className="screen-lingyun-publish-log-row__payload"><span>{t.lingyunPublishPayload}</span><pre>{log.payload}</pre></div> : null}{log.error ? <em>{log.error}</em> : null}</div>)}</div> : <p>{t.lingyunPublishLogEmpty}</p>}
-            </div>
             <div className="screen-lingyun-topic-summary"><span>{t.lingyunTopics}</span><button type="button" aria-expanded={topicsExpanded} onClick={() => setTopicsExpanded((current) => !current)}><ChevronDown aria-hidden="true" className={topicsExpanded ? "screen-lingyun-topic-toggle-icon screen-lingyun-topic-toggle-icon--open" : "screen-lingyun-topic-toggle-icon"} /><span>{topicsExpanded ? t.lingyunHideTopics : t.lingyunShowTopics}</span></button></div>
             {topicsExpanded ? <div className="screen-lingyun-topic-list">{topics.map((topic) => <div key={topic.label} className="screen-lingyun-topic-row"><span>{topic.label}</span><code>{topic.value}</code></div>)}</div> : null}
           </article>
@@ -4659,6 +5016,7 @@ function CounterStrikeSettingsManagement({
 
       {bannerText ? <div className="screen-management__banner">{bannerText}</div> : null}
       <div className="screen-management__footer screen-settings-actions">
+        {onCancelConfiguration ? <button type="button" disabled={saving} onClick={onCancelConfiguration}><X size={14} aria-hidden="true" /><span>{t.cancel}</span></button> : null}
         <button type="button" disabled={saving} onClick={() => { dirtyRef.current = true; setDraft(defaultCounterStrikeSettings(createProtocolClientID("drone-management-counter-strike-"))); }}><RefreshCw size={14} aria-hidden="true" /><span>{t.restoreDefault}</span></button>
         <button type="button" disabled={saving || !changed} onClick={() => void save()}>{saving ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Check size={14} aria-hidden="true" />}<span>{t.save}</span></button>
       </div>
@@ -4668,7 +5026,6 @@ function CounterStrikeSettingsManagement({
 
 function LingyunSettingsManagement({
   t,
-  locale,
   userSettings,
   settingsLoaded,
   settingsError,
@@ -4676,17 +5033,11 @@ function LingyunSettingsManagement({
   deviceLocation,
   status,
   onSaveUserSettings,
-}: {
-  t: Record<string, string>;
-  locale: Locale;
-  userSettings: UserSettings;
-  settingsLoaded: boolean;
-  settingsError: string;
-  strikeState: ScreenStrikeState | null;
-  deviceLocation: ScreenDeviceLocationResponse | null;
-  status: ScreenRuntimeStatus | null;
-  onSaveUserSettings: (settings: UserSettings) => Promise<UserSettings>;
-}) {
+  onConfigurationSaved,
+  onConfigurationDirtyChange,
+  onConfigurationSavingChange,
+  onCancelConfiguration,
+}: ProtocolSettingsProps) {
   const savedLingyun = resolveLingyunSettings(userSettings.lingyun);
   const savedLingyunKey = JSON.stringify(savedLingyun);
   const [lingyunDraft, setLingyunDraft] = useState(savedLingyun);
@@ -4719,6 +5070,10 @@ function LingyunSettingsManagement({
     settingsPending ? "screen-management--loading" : "",
   ].filter(Boolean).join(" ");
 
+  useEffect(() => {
+    onConfigurationDirtyChange?.(changed);
+  }, [changed, onConfigurationDirtyChange]);
+
   const updateLingyun = (patch: Partial<NonNullable<UserSettings["lingyun"]>>) => {
     lingyunDraftDirtyRef.current = true;
     setLingyunDraft((current) => ({ ...current, ...patch }));
@@ -4749,17 +5104,23 @@ function LingyunSettingsManagement({
       return;
     }
     setSaving(true);
+    onConfigurationSavingChange?.(true);
     setBanner("");
+    let savedSuccessfully = false;
     try {
       const saved = await onSaveUserSettings({ lingyun: normalizedLingyun });
       lingyunDraftDirtyRef.current = false;
       setLingyunDraft(resolveLingyunSettings(saved.lingyun));
       setBanner(t.settingsSaved);
+      onConfigurationDirtyChange?.(false);
+      savedSuccessfully = true;
     } catch (error) {
       setBanner(error instanceof Error ? error.message : t.saveFailed);
     } finally {
       setSaving(false);
+      onConfigurationSavingChange?.(false);
     }
+    if (savedSuccessfully) onConfigurationSaved?.();
   };
 
   if (settingsPending) {
@@ -4928,7 +5289,6 @@ function LingyunSettingsManagement({
               const device = draftLingyunWithRuntimeLocation.devices?.find((item) => item.type === type) ?? defaultLingyunDevice(type);
               const runtime = lingyunDeviceRuntime(status?.lingyun, type);
               const topics = lingyunDeviceTopics(draftLingyunWithRuntimeLocation, device, t);
-              const publishLogs = runtime?.publishLogs ?? [];
               const isInterference = type === "ifr";
               const topicsExpanded = Boolean(expandedTopicTypes[type]);
               const topicsId = `lingyun-topics-${type}`;
@@ -5045,36 +5405,6 @@ function LingyunSettingsManagement({
                       />
                     </label>
                   </div>
-                  <div className="screen-lingyun-publish-log" aria-label={t.lingyunPublishLogs}>
-                    <div className="screen-lingyun-publish-log__header">
-                      <span>{t.lingyunPublishLogs}</span>
-                    </div>
-                    {publishLogs.length > 0 ? (
-                      <div className="screen-lingyun-publish-log__rows">
-                        {publishLogs.map((log, index) => (
-                          <div
-                            key={`${log.at}-${log.kind}-${index}`}
-                            className={log.success ? "screen-lingyun-publish-log-row" : "screen-lingyun-publish-log-row screen-lingyun-publish-log-row--error"}
-                            title={log.error || log.payload || log.topic}
-                          >
-                            <time dateTime={log.at}>{formatLingyunPublishTime(log.at, locale)}</time>
-                            <span>{lingyunPublishKindLabel(log.kind, t)}</span>
-                            <strong>{log.success ? t.lingyunPublishSuccess : t.lingyunPublishFailed}</strong>
-                            <code>{log.topic}</code>
-                            {log.payload ? (
-                              <div className="screen-lingyun-publish-log-row__payload">
-                                <span>{t.lingyunPublishPayload}</span>
-                                <pre>{log.payload}</pre>
-                              </div>
-                            ) : null}
-                            {log.error ? <em>{log.error}</em> : null}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p>{t.lingyunPublishLogEmpty}</p>
-                    )}
-                  </div>
                   <div className="screen-lingyun-topic-summary">
                     <span>{t.lingyunTopics}</span>
                     <button
@@ -5107,6 +5437,12 @@ function LingyunSettingsManagement({
       {bannerText ? <div className="screen-management__banner">{bannerText}</div> : null}
 
       <div className="screen-management__footer screen-settings-actions">
+        {onCancelConfiguration ? (
+          <button type="button" disabled={saving} onClick={onCancelConfiguration}>
+            <X size={14} aria-hidden="true" />
+            <span>{t.cancel}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={saving || settingsPending}
@@ -5225,13 +5561,6 @@ function LingyunSettingsSkeleton({
                   {deviceFields.map((label, index) => (
                     <LingyunSkeletonField key={`${type}-${label}-${index}`} label={label} wide={index === 2} />
                   ))}
-                </div>
-                <div className="screen-lingyun-publish-log screen-lingyun-publish-log--skeleton">
-                  <div className="screen-lingyun-publish-log__header">
-                    <span>{t.lingyunPublishLogs}</span>
-                  </div>
-                  <i aria-hidden="true" />
-                  <i aria-hidden="true" />
                 </div>
                 <div className="screen-lingyun-topic-summary screen-lingyun-topic-summary--skeleton">
                   <span>{t.lingyunTopics}</span>

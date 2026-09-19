@@ -896,6 +896,26 @@ type LingyunPublishLog struct {
 	Error   string    `json:"error,omitempty"`
 }
 
+// ProtocolDebugRecord describes one MQTT message observed by a protocol connector.
+// Payload is the logical JSON body; WirePayload is populated when the bytes sent on
+// the wire differ from that body, such as an SM4-CBC Base64 encoded message.
+type ProtocolDebugRecord struct {
+	ID          string    `json:"id"`
+	Protocol    string    `json:"protocol"`
+	Direction   string    `json:"direction"`
+	Source      string    `json:"source"`
+	Kind        string    `json:"kind"`
+	Topic       string    `json:"topic"`
+	Payload     string    `json:"payload,omitempty"`
+	WirePayload string    `json:"wirePayload,omitempty"`
+	Encoding    string    `json:"encoding"`
+	Outcome     string    `json:"outcome"`
+	Message     string    `json:"message,omitempty"`
+	DeviceType  string    `json:"deviceType,omitempty"`
+	DeviceID    string    `json:"deviceId,omitempty"`
+	At          time.Time `json:"at"`
+}
+
 // FPVVideoStatus describes the configured FPV video playback endpoint.
 type FPVVideoStatus struct {
 	Enabled         bool               `json:"enabled"`

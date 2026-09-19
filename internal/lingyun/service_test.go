@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"drone-management/internal/model"
+	"drone-management/internal/protocol"
 	"drone-management/internal/store"
 )
 
@@ -24,6 +25,7 @@ type fakeTransport struct {
 	connected        bool
 	connectErr       error
 	connectCalls     int
+	subscribeCalls   int
 	published        []publishedMessage
 	subscriptions    map[string]messageHandler
 	subscribeStarted chan string
@@ -32,6 +34,7 @@ type fakeTransport struct {
 	blockTopic       string
 	blockRelease     <-chan struct{}
 	blocked          bool
+	loopback         bool
 }
 
 type fakeInterferenceController struct {
@@ -174,6 +177,7 @@ func (t *fakeTransport) Subscribe(_ context.Context, topic string, handler messa
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.subscribeCalls++
 	t.subscriptions[topic] = handler
 	return nil
 }
@@ -196,11 +200,16 @@ func (t *fakeTransport) Publish(_ context.Context, topic string, payload []byte)
 		<-release
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.published = append(t.published, publishedMessage{
 		topic:   topic,
 		payload: append([]byte(nil), payload...),
 	})
+	handler := t.subscriptions[topic]
+	loopback := t.loopback
+	t.mu.Unlock()
+	if loopback && handler != nil {
+		handler(topic, append([]byte(nil), payload...))
+	}
 	return nil
 }
 
@@ -220,6 +229,12 @@ func (t *fakeTransport) connectCallCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.connectCalls
+}
+
+func (t *fakeTransport) subscribeCallCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.subscribeCalls
 }
 
 func (t *fakeTransport) deliver(topic string, payload []byte) bool {
@@ -825,6 +840,21 @@ func TestServiceApplySettingsGeneratesClientIDWhenMissing(t *testing.T) {
 	}
 }
 
+func TestServiceStatusKeepsCompleteConfigurationWhenDisabled(t *testing.T) {
+	settings := testSettings()
+	settings.Enabled = false
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: settings},
+		WithTransport(newFakeTransport()),
+	)
+
+	status := service.Status()
+	if status.Enabled || !status.Configured || status.Connected || status.Connecting {
+		t.Fatalf("disabled configured status = %#v", status)
+	}
+}
+
 func TestServiceControlStopDisablesReportingAndResponds(t *testing.T) {
 	now := time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)
 	transport := newFakeTransport()
@@ -871,6 +901,234 @@ func TestServiceControlStopDisablesReportingAndResponds(t *testing.T) {
 	}
 	if response.Head.MsgNo != 7 || response.Data.Code != 0 || response.Data.OperationType != 0 {
 		t.Fatalf("response = %#v", response)
+	}
+	records := service.DebugRecords(protocol.MaxDebugRecords)
+	var received, responded bool
+	for _, record := range records {
+		if record.Direction == protocol.DebugDirectionInbound && record.Topic == controlTopic(settings, def, device) && record.Outcome == protocol.DebugOutcomeSuccess {
+			received = true
+		}
+		if record.Direction == protocol.DebugDirectionOutbound && record.Kind == "device_control_resp" && record.Topic == responseTopic {
+			responded = true
+		}
+	}
+	if !received || !responded {
+		t.Fatalf("control debug records missing: received=%v responded=%v records=%#v", received, responded, records)
+	}
+}
+
+func TestServicePublishDebugRecordsSuccessFailureAndClear(t *testing.T) {
+	now := time.Date(2026, 9, 19, 9, 0, 0, 0, time.UTC)
+	transport := newFakeTransport()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+		WithNow(func() time.Time { return now }),
+	)
+	transport.connected = true
+	payload := []byte(`{"debug":true}`)
+	if err := service.PublishDebug(context.Background(), "debug/lingyun", payload, false); err != nil {
+		t.Fatalf("PublishDebug() error = %v", err)
+	}
+	transport.Disconnect()
+	if err := service.PublishDebug(context.Background(), "debug/lingyun", payload, false); err == nil {
+		t.Fatal("PublishDebug() should fail while disconnected")
+	}
+	records := service.DebugRecords(10)
+	if len(records) != 2 || records[0].Outcome != protocol.DebugOutcomeError || records[1].Outcome != protocol.DebugOutcomeSuccess {
+		t.Fatalf("debug records = %#v", records)
+	}
+	if records[1].Payload != string(payload) || records[1].WirePayload != "" || records[1].Encoding != protocol.DebugEncodingPlainJSON {
+		t.Fatalf("successful debug record = %#v", records[1])
+	}
+	if cleared := service.ClearDebugRecords(); cleared != 2 || len(service.DebugRecords(10)) != 0 {
+		t.Fatalf("clear result = %d, records = %#v", cleared, service.DebugRecords(10))
+	}
+}
+
+func TestServiceDebugLoopbackRecordsSendReceiveAndResponseChronologically(t *testing.T) {
+	nowMu := sync.Mutex{}
+	nextNow := time.Date(2026, 9, 19, 9, 30, 0, 0, time.UTC)
+	now := func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		value := nextNow
+		nextNow = nextNow.Add(time.Millisecond)
+		return value
+	}
+	transport := newFakeTransport()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+		WithNow(now),
+	)
+	settings, generation := service.connectionSnapshot()
+	current, err := service.connect(context.Background(), settings, generation)
+	if err != nil || !current {
+		t.Fatalf("connect() current=%v error=%v", current, err)
+	}
+	service.ClearDebugRecords()
+	transport.mu.Lock()
+	transport.loopback = true
+	transport.mu.Unlock()
+
+	device, ok := lingyunDevice(settings, model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("DCD device missing")
+	}
+	def, _ := definitionByType(model.LingyunDeviceDCD)
+	topic := controlTopic(settings, def, device)
+	payload := []byte(`{"head":{"msgNo":17,"deviceId":"DCD01","time":1773281000000},"data":{"operationType":0,"operationCmd":110000}}`)
+	if err := service.PublishDebug(context.Background(), topic, payload, false); err != nil {
+		t.Fatalf("PublishDebug() error = %v", err)
+	}
+
+	var sent, received, responded model.ProtocolDebugRecord
+	var foundSent, foundReceived, foundResponded bool
+	for _, record := range service.DebugRecords(protocol.MaxDebugRecords) {
+		switch {
+		case record.Source == protocol.DebugSourceManual && record.Topic == topic:
+			sent, foundSent = record, true
+		case record.Direction == protocol.DebugDirectionInbound && record.Topic == topic:
+			received, foundReceived = record, true
+		case record.Kind == "device_control_resp":
+			responded, foundResponded = record, true
+		}
+	}
+	if !foundSent || !foundReceived || !foundResponded {
+		t.Fatalf("loopback records missing: sent=%v received=%v responded=%v records=%#v", foundSent, foundReceived, foundResponded, service.DebugRecords(protocol.MaxDebugRecords))
+	}
+	if !sent.At.Before(received.At) || !received.At.Before(responded.At) {
+		t.Fatalf("record chronology send=%v receive=%v response=%v", sent.At, received.At, responded.At)
+	}
+}
+
+func TestServiceRecordsInvalidAndIgnoredInboundControls(t *testing.T) {
+	transport := newFakeTransport()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{Lingyun: testSettings()},
+		WithTransport(transport),
+	)
+	service.tick(context.Background())
+	settings := service.settingsSnapshot()
+	device, ok := lingyunDevice(settings, model.LingyunDeviceDCD)
+	if !ok {
+		t.Fatal("DCD device missing")
+	}
+	def, _ := definitionByType(model.LingyunDeviceDCD)
+	topic := controlTopic(settings, def, device)
+	if !transport.deliver(topic, []byte(`{"head":`)) {
+		t.Fatal("control topic was not subscribed")
+	}
+	service.handleControlMessage("unmatched/control/topic", []byte(`{"ignored":true}`))
+
+	var invalid, ignored bool
+	for _, record := range service.DebugRecords(protocol.MaxDebugRecords) {
+		if record.Direction != protocol.DebugDirectionInbound {
+			continue
+		}
+		if record.Topic == topic && record.Outcome == protocol.DebugOutcomeError {
+			invalid = true
+		}
+		if record.Topic == "unmatched/control/topic" && record.Outcome == protocol.DebugOutcomeIgnored {
+			ignored = true
+		}
+	}
+	if !invalid || !ignored {
+		t.Fatalf("inbound records missing: invalid=%v ignored=%v records=%#v", invalid, ignored, service.DebugRecords(protocol.MaxDebugRecords))
+	}
+}
+
+func TestServiceReconnectClearsBackoffAndMarksConnecting(t *testing.T) {
+	transport := newFakeTransport()
+	transport.connected = true
+	service := NewService(store.New(10, 10), model.UserSettings{Lingyun: testSettings()}, WithTransport(transport))
+	service.mu.Lock()
+	service.subscribed = true
+	service.nextConnectAttemptAt = time.Now().Add(time.Hour)
+	service.mu.Unlock()
+
+	if err := service.Reconnect(); err != nil {
+		t.Fatalf("Reconnect() error = %v", err)
+	}
+	status := service.Status()
+	if status.Connected || !status.Connecting || transport.Connected() {
+		t.Fatalf("status after reconnect = %#v, transport connected = %v", status, transport.Connected())
+	}
+	service.mu.RLock()
+	subscribed := service.subscribed
+	nextAttempt := service.nextConnectAttemptAt
+	service.mu.RUnlock()
+	if subscribed || !nextAttempt.IsZero() {
+		t.Fatalf("reconnect state subscribed=%v nextAttempt=%v", subscribed, nextAttempt)
+	}
+	service.tick(context.Background())
+	status = service.Status()
+	if !status.Connected || status.Connecting || status.LastError != "" {
+		t.Fatalf("status after reconnect tick = %#v", status)
+	}
+	if transport.connectCallCount() != 1 || transport.subscribeCallCount() == 0 {
+		t.Fatalf("reconnect calls connect=%d subscribe=%d", transport.connectCallCount(), transport.subscribeCallCount())
+	}
+
+	transport.mu.Lock()
+	transport.connectErr = fmt.Errorf("forced reconnect failure")
+	transport.mu.Unlock()
+	if err := service.Reconnect(); err != nil {
+		t.Fatalf("second Reconnect() error = %v", err)
+	}
+	service.tick(context.Background())
+	status = service.Status()
+	if status.Connected || status.Connecting || !strings.Contains(status.LastError, "forced reconnect failure") {
+		t.Fatalf("status after failed reconnect = %#v", status)
+	}
+
+	disabled := testSettings()
+	disabled.Enabled = false
+	service.ApplySettings(model.UserSettings{Lingyun: disabled})
+	if err := service.Reconnect(); err == nil {
+		t.Fatal("Reconnect() should reject a disabled protocol")
+	}
+}
+
+func TestServiceReconnectInvalidatesInFlightSubscription(t *testing.T) {
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	transport := newFakeTransport()
+	transport.subscribeStarted = started
+	transport.subscribeRelease = release
+	service := NewService(store.New(10, 10), model.UserSettings{Lingyun: testSettings()}, WithTransport(transport))
+
+	done := make(chan struct{})
+	go func() {
+		service.tick(context.Background())
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subscription")
+	}
+	if err := service.Reconnect(); err != nil {
+		t.Fatalf("Reconnect() error = %v", err)
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stale tick did not finish")
+	}
+
+	status := service.Status()
+	service.mu.RLock()
+	subscribed := service.subscribed
+	nextAttempt := service.nextConnectAttemptAt
+	service.mu.RUnlock()
+	if subscribed || !nextAttempt.IsZero() || status.Connected || !status.Connecting || status.LastError != "" {
+		t.Fatalf("stale subscription rewrote reconnect state: subscribed=%v nextAttempt=%v status=%#v", subscribed, nextAttempt, status)
 	}
 }
 

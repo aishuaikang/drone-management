@@ -1012,6 +1012,82 @@ func TestProtocolDebugPublishValidatesAndForwardsPayload(t *testing.T) {
 	}
 }
 
+func TestProtocolDebugRecordsCanBeListedAndCleared(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	debug := &memoryProtocolDebugService{records: []model.ProtocolDebugRecord{
+		{ID: "first", Protocol: "lingyun", Topic: "topic/first"},
+		{ID: "second", Protocol: "lingyun", Topic: "topic/second"},
+	}}
+	s.lingyunDebug = debug
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/protocols/lingyun/debug-records?limit=1", nil)
+	listRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var listed model.ListResponse[model.ProtocolDebugRecord]
+	if err := json.NewDecoder(listRec.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if listed.Count != 1 || len(listed.Items) != 1 || listed.Items[0].ID != "first" {
+		t.Fatalf("listed records = %#v", listed)
+	}
+
+	for _, limit := range []string{"0", "101", "not-a-number"} {
+		invalidReq := httptest.NewRequest(http.MethodGet, "/api/v1/protocols/lingyun/debug-records?limit="+limit, nil)
+		invalidRec := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(invalidRec, invalidReq)
+		if invalidRec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid limit %q status = %d, want 400", limit, invalidRec.Code)
+		}
+	}
+
+	clearReq := httptest.NewRequest(http.MethodDelete, "/api/v1/protocols/lingyun/debug-records", nil)
+	clearRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK || len(debug.records) != 0 {
+		t.Fatalf("clear status = %d, records = %#v", clearRec.Code, debug.records)
+	}
+}
+
+func TestProtocolReconnectReturnsAcceptedAndConflict(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	debug := &memoryProtocolDebugService{}
+	s.counterStrikeDebug = debug
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/counterStrike/reconnect", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted || debug.reconnects != 1 {
+		t.Fatalf("reconnect status = %d, calls = %d, body = %s", rec.Code, debug.reconnects, rec.Body.String())
+	}
+
+	debug.reconnectErr = errors.New("protocol is disabled")
+	conflictReq := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/counterStrike/reconnect", nil)
+	conflictRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(conflictRec, conflictReq)
+	if conflictRec.Code != http.StatusConflict {
+		t.Fatalf("conflict status = %d, want 409", conflictRec.Code)
+	}
+
+	unknownReq := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/unknown/reconnect", nil)
+	unknownRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(unknownRec, unknownReq)
+	if unknownRec.Code != http.StatusNotFound {
+		t.Fatalf("unknown protocol status = %d, want 404", unknownRec.Code)
+	}
+
+	unavailable := newTestServer(t, store.New(10, 10))
+	unavailable.counterStrikeDebug = nil
+	unavailableReq := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/counterStrike/reconnect", nil)
+	unavailableRec := httptest.NewRecorder()
+	unavailable.server.Handler.ServeHTTP(unavailableRec, unavailableReq)
+	if unavailableRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable protocol status = %d, want 503", unavailableRec.Code)
+	}
+}
+
 func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomSettings(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
@@ -2492,9 +2568,12 @@ type memoryCounterStrikeService struct {
 }
 
 type memoryProtocolDebugService struct {
-	topic   string
-	payload string
-	encrypt bool
+	topic        string
+	payload      string
+	encrypt      bool
+	records      []model.ProtocolDebugRecord
+	reconnects   int
+	reconnectErr error
 }
 
 func (s *memoryProtocolDebugService) PublishDebug(_ context.Context, topic string, payload []byte, encrypt bool) error {
@@ -2502,6 +2581,24 @@ func (s *memoryProtocolDebugService) PublishDebug(_ context.Context, topic strin
 	s.payload = string(payload)
 	s.encrypt = encrypt
 	return nil
+}
+
+func (s *memoryProtocolDebugService) DebugRecords(limit int) []model.ProtocolDebugRecord {
+	if limit > len(s.records) {
+		limit = len(s.records)
+	}
+	return append([]model.ProtocolDebugRecord(nil), s.records[:limit]...)
+}
+
+func (s *memoryProtocolDebugService) ClearDebugRecords() int {
+	count := len(s.records)
+	s.records = nil
+	return count
+}
+
+func (s *memoryProtocolDebugService) Reconnect() error {
+	s.reconnects++
+	return s.reconnectErr
 }
 
 func (s *memoryCounterStrikeService) ApplySettings(settings model.UserSettings) {

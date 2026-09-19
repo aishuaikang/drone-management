@@ -142,6 +142,27 @@ export interface CounterStrikeStatus {
   publishLogs?: LingyunPublishLog[];
 }
 
+export type ProtocolID = "lingyun" | "counterStrike";
+export type ProtocolDebugDirection = "outbound" | "inbound";
+export type ProtocolDebugOutcome = "success" | "error" | "ignored";
+
+export interface ProtocolDebugRecord {
+  id: string;
+  protocol: ProtocolID | string;
+  direction: ProtocolDebugDirection;
+  source: "automatic" | "manual" | "broker" | string;
+  kind: string;
+  topic: string;
+  payload?: string;
+  wirePayload?: string;
+  encoding: "plain-json" | "sm4-cbc-base64" | string;
+  outcome: ProtocolDebugOutcome;
+  message?: string;
+  deviceType?: string;
+  deviceId?: string;
+  at: string;
+}
+
 export interface ScreenTCPPortRequest {
   positionTCPPort: number;
   fpvTCPPort: number;

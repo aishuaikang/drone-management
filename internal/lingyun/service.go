@@ -95,6 +95,7 @@ type Service struct {
 	transport    transport
 	now          func() time.Time
 	interference interferenceController
+	debug        *protocol.DebugRecorder
 
 	mu                   sync.RWMutex
 	settings             model.LingyunSettings
@@ -102,6 +103,7 @@ type Service struct {
 	pending              map[string]map[string]senseDataObject
 	status               model.LingyunStatus
 	settingsKey          string
+	connectionGeneration uint64
 	subscribed           bool
 	seeded               bool
 	nextConnectAttemptAt time.Time
@@ -114,6 +116,7 @@ func NewService(state *store.Store, settings model.UserSettings, opts ...Option)
 		store:     state,
 		transport: newPahoTransport(),
 		now:       time.Now,
+		debug:     protocol.NewDebugRecorder(protocolName, protocol.MaxDebugRecords),
 		states:    map[string]*deviceRuntimeState{},
 		pending:   map[string]map[string]senseDataObject{},
 		wake:      make(chan struct{}, 1),
@@ -149,11 +152,12 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 		}
 	}
 	s.status.Enabled = next.Enabled
-	s.status.Configured = lingyunConfigured(next)
+	s.status.Configured = lingyunConfigurationComplete(next)
 	s.status.ClientID = strings.TrimSpace(next.ClientID)
 	s.status.Broker = strings.TrimSpace(next.Broker)
 	s.status.UpdatedAt = cloneTime(now)
 	if changed {
+		s.connectionGeneration++
 		s.subscribed = false
 		s.seeded = false
 		s.nextConnectAttemptAt = time.Time{}
@@ -169,7 +173,7 @@ func (s *Service) ApplySettings(settings model.UserSettings) {
 			state.PublishLogs = nil
 		}
 		s.status.Connected = false
-		s.status.Connecting = next.Enabled && lingyunConfigured(next)
+		s.status.Connecting = next.Enabled && lingyunConfigurationComplete(next)
 	}
 	s.mu.Unlock()
 
@@ -185,7 +189,7 @@ func (s *Service) Status() model.LingyunStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := s.status
-	status.Connected = s.transport.Connected()
+	status.Connected = status.Connected && s.transport.Connected()
 	status.Devices = s.deviceStatusesLocked(interferenceActive)
 	status.UpdatedAt = cloneTimeValue(status.UpdatedAt)
 	return status
@@ -198,19 +202,68 @@ func (s *Service) PublishDebug(ctx context.Context, topic string, payload []byte
 	if topic == "" {
 		return fmt.Errorf("debug topic is required")
 	}
+	attemptedAt := s.now()
 	if encrypt {
-		return fmt.Errorf("SM4 encryption is not supported by the Lingyun protocol")
+		err := fmt.Errorf("SM4 encryption is not supported by the Lingyun protocol")
+		s.recordDebugPublish(topic, string(payload), err, attemptedAt)
+		return err
 	}
 	settings := s.settingsSnapshot()
-	if !lingyunConfigured(settings) {
-		return fmt.Errorf("Lingyun protocol is not configured")
+	if !settings.Enabled {
+		err := fmt.Errorf("Lingyun protocol is disabled")
+		s.recordDebugPublish(topic, string(payload), err, attemptedAt)
+		return err
+	}
+	if !lingyunConfigurationComplete(settings) {
+		err := fmt.Errorf("Lingyun protocol is not configured")
+		s.recordDebugPublish(topic, string(payload), err, attemptedAt)
+		return err
 	}
 	if !s.transport.Connected() {
-		return fmt.Errorf("MQTT is not connected")
+		err := fmt.Errorf("MQTT is not connected")
+		s.recordDebugPublish(topic, string(payload), err, attemptedAt)
+		return err
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
 	defer cancel()
-	return s.transport.Publish(publishCtx, topic, append([]byte(nil), payload...))
+	err := s.transport.Publish(publishCtx, topic, append([]byte(nil), payload...))
+	s.recordDebugPublish(topic, string(payload), err, attemptedAt)
+	return err
+}
+
+// DebugRecords returns recent protocol traffic in newest-first order.
+func (s *Service) DebugRecords(limit int) []model.ProtocolDebugRecord {
+	return s.debug.List(limit)
+}
+
+// ClearDebugRecords clears process-local protocol traffic history.
+func (s *Service) ClearDebugRecords() int {
+	return s.debug.Clear()
+}
+
+// Reconnect forces the enabled connector to reconnect without changing saved settings.
+func (s *Service) Reconnect() error {
+	s.mu.Lock()
+	if !s.settings.Enabled {
+		s.mu.Unlock()
+		return fmt.Errorf("Lingyun protocol is disabled")
+	}
+	if !lingyunConfigurationComplete(s.settings) {
+		s.mu.Unlock()
+		return fmt.Errorf("Lingyun protocol is not configured")
+	}
+	s.connectionGeneration++
+	s.subscribed = false
+	s.seeded = false
+	s.nextConnectAttemptAt = time.Time{}
+	s.status.Connected = false
+	s.status.Connecting = true
+	s.status.LastError = ""
+	s.status.UpdatedAt = cloneTime(s.now())
+	s.mu.Unlock()
+	s.transport.Disconnect()
+	s.signal()
+	return nil
 }
 
 // Run processes store events and protocol timers until ctx is cancelled.
@@ -236,34 +289,41 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 func (s *Service) tick(ctx context.Context) {
-	settings := s.settingsSnapshot()
+	settings, generation := s.connectionSnapshot()
 	if !settings.Enabled {
 		s.transport.Disconnect()
-		s.clearAllPending()
-		s.clearNextConnectAttempt()
-		s.markDisconnected()
-		s.setConnected(false, "")
+		s.markDisconnected(generation, true, "")
 		return
 	}
-	if !lingyunConfigured(settings) {
-		s.clearNextConnectAttempt()
-		s.setConnected(false, "MQTT provider/device config is incomplete")
+	if !lingyunConfigurationComplete(settings) {
+		s.transport.Disconnect()
+		s.markDisconnected(generation, false, "MQTT provider/device config is incomplete")
 		return
 	}
-	if !s.transport.Connected() && s.connectRetryPending(s.now()) {
+	if !s.connectionGenerationMatches(generation) {
 		return
 	}
-	s.setConnecting(true, "")
-	if err := s.connect(ctx, settings); err != nil {
-		s.setNextConnectAttempt(s.now().Add(defaultMQTTRetryDelay))
-		s.setConnected(false, err.Error())
+	if !s.transport.Connected() && s.connectRetryPending(generation, s.now()) {
 		return
 	}
-	s.clearNextConnectAttempt()
+	if !s.setConnecting(generation, true, "") {
+		return
+	}
+	current, err := s.connect(ctx, settings, generation)
+	if !current {
+		return
+	}
+	if err != nil {
+		s.transport.Disconnect()
+		s.setConnectFailure(generation, s.now().Add(defaultMQTTRetryDelay), err.Error())
+		return
+	}
 
-	if !s.isSeeded() {
+	if !s.isSeeded(generation) {
 		s.seedCurrentTargets(settings)
-		s.setSeeded()
+		if !s.setSeeded(generation) {
+			return
+		}
 	}
 
 	now := s.now()
@@ -337,10 +397,12 @@ func (s *Service) publishDeviceJob(ctx context.Context, settings model.LingyunSe
 	}
 }
 
-func (s *Service) connect(ctx context.Context, settings model.LingyunSettings) error {
-	if s.transport.Connected() && s.isSubscribed() {
-		s.setConnected(true, "")
-		return nil
+func (s *Service) connect(ctx context.Context, settings model.LingyunSettings, generation uint64) (bool, error) {
+	if !s.connectionGenerationMatches(generation) {
+		return false, nil
+	}
+	if s.transport.Connected() && s.isSubscribed(generation) {
+		return s.setConnected(generation, true, ""), nil
 	}
 	if err := s.transport.Connect(ctx, transportConfig{
 		Broker:   settings.Broker,
@@ -348,19 +410,27 @@ func (s *Service) connect(ctx context.Context, settings model.LingyunSettings) e
 		Username: settings.Username,
 		Password: settings.Password,
 	}); err != nil {
-		return err
+		return s.connectionGenerationMatches(generation), err
+	}
+	if !s.connectionGenerationMatches(generation) {
+		return false, nil
 	}
 	if err := s.subscribeControls(ctx, settings); err != nil {
-		return err
+		return s.connectionGenerationMatches(generation), err
 	}
 	s.mu.Lock()
+	if s.connectionGeneration != generation {
+		s.mu.Unlock()
+		return false, nil
+	}
 	s.subscribed = true
+	s.nextConnectAttemptAt = time.Time{}
 	s.status.Connected = true
 	s.status.Connecting = false
 	s.status.LastError = ""
 	s.status.UpdatedAt = cloneTime(s.now())
 	s.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (s *Service) subscribeControls(ctx context.Context, settings model.LingyunSettings) error {
@@ -395,9 +465,10 @@ func (s *Service) publishRegistration(ctx context.Context, settings model.Lingyu
 	device = s.deviceWithCurrentInterferenceBands(device)
 	payload := buildDevicePayload(settings, def, device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device")
+	attemptedAt := s.now()
 	payloadText, err := s.publishJSON(ctx, topic, payload)
 	if s.settingsKeyMatches(settingsKey) {
-		s.recordDevicePublish(device.Type, "device", topic, payloadText, err)
+		s.recordDevicePublish(device.Type, "device", topic, payloadText, err, attemptedAt)
 	}
 	if err != nil {
 		return err
@@ -412,9 +483,10 @@ func (s *Service) publishStatus(ctx context.Context, settings model.LingyunSetti
 	device = s.deviceWithCurrentLocation(device)
 	payload := buildStatusPayload(device, s.currentWorkState(device))
 	topic := deviceTopic(settings, def, device, "device_state")
+	attemptedAt := s.now()
 	payloadText, err := s.publishJSON(ctx, topic, payload)
 	if s.settingsKeyMatches(settingsKey) {
-		s.recordDevicePublish(device.Type, "device_state", topic, payloadText, err)
+		s.recordDevicePublish(device.Type, "device_state", topic, payloadText, err, attemptedAt)
 	}
 	if err != nil {
 		return err
@@ -446,9 +518,10 @@ func (s *Service) flushDevice(ctx context.Context, settings model.LingyunSetting
 		Objects:         objects,
 	}
 	topic := deviceTopic(settings, def, device, "device_data")
+	attemptedAt := s.now()
 	payloadText, err := s.publishJSON(ctx, topic, payload)
 	if s.settingsKeyMatches(settingsKey) {
-		s.recordDevicePublish(device.Type, "device_data", topic, payloadText, err)
+		s.recordDevicePublish(device.Type, "device_data", topic, payloadText, err, attemptedAt)
 	}
 	if err != nil {
 		s.restorePending(device.Type, objects)
@@ -613,9 +686,11 @@ func (s *Service) seedCurrentTargets(settings model.LingyunSettings) {
 }
 
 func (s *Service) handleControlMessage(topic string, payload []byte) {
+	receivedAt := s.now()
 	settings := s.settingsSnapshot()
 	def, device, ok := definitionByTopic(settings.ProviderCode, topic, settings)
 	if !ok {
+		s.recordDebugInbound(topic, payload, protocol.DebugOutcomeIgnored, "topic does not match an active device", "", "", receivedAt)
 		return
 	}
 
@@ -626,6 +701,7 @@ func (s *Service) handleControlMessage(topic string, payload []byte) {
 		req.Data.OperationCmd = def.OperationCmd
 		s.publishControlResponse(settings, def, device, req, 1, "控制消息格式错误")
 		s.setDeviceControl(device.Type, false, "invalid control")
+		s.recordDebugInbound(topic, payload, protocol.DebugOutcomeError, "invalid JSON payload", device.Type, device.DeviceID, receivedAt)
 		return
 	}
 	if strings.TrimSpace(req.Head.DeviceID) == "" {
@@ -635,6 +711,11 @@ func (s *Service) handleControlMessage(topic string, payload []byte) {
 	if device.Type == model.LingyunDeviceInterference {
 		code, message := s.handleInterferenceControl(def, device, req)
 		s.publishControlResponse(settings, def, device, req, code, message)
+		outcome := protocol.DebugOutcomeSuccess
+		if code != 0 {
+			outcome = protocol.DebugOutcomeError
+		}
+		s.recordDebugInbound(topic, payload, outcome, message, device.Type, device.DeviceID, receivedAt)
 		return
 	}
 
@@ -662,6 +743,14 @@ func (s *Service) handleControlMessage(topic string, payload []byte) {
 		s.setDeviceControl(device.Type, false, message)
 	}
 	s.publishControlResponse(settings, def, device, req, code, message)
+	outcome := protocol.DebugOutcomeSuccess
+	if code != 0 {
+		outcome = protocol.DebugOutcomeError
+	}
+	if message == "" {
+		message = controlResult(req.Data.OperationType == 1)
+	}
+	s.recordDebugInbound(topic, payload, outcome, message, device.Type, device.DeviceID, receivedAt)
 }
 
 func (s *Service) handleInterferenceControl(def deviceDefinition, device model.LingyunDeviceSettings, req controlEnvelope) (int, string) {
@@ -838,10 +927,11 @@ func normalizeInterferenceDuration(seconds int) int {
 }
 
 func (s *Service) publishControlResponse(settings model.LingyunSettings, def deviceDefinition, device model.LingyunDeviceSettings, req controlEnvelope, code int, message string) {
+	attemptedAt := s.now()
 	resp := buildControlResponse(req, code, message, s.now())
 	topic := controlResponseTopic(settings, def, device)
 	payloadText, err := s.publishJSON(context.Background(), topic, resp)
-	s.recordDevicePublish(device.Type, "device_control_resp", topic, payloadText, err)
+	s.recordDevicePublish(device.Type, "device_control_resp", topic, payloadText, err, attemptedAt)
 	if err != nil {
 		s.setDeviceError(device.Type, err.Error())
 	}
@@ -851,6 +941,18 @@ func (s *Service) settingsSnapshot() model.LingyunSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.settings
+}
+
+func (s *Service) connectionSnapshot() (model.LingyunSettings, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings, s.connectionGeneration
+}
+
+func (s *Service) connectionGenerationMatches(generation uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.connectionGeneration == generation
 }
 
 func (s *Service) settingsKeySnapshot() string {
@@ -982,17 +1084,15 @@ func (s *Service) markDevicePublished(deviceType string, kind string) {
 	s.status.UpdatedAt = cloneTime(now)
 }
 
-func (s *Service) recordDevicePublish(deviceType string, kind string, topic string, payload string, err error) {
+func (s *Service) recordDevicePublish(deviceType string, kind string, topic string, payload string, err error, attemptedAt time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	state := s.deviceStateLocked(deviceType)
-	now := s.now()
 	entry := model.LingyunPublishLog{
 		Kind:    kind,
 		Topic:   topic,
 		Payload: payload,
 		Success: err == nil,
-		At:      now,
+		At:      attemptedAt,
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -1001,7 +1101,50 @@ func (s *Service) recordDevicePublish(deviceType string, kind string, topic stri
 	if len(state.PublishLogs) > maxDevicePublishLogs {
 		state.PublishLogs = state.PublishLogs[:maxDevicePublishLogs]
 	}
-	s.status.UpdatedAt = cloneTime(now)
+	s.status.UpdatedAt = cloneTime(attemptedAt)
+	deviceID := ""
+	for _, device := range s.settings.Devices {
+		if device.Type == deviceType {
+			deviceID = strings.TrimSpace(device.DeviceID)
+			break
+		}
+	}
+	s.mu.Unlock()
+	s.recordDebugOutbound(protocol.DebugSourceAutomatic, kind, topic, payload, "", protocol.DebugEncodingPlainJSON, err, attemptedAt, deviceType, deviceID)
+}
+
+func (s *Service) recordDebugPublish(topic, payload string, err error, attemptedAt time.Time) {
+	settings := s.settingsSnapshot()
+	deviceType, deviceID := "", ""
+	if def, device, ok := definitionByTopic(settings.ProviderCode, topic, settings); ok {
+		deviceType, deviceID = def.Type, device.DeviceID
+	}
+	s.recordDebugOutbound(protocol.DebugSourceManual, "debug", topic, payload, "", protocol.DebugEncodingPlainJSON, err, attemptedAt, deviceType, deviceID)
+}
+
+func (s *Service) recordDebugOutbound(source, kind, topic, payload, wirePayload, encoding string, err error, at time.Time, deviceType, deviceID string) {
+	outcome := protocol.DebugOutcomeSuccess
+	message := ""
+	if err != nil {
+		outcome = protocol.DebugOutcomeError
+		message = err.Error()
+	}
+	s.debug.Add(model.ProtocolDebugRecord{
+		Direction: protocol.DebugDirectionOutbound,
+		Source:    source, Kind: kind, Topic: topic, Payload: payload,
+		WirePayload: wirePayload, Encoding: encoding, Outcome: outcome, Message: message,
+		DeviceType: deviceType, DeviceID: strings.TrimSpace(deviceID), At: at,
+	})
+}
+
+func (s *Service) recordDebugInbound(topic string, payload []byte, outcome, message, deviceType, deviceID string, receivedAt time.Time) {
+	s.debug.Add(model.ProtocolDebugRecord{
+		Direction: protocol.DebugDirectionInbound,
+		Source:    protocol.DebugSourceBroker, Kind: "control", Topic: topic,
+		Payload: string(payload), Encoding: protocol.DebugEncodingPlainJSON,
+		Outcome: outcome, Message: message, DeviceType: deviceType,
+		DeviceID: strings.TrimSpace(deviceID), At: receivedAt,
+	})
 }
 
 func (s *Service) setDeviceError(deviceType string, message string) {
@@ -1030,24 +1173,34 @@ func (s *Service) setDeviceControl(deviceType string, ok bool, result string) {
 	s.status.UpdatedAt = cloneTime(state.LastControlAt)
 }
 
-func (s *Service) setConnected(connected bool, message string) {
+func (s *Service) setConnected(generation uint64, connected bool, message string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
 	s.status.Enabled = s.settings.Enabled
-	s.status.Configured = lingyunConfigured(s.settings)
+	s.status.Configured = lingyunConfigurationComplete(s.settings)
 	s.status.ClientID = strings.TrimSpace(s.settings.ClientID)
 	s.status.Broker = strings.TrimSpace(s.settings.Broker)
 	s.status.Connected = connected
 	s.status.Connecting = false
+	if connected {
+		s.nextConnectAttemptAt = time.Time{}
+	}
 	s.status.LastError = message
 	s.status.UpdatedAt = cloneTime(s.now())
+	return true
 }
 
-func (s *Service) setConnecting(connecting bool, message string) {
+func (s *Service) setConnecting(generation uint64, connecting bool, message string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
 	s.status.Enabled = s.settings.Enabled
-	s.status.Configured = lingyunConfigured(s.settings)
+	s.status.Configured = lingyunConfigurationComplete(s.settings)
 	s.status.ClientID = strings.TrimSpace(s.settings.ClientID)
 	s.status.Broker = strings.TrimSpace(s.settings.Broker)
 	s.status.Connecting = connecting
@@ -1056,34 +1209,55 @@ func (s *Service) setConnecting(connecting bool, message string) {
 	}
 	s.status.LastError = message
 	s.status.UpdatedAt = cloneTime(s.now())
+	return true
 }
 
-func (s *Service) connectRetryPending(now time.Time) bool {
+func (s *Service) connectRetryPending(generation uint64, now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.connectionGeneration != generation {
+		return true
+	}
 	return !s.nextConnectAttemptAt.IsZero() && now.Before(s.nextConnectAttemptAt)
 }
 
-func (s *Service) setNextConnectAttempt(at time.Time) {
+func (s *Service) setConnectFailure(generation uint64, nextAttempt time.Time, message string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.nextConnectAttemptAt = at
-}
-
-func (s *Service) clearNextConnectAttempt() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.nextConnectAttemptAt = time.Time{}
-}
-
-func (s *Service) markDisconnected() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.subscribed = false
-	s.seeded = false
+	if s.connectionGeneration != generation {
+		return false
+	}
+	s.nextConnectAttemptAt = nextAttempt
 	s.status.Connected = false
 	s.status.Connecting = false
+	s.status.LastError = message
 	s.status.UpdatedAt = cloneTime(s.now())
+	return true
+}
+
+func (s *Service) markDisconnected(generation uint64, clearPending bool, message string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
+	if clearPending {
+		for deviceType := range s.pending {
+			s.pending[deviceType] = map[string]senseDataObject{}
+		}
+	}
+	s.subscribed = false
+	s.seeded = false
+	s.nextConnectAttemptAt = time.Time{}
+	s.status.Enabled = s.settings.Enabled
+	s.status.Configured = lingyunConfigurationComplete(s.settings)
+	s.status.ClientID = strings.TrimSpace(s.settings.ClientID)
+	s.status.Broker = strings.TrimSpace(s.settings.Broker)
+	s.status.Connected = false
+	s.status.Connecting = false
+	s.status.LastError = message
+	s.status.UpdatedAt = cloneTime(s.now())
+	return true
 }
 
 func (s *Service) deviceStateLocked(deviceType string) *deviceRuntimeState {
@@ -1118,22 +1292,26 @@ func (s *Service) finishDevicePublishJob(deviceType string, settingsKey string) 
 	state.PublishInFlightKey = ""
 }
 
-func (s *Service) isSubscribed() bool {
+func (s *Service) isSubscribed(generation uint64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.subscribed
+	return s.connectionGeneration == generation && s.subscribed
 }
 
-func (s *Service) isSeeded() bool {
+func (s *Service) isSeeded(generation uint64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.seeded
+	return s.connectionGeneration == generation && s.seeded
 }
 
-func (s *Service) setSeeded() {
+func (s *Service) setSeeded(generation uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.connectionGeneration != generation {
+		return false
+	}
 	s.seeded = true
+	return true
 }
 
 func (s *Service) clearSeeded() {
@@ -1216,10 +1394,7 @@ func (s *Service) cachedInterferenceActive() bool {
 	return s.interference.ScreenStrikeActive()
 }
 
-func lingyunConfigured(settings model.LingyunSettings) bool {
-	if !settings.Enabled {
-		return false
-	}
+func lingyunConfigurationComplete(settings model.LingyunSettings) bool {
 	if strings.TrimSpace(settings.Broker) == "" || strings.TrimSpace(settings.ProviderCode) == "" {
 		return false
 	}
