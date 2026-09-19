@@ -251,6 +251,49 @@ func TestConfiguredRequiresValidSM4Material(t *testing.T) {
 	}
 }
 
+func TestServicePublishDebugSendsPlainAndEncryptedPayloads(t *testing.T) {
+	transport := &fakeTransport{connected: true}
+	settings := validTestSettings()
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{CounterStrike: settings},
+		WithTransport(transport),
+	)
+	transport.connected = true
+
+	plain := []byte(`{"cmd":"debug.plain"}`)
+	if err := service.PublishDebug(context.Background(), "platform/debug/plain", plain, false); err != nil {
+		t.Fatalf("PublishDebug(plain) error = %v", err)
+	}
+	encrypted := []byte(`{"cmd":"debug.encrypted"}`)
+	if err := service.PublishDebug(context.Background(), "platform/debug/encrypted", encrypted, true); err != nil {
+		t.Fatalf("PublishDebug(encrypted) error = %v", err)
+	}
+
+	plainPublishes := transport.publishes("platform/debug/plain")
+	if len(plainPublishes) != 1 || string(plainPublishes[0].payload) != string(plain) {
+		t.Fatalf("plain publish = %#v", plainPublishes)
+	}
+	encryptedPublishes := transport.publishes("platform/debug/encrypted")
+	if len(encryptedPublishes) != 1 {
+		t.Fatalf("encrypted publishes = %d, want 1", len(encryptedPublishes))
+	}
+	if got := decryptSM4ForTest(t, encryptedPublishes[0].payload, settings.SM4Key, settings.SM4IV); string(got) != string(encrypted) {
+		t.Fatalf("decrypted encrypted payload = %q, want %q", got, encrypted)
+	}
+}
+
+func TestServicePublishDebugRequiresConnection(t *testing.T) {
+	service := NewService(
+		store.New(10, 10),
+		model.UserSettings{CounterStrike: validTestSettings()},
+		WithTransport(&fakeTransport{}),
+	)
+	if err := service.PublishDebug(context.Background(), "platform/debug", []byte(`{"cmd":"debug"}`), false); err == nil {
+		t.Fatal("PublishDebug should fail when MQTT is disconnected")
+	}
+}
+
 func validTestSettings() model.CounterStrikeSettings {
 	return model.CounterStrikeSettingsWithDefaults(model.CounterStrikeSettings{
 		Enabled:      true,

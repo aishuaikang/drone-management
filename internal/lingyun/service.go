@@ -191,6 +191,28 @@ func (s *Service) Status() model.LingyunStatus {
 	return status
 }
 
+// PublishDebug publishes a manually supplied JSON payload through the active MQTT connection.
+// Lingyun messages are plain JSON; encrypted debug payloads are not supported by this protocol.
+func (s *Service) PublishDebug(ctx context.Context, topic string, payload []byte, encrypt bool) error {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return fmt.Errorf("debug topic is required")
+	}
+	if encrypt {
+		return fmt.Errorf("SM4 encryption is not supported by the Lingyun protocol")
+	}
+	settings := s.settingsSnapshot()
+	if !lingyunConfigured(settings) {
+		return fmt.Errorf("Lingyun protocol is not configured")
+	}
+	if !s.transport.Connected() {
+		return fmt.Errorf("MQTT is not connected")
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
+	defer cancel()
+	return s.transport.Publish(publishCtx, topic, append([]byte(nil), payload...))
+}
+
 // Run processes store events and protocol timers until ctx is cancelled.
 func (s *Service) Run(ctx context.Context) {
 	events, unsubscribe := s.store.Subscribe(64)

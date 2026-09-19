@@ -89,6 +89,17 @@ type CounterStrikeService interface {
 	Status() model.CounterStrikeStatus
 }
 
+// ProtocolDebugService publishes a manually supplied protocol payload.
+type ProtocolDebugService interface {
+	PublishDebug(context.Context, string, []byte, bool) error
+}
+
+type protocolDebugPublishRequest struct {
+	Topic   string `json:"topic"`
+	Payload string `json:"payload"`
+	Encrypt bool   `json:"encrypt"`
+}
+
 // IntrusionStore persists disappeared positioning and FPV targets.
 type IntrusionStore interface {
 	List(context.Context, intrusion.QueryOptions) ([]model.IntrusionRecord, error)
@@ -121,6 +132,8 @@ type Server struct {
 	fpvVideo             *fpvvideo.Service
 	lingyun              LingyunService
 	counterStrike        CounterStrikeService
+	lingyunDebug         ProtocolDebugService
+	counterStrikeDebug   ProtocolDebugService
 	server               *http.Server
 	userSettings         UserSettingsStore
 	intrusions           IntrusionStore
@@ -182,6 +195,9 @@ func WithUserSettingsStore(store UserSettingsStore) Option {
 func WithLingyunService(service LingyunService) Option {
 	return func(s *Server) {
 		s.lingyun = service
+		if debugService, ok := service.(ProtocolDebugService); ok {
+			s.lingyunDebug = debugService
+		}
 	}
 }
 
@@ -189,6 +205,9 @@ func WithLingyunService(service LingyunService) Option {
 func WithCounterStrikeService(service CounterStrikeService) Option {
 	return func(s *Server) {
 		s.counterStrike = service
+		if debugService, ok := service.(ProtocolDebugService); ok {
+			s.counterStrikeDebug = debugService
+		}
 	}
 }
 
@@ -341,6 +360,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/network/backups/{name}/restore", s.requireLicense(s.handleRestoreNetworkBackup))
 	mux.HandleFunc("DELETE /api/v1/network/backups/{name}", s.requireLicense(s.handleDeleteNetworkBackup))
 	mux.HandleFunc("GET /api/v1/screen/status", s.requireLicense(s.handleScreenStatus))
+	mux.HandleFunc("POST /api/v1/protocols/{protocol}/debug-publish", s.requireLicense(s.handleProtocolDebugPublish))
 	mux.HandleFunc("GET /api/v1/screen/fpv-video/network-addresses", s.requireLicense(s.handleFPVVideoNetworkAddresses))
 	mux.HandleFunc("GET /api/v1/screen/positions", s.requireLicense(s.handleScreenPositions))
 	mux.HandleFunc("GET /api/v1/screen/fpv", s.requireLicense(s.handleScreenFPV))
@@ -477,6 +497,49 @@ func (s *Server) handleUploadOfflineMap(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleScreenStatus(w http.ResponseWriter, _ *http.Request) {
 	respondJSON(w, http.StatusOK, s.screenRuntimeStatus())
+}
+
+func (s *Server) handleProtocolDebugPublish(w http.ResponseWriter, r *http.Request) {
+	var req protocolDebugPublishRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid debug publish request")
+		return
+	}
+	topic := strings.TrimSpace(req.Topic)
+	payload := strings.TrimSpace(req.Payload)
+	if topic == "" {
+		respondError(w, http.StatusBadRequest, "debug topic is required")
+		return
+	}
+	if payload == "" || !json.Valid([]byte(payload)) {
+		respondError(w, http.StatusBadRequest, "debug payload must be valid JSON")
+		return
+	}
+	var service ProtocolDebugService
+	switch strings.TrimSpace(r.PathValue("protocol")) {
+	case "lingyun":
+		service = s.lingyunDebug
+	case "counterStrike":
+		service = s.counterStrikeDebug
+	default:
+		respondError(w, http.StatusNotFound, "unsupported protocol")
+		return
+	}
+	if service == nil {
+		respondError(w, http.StatusServiceUnavailable, "protocol debug publishing is unavailable")
+		return
+	}
+	if err := service.PublishDebug(r.Context(), topic, []byte(payload), req.Encrypt); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"protocol":  strings.TrimSpace(r.PathValue("protocol")),
+		"topic":     topic,
+		"payload":   payload,
+		"encrypted": req.Encrypt,
+		"sentAt":    time.Now(),
+	})
 }
 
 func (s *Server) handleFPVVideoNetworkAddresses(w http.ResponseWriter, _ *http.Request) {

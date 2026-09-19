@@ -71,6 +71,7 @@ import {
   getUserSettings,
   openFPVVideoSession,
   openScreenStream,
+  publishProtocolDebug,
   setManualDeviceLocation,
   updateScreenTCPPorts,
   updateScreenStrike,
@@ -556,6 +557,34 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunPublishKindControlResp: "控制响应",
     protocolManagement: "协议管理",
     protocolManagementHint: "各协议独立配置、启停和运行，可同时连接不同平台。",
+    protocolList: "协议列表",
+    protocolListHint: "选择协议后配置连接，或进入调试台手工发包。",
+    protocolConfigure: "配置",
+    protocolDebug: "调试",
+    protocolDebugTitle: "协议调试台",
+    protocolDebugHint: "编辑 Topic 和 JSON 后直接通过当前 MQTT 连接发送。",
+    protocolDebugMode: "报文方向",
+    protocolDebugOutbound: "上报测试数据",
+    protocolDebugInbound: "下发测试命令",
+    protocolDebugTopic: "Topic",
+    protocolDebugPayload: "JSON 报文",
+    protocolDebugEncoding: "编码",
+    protocolDebugPlain: "明文 JSON",
+    protocolDebugSM4: "SM4-CBC + Base64",
+    protocolDebugFormat: "格式化 JSON",
+    protocolDebugReset: "恢复示例",
+    protocolDebugSend: "发送测试数据",
+    protocolDebugSending: "发送中",
+    protocolDebugSent: "已发送",
+    protocolDebugHistory: "本地发送记录",
+    protocolDebugHistoryEmpty: "暂无手工发包记录",
+    protocolDebugUnavailable: "该协议暂未接入手工发包",
+    protocolDebugInvalidJSON: "JSON 格式不正确",
+    protocolDebugNeedConnection: "请先保存配置并等待 MQTT 连接成功",
+    protocolDebugEncryptedHint: "注册/状态上报按协议使用当前 SM4 Key 和 IV 加密。",
+    protocolDebugPlainHint: "控制命令通常使用明文 JSON。",
+    protocolDebugLastResult: "最近一次发送",
+    protocolDebugCopy: "复制报文",
     protocolExisting: "通用 MQTT 协议",
     protocolCounterStrike: "通用反制开启打击",
     protocolVersionLabel: "V1.0",
@@ -613,6 +642,7 @@ const labels: Record<Locale, Record<string, string>> = {
     licenseErrorUploadInvalid: "授权上传请求无效",
     licenseErrorVerificationFailed: "授权校验失败",
     copied: "已复制",
+    copyFailed: "复制失败",
     locationUnavailable: "暂无有效位置",
     lingyunInvalid: "开启通用MQTT协议时必须填写 Broker、Provider Code，并成功获取软件唯一 SN",
     lingyunUnconfigured: "未配置",
@@ -1030,6 +1060,34 @@ const labels: Record<Locale, Record<string, string>> = {
     lingyunPublishKindControlResp: "Control response",
     protocolManagement: "Protocol Management",
     protocolManagementHint: "Configure and run each protocol independently, including simultaneous platform connections.",
+    protocolList: "Protocols",
+    protocolListHint: "Choose a protocol to configure the connection or open its debug console.",
+    protocolConfigure: "Configure",
+    protocolDebug: "Debug",
+    protocolDebugTitle: "Protocol Debug Console",
+    protocolDebugHint: "Edit the topic and JSON, then send through the active MQTT connection.",
+    protocolDebugMode: "Direction",
+    protocolDebugOutbound: "Test outbound data",
+    protocolDebugInbound: "Test inbound command",
+    protocolDebugTopic: "Topic",
+    protocolDebugPayload: "JSON payload",
+    protocolDebugEncoding: "Encoding",
+    protocolDebugPlain: "Plain JSON",
+    protocolDebugSM4: "SM4-CBC + Base64",
+    protocolDebugFormat: "Format JSON",
+    protocolDebugReset: "Restore example",
+    protocolDebugSend: "Send test data",
+    protocolDebugSending: "Sending",
+    protocolDebugSent: "Sent",
+    protocolDebugHistory: "Local send history",
+    protocolDebugHistoryEmpty: "No manual sends yet",
+    protocolDebugUnavailable: "Manual publishing is not available for this protocol yet",
+    protocolDebugInvalidJSON: "Invalid JSON",
+    protocolDebugNeedConnection: "Save the configuration and wait for MQTT to connect",
+    protocolDebugEncryptedHint: "Registration/status data uses the configured SM4 key and IV.",
+    protocolDebugPlainHint: "Control commands normally use plain JSON.",
+    protocolDebugLastResult: "Last send",
+    protocolDebugCopy: "Copy payload",
     protocolExisting: "General MQTT Protocol",
     protocolCounterStrike: "Generic Counter Strike",
     protocolVersionLabel: "V1.0",
@@ -1087,6 +1145,7 @@ const labels: Record<Locale, Record<string, string>> = {
     licenseErrorUploadInvalid: "License upload request is invalid",
     licenseErrorVerificationFailed: "License verification failed",
     copied: "Copied",
+    copyFailed: "Copy failed",
     locationUnavailable: "No valid location",
     lingyunInvalid: "When the general MQTT protocol is enabled, Broker, Provider Code, and a valid software SN are required",
     lingyunUnconfigured: "Unconfigured",
@@ -4206,7 +4265,8 @@ type ProtocolSettingsProps = {
 
 function ProtocolSettingsManagement(props: ProtocolSettingsProps) {
   const { t, status, userSettings } = props;
-  const [activeProtocol, setActiveProtocol] = useState<"lingyun" | "counterStrike">("lingyun");
+  const [selectedProtocol, setSelectedProtocol] = useState<"lingyun" | "counterStrike">("counterStrike");
+  const [panelMode, setPanelMode] = useState<"configure" | "debug">("configure");
   const items = [
     {
       id: "lingyun" as const,
@@ -4225,38 +4285,213 @@ function ProtocolSettingsManagement(props: ProtocolSettingsProps) {
       icon: <ShieldPlus size={14} aria-hidden="true" />,
     },
   ];
+  const selectedItem = items.find((item) => item.id === selectedProtocol) ?? items[0];
 
   return (
     <div className="screen-protocol-management">
-      <div className="screen-protocol-selector" role="tablist" aria-label={t.protocolManagement}>
-        <span className="screen-protocol-selector__intro">
-          <strong>{t.protocolManagement}</strong>
-          <em>{t.protocolManagementHint}</em>
+      <div className="screen-protocol-workbench">
+        <aside className="screen-protocol-list" aria-label={t.protocolList}>
+          <header className="screen-protocol-list__header">
+            <div>
+              <strong>{t.protocolList}</strong>
+              <span>{t.protocolListHint}</span>
+            </div>
+            <span className="screen-protocol-list__count">{items.length}</span>
+          </header>
+          <div className="screen-protocol-list__items">
+            {items.map((item) => {
+              const active = selectedProtocol === item.id;
+              const stateText = item.connected ? t.connected : item.enabled ? t.enabled : t.disabled;
+              return (
+                <article key={item.id} className={active ? "screen-protocol-card screen-protocol-card--active" : "screen-protocol-card"}>
+                  <button
+                    type="button"
+                    className="screen-protocol-card__select"
+                    onClick={() => { setSelectedProtocol(item.id); setPanelMode("configure"); }}
+                    aria-pressed={active}
+                  >
+                    <span className="screen-protocol-card__icon">{item.icon}</span>
+                    <span className="screen-protocol-card__body">
+                      <strong>{item.label}</strong>
+                      <small>{item.version} · {stateText}</small>
+                    </span>
+                    <i className={item.connected ? "screen-protocol-state screen-protocol-state--connected" : item.enabled ? "screen-protocol-state screen-protocol-state--enabled" : "screen-protocol-state"} aria-hidden="true" />
+                  </button>
+                  <div className="screen-protocol-card__actions">
+                    <button type="button" className={active && panelMode === "configure" ? "screen-protocol-card__action screen-protocol-card__action--active" : "screen-protocol-card__action"} onClick={() => { setSelectedProtocol(item.id); setPanelMode("configure"); }} title={t.protocolConfigure}>
+                      <Settings size={13} aria-hidden="true" /><span>{t.protocolConfigure}</span>
+                    </button>
+                    <button type="button" className={active && panelMode === "debug" ? "screen-protocol-card__action screen-protocol-card__action--active" : "screen-protocol-card__action"} onClick={() => { setSelectedProtocol(item.id); setPanelMode("debug"); }} title={t.protocolDebug}>
+                      <Zap size={13} aria-hidden="true" /><span>{t.protocolDebug}</span>
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </aside>
+        <main className="screen-protocol-detail">
+          <div className="screen-protocol-detail__header">
+            <div className="screen-protocol-detail__title">
+              <span className="screen-protocol-detail__icon">{selectedItem.icon}</span>
+              <span><strong>{selectedItem.label}</strong><small>{selectedItem.version}</small></span>
+            </div>
+            <div className="screen-protocol-detail__modes" role="tablist" aria-label={t.protocolManagement}>
+              <button type="button" role="tab" aria-selected={panelMode === "configure"} className={panelMode === "configure" ? "screen-protocol-mode screen-protocol-mode--active" : "screen-protocol-mode"} onClick={() => setPanelMode("configure")}><Settings size={13} aria-hidden="true" /><span>{t.protocolConfigure}</span></button>
+              <button type="button" role="tab" aria-selected={panelMode === "debug"} className={panelMode === "debug" ? "screen-protocol-mode screen-protocol-mode--active" : "screen-protocol-mode"} onClick={() => setPanelMode("debug")}><Zap size={13} aria-hidden="true" /><span>{t.protocolDebug}</span></button>
+            </div>
+          </div>
+          {panelMode === "debug" ? <ProtocolDebugPanel {...props} protocol={selectedProtocol} /> : selectedProtocol === "lingyun" ? <LingyunSettingsManagement {...props} /> : <CounterStrikeSettingsManagement {...props} />}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+type ProtocolDebugDirection = "outbound" | "inbound";
+type ProtocolDebugPreset = "register" | "status" | "open" | "close" | "control";
+
+type ProtocolDebugHistoryEntry = {
+  topic: string;
+  payload: string;
+  encrypted: boolean;
+  at: string;
+  success: boolean;
+  error?: string;
+};
+
+function ProtocolDebugPanel({ t, locale, userSettings, status, protocol }: ProtocolSettingsProps & { protocol: "lingyun" | "counterStrike" }) {
+  const counterSettings = resolveCounterStrikeSettings(userSettings.counterStrike);
+  const lingyunSettings = resolveLingyunSettings(userSettings.lingyun);
+  const lingyunDevice = lingyunSettings.devices?.find((device) => device.enabled) ?? lingyunSettings.devices?.[0] ?? defaultLingyunDevice("aoa", lingyunDeviceIdentity(lingyunSettings));
+  const topicOptions = protocol === "counterStrike" ? counterStrikeTopics(counterSettings, t) : lingyunDeviceTopics(lingyunSettings, lingyunDevice, t);
+  // Start with a registration publish so opening the debug console cannot
+  // immediately prime a real strike command for sending.
+  const [direction, setDirection] = useState<ProtocolDebugDirection>("outbound");
+  const [preset, setPreset] = useState<ProtocolDebugPreset>("register");
+  const presetOptions = direction === "inbound"
+    ? protocol === "counterStrike"
+      ? [{ value: "open" as const, label: "strike.open" }, { value: "close" as const, label: "strike.close" }]
+      : [{ value: "control" as const, label: t.lingyunControlTopic }]
+    : protocol === "counterStrike"
+      ? [{ value: "register" as const, label: t.lingyunRegisterTopic }, { value: "status" as const, label: t.lingyunStatusTopic }]
+      : [{ value: "register" as const, label: t.lingyunRegisterTopic }, { value: "status" as const, label: t.lingyunStatusTopic }];
+  const activePreset = presetOptions.some((option) => option.value === preset) ? preset : presetOptions[0].value;
+  const sample = protocolDebugSample(protocol, direction, activePreset, counterSettings, lingyunSettings, lingyunDevice, topicOptions);
+  const sampleKey = `${protocol}:${direction}:${activePreset}:${topicOptions.map((topic) => topic.value).join("|")}:${counterSettings.device.deviceId}:${lingyunDevice.deviceId}`;
+  const [topic, setTopic] = useState(sample.topic);
+  const [payload, setPayload] = useState(sample.payload);
+  const [encrypt, setEncrypt] = useState(sample.encrypt);
+  const [sending, setSending] = useState(false);
+  const [message, setMessage] = useState("");
+  const [history, setHistory] = useState<ProtocolDebugHistoryEntry[]>([]);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    setTopic(sample.topic);
+    setPayload(sample.payload);
+    setEncrypt(sample.encrypt);
+    setMessage("");
+  }, [sampleKey]);
+
+  const connected = protocol === "counterStrike" ? Boolean(status?.counterStrike?.connected) : Boolean(status?.lingyun?.connected);
+  const protocolEnabled = protocol === "counterStrike" ? Boolean(status?.counterStrike?.enabled) : Boolean(status?.lingyun?.enabled);
+
+  const resetSample = () => {
+    setTopic(sample.topic);
+    setPayload(sample.payload);
+    setEncrypt(sample.encrypt);
+    setMessage("");
+  };
+
+  const formatPayload = () => {
+    try {
+      setPayload(JSON.stringify(JSON.parse(payload), null, 2));
+      setMessage("");
+    } catch {
+      setMessage(t.protocolDebugInvalidJSON);
+    }
+  };
+
+  const copyPayload = async () => {
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setMessage(t.copyFailed);
+    }
+  };
+
+  const sendPayload = async () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      setMessage(t.protocolDebugInvalidJSON);
+      return;
+    }
+    if (parsed === null || typeof parsed !== "object") {
+      setMessage(t.protocolDebugInvalidJSON);
+      return;
+    }
+    if (!topic.trim()) {
+      setMessage(t.protocolDebugTopic);
+      return;
+    }
+    setSending(true);
+    setMessage("");
+    try {
+      const result = await publishProtocolDebug(protocol, topic.trim(), JSON.stringify(parsed), encrypt);
+      const entry: ProtocolDebugHistoryEntry = { topic: result.topic, payload: result.payload, encrypted: result.encrypted, at: result.sentAt, success: true };
+      setHistory((current) => [entry, ...current].slice(0, 10));
+      setMessage(t.protocolDebugSent);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : t.saveFailed;
+      setHistory((current) => [{ topic: topic.trim(), payload, encrypted: encrypt, at: new Date().toISOString(), success: false, error: errorText }, ...current].slice(0, 10));
+      setMessage(errorText);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="screen-protocol-debug">
+      <div className="screen-protocol-debug__intro">
+        <div className="screen-panel-title">
+          <span className="screen-panel-title__icon screen-panel-title__icon--target"><Zap aria-hidden="true" /></span>
+          <span className="screen-panel-title__text"><em>{t.protocolDebug}</em><strong>{t.protocolDebugTitle}</strong></span>
+        </div>
+        <span className={connected ? "screen-protocol-debug__connection screen-protocol-debug__connection--connected" : "screen-protocol-debug__connection"}>
+          <i aria-hidden="true" />{connected ? t.connected : protocolEnabled ? t.disconnected : t.disabled}
         </span>
-        <div className="screen-protocol-selector__items">
-          {items.map((item) => {
-            const active = activeProtocol === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                className={active ? "screen-protocol-selector__item screen-protocol-selector__item--active" : "screen-protocol-selector__item"}
-                onClick={() => setActiveProtocol(item.id)}
-              >
-                {item.icon}
-                <span>
-                  <strong>{item.label}</strong>
-                  <em>{item.version}</em>
-                </span>
-                <i className={item.connected ? "screen-protocol-state screen-protocol-state--connected" : item.enabled ? "screen-protocol-state screen-protocol-state--enabled" : "screen-protocol-state"} aria-hidden="true" />
-              </button>
-            );
-          })}
+      </div>
+      <p className="screen-protocol-debug__hint">{t.protocolDebugHint}</p>
+      <div className="screen-protocol-debug__toolbar">
+        <label><span>{t.protocolDebugMode}</span><select value={direction} onChange={(event) => { const next = event.target.value as ProtocolDebugDirection; setDirection(next); setPreset(next === "inbound" ? "open" : "register"); }}><option value="outbound">{t.protocolDebugOutbound}</option><option value="inbound">{t.protocolDebugInbound}</option></select></label>
+        <label><span>{t.format}</span><select value={activePreset} onChange={(event) => setPreset(event.target.value as ProtocolDebugPreset)}>{presetOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label><span>{t.protocolDebugEncoding}</span><select value={encrypt ? "sm4" : "plain"} disabled={protocol !== "counterStrike" || direction === "inbound"} onChange={(event) => setEncrypt(event.target.value === "sm4")}><option value="plain">{t.protocolDebugPlain}</option><option value="sm4">{t.protocolDebugSM4}</option></select></label>
+      </div>
+      <div className="screen-protocol-debug__editor">
+        <div className="screen-protocol-debug__field screen-protocol-debug__field--topic">
+          <label><span>{t.protocolDebugTopic}</span><input list={`protocol-debug-topics-${protocol}`} value={topic} onChange={(event) => setTopic(event.target.value)} spellCheck={false} /></label>
+          <datalist id={`protocol-debug-topics-${protocol}`}>{topicOptions.map((option) => <option key={option.value} value={option.value} />)}</datalist>
+          <div className="screen-protocol-debug__topic-chips">{topicOptions.map((option) => <button key={option.value} type="button" onClick={() => setTopic(option.value)} title={option.value}><span>{option.label}</span></button>)}</div>
+        </div>
+        <div className="screen-protocol-debug__field screen-protocol-debug__field--payload">
+          <div className="screen-protocol-debug__label-row"><label htmlFor={`protocol-debug-payload-${protocol}`}><span>{t.protocolDebugPayload}</span></label><div><button type="button" onClick={formatPayload}><Check size={12} aria-hidden="true" /><span>{t.protocolDebugFormat}</span></button><button type="button" onClick={resetSample}><RefreshCw size={12} aria-hidden="true" /><span>{t.protocolDebugReset}</span></button><button type="button" onClick={() => void copyPayload()}><Copy size={12} aria-hidden="true" /><span>{copied ? t.copied : t.protocolDebugCopy}</span></button></div></div>
+          <textarea id={`protocol-debug-payload-${protocol}`} value={payload} onChange={(event) => setPayload(event.target.value)} spellCheck={false} />
         </div>
       </div>
-      {activeProtocol === "lingyun" ? <LingyunSettingsManagement {...props} /> : <CounterStrikeSettingsManagement {...props} />}
+      <div className="screen-protocol-debug__actions">
+        <span className="screen-protocol-debug__encoding-hint">{encrypt ? t.protocolDebugEncryptedHint : t.protocolDebugPlainHint}</span>
+        <button type="button" className="screen-protocol-debug__send" disabled={sending} onClick={() => void sendPayload()}>{sending ? <Loader2 className="app-spinner" size={14} aria-hidden="true" /> : <Zap size={14} aria-hidden="true" />}<span>{sending ? t.protocolDebugSending : t.protocolDebugSend}</span></button>
+      </div>
+      {message ? <div className={message === t.protocolDebugSent ? "screen-protocol-debug__message screen-protocol-debug__message--success" : "screen-protocol-debug__message"}>{message}</div> : null}
+      <section className="screen-protocol-debug__history">
+        <header><strong>{t.protocolDebugHistory}</strong><span>{history.length}</span></header>
+        {history.length === 0 ? <p>{t.protocolDebugHistoryEmpty}</p> : <div className="screen-protocol-debug__history-list">{history.map((entry, index) => <article key={`${entry.at}-${index}`} className={entry.success ? "screen-protocol-debug__history-item" : "screen-protocol-debug__history-item screen-protocol-debug__history-item--error"}><div><time dateTime={entry.at}>{new Date(entry.at).toLocaleTimeString(locale === "zh-CN" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time><strong>{entry.success ? t.protocolDebugSent : t.lingyunPublishFailed}</strong><span>{entry.encrypted ? t.protocolDebugSM4 : t.protocolDebugPlain}</span></div><code>{entry.topic}</code><pre>{entry.payload}</pre>{entry.error ? <em>{entry.error}</em> : null}</article>)}</div>}
+      </section>
     </div>
   );
 }
@@ -8714,6 +8949,110 @@ function counterStrikeTopics(settings: NonNullable<UserSettings["counterStrike"]
     { label: t.counterStrikeCompatibleTopic, value: "platform/counter/strike/down" },
     { label: t.counterStrikeResponseTopic, value: "platform/counter/strike/up" },
   ];
+}
+
+function protocolDebugSample(
+  protocol: "lingyun" | "counterStrike",
+  direction: ProtocolDebugDirection,
+  preset: ProtocolDebugPreset,
+  counterSettings: NonNullable<UserSettings["counterStrike"]>,
+  lingyunSettings: NonNullable<UserSettings["lingyun"]>,
+  lingyunDevice: LingyunDeviceSettings,
+  topicOptions: { label: string; value: string }[],
+) {
+  const topicFor = (index: number, fallback: string) => topicOptions[index]?.value || fallback;
+  if (protocol === "counterStrike") {
+    const device = counterSettings.device;
+    const type = device.deviceTypeAbbr || "fffd";
+    const id = device.deviceId || "fffd-AB-000001";
+    const registerTopic = topicFor(0, `bridge/${counterSettings.bridgeCode || "ZKXTHAKJG1LRBFDW"}/device/${type}/${id}`);
+    const statusTopic = topicFor(1, `bridge/${counterSettings.bridgeCode || "ZKXTHAKJG1LRBFDW"}/device_state/${type}/${id}`);
+    const controlTopic = topicFor(2, `platform/${counterSettings.providerCode || "AB"}/counter_device_control/${type}/${id}`);
+    if (direction === "outbound" && preset === "status") {
+      return {
+        topic: statusTopic,
+        encrypt: true,
+        payload: JSON.stringify({
+          deviceId: id,
+          workState: 0,
+          workTemp: 25,
+          alarmState: 0,
+          alarmInfo: null,
+          extension: {
+            horizontalCoverageStartAngle: device.horizontalCoverageStartAngle,
+            horizontalCoverageEndAngle: device.horizontalCoverageEndAngle,
+            verticalCoverageStartAngle: device.verticalCoverageStartAngle,
+            verticalCoverageEndAngle: device.verticalCoverageEndAngle,
+            deviceLongitude: device.deviceLongitude,
+            deviceLatitude: device.deviceLatitude,
+          },
+        }, null, 2),
+      };
+    }
+    if (direction === "outbound") {
+      return {
+        topic: registerTopic,
+        encrypt: true,
+        payload: JSON.stringify({
+          providerCode: counterSettings.providerCode || "AB",
+          deviceId: id,
+          deviceName: device.deviceName || "测试反制设备",
+          deviceLongitude: device.deviceLongitude,
+          deviceLatitude: device.deviceLatitude,
+          deviceAltitude: device.deviceAltitude,
+          deviceTypeAbbr: type,
+          installMode: device.installMode,
+          workState: 0,
+          extension: {
+            ifrTypes: device.ifrTypes,
+            antennaType: device.antennaType,
+            activeAntennaType: device.activeAntennaType,
+            countermeasureRange: device.countermeasureRange,
+            bands: device.bands,
+            horizontalCoverageStartAngle: device.horizontalCoverageStartAngle,
+            horizontalCoverageEndAngle: device.horizontalCoverageEndAngle,
+            verticalCoverageStartAngle: device.verticalCoverageStartAngle,
+            verticalCoverageEndAngle: device.verticalCoverageEndAngle,
+          },
+          supFun: [60001, 60002, 60003],
+          deviceSpec: device.deviceSpec,
+          ver: counterSettings.protocolVersion?.startsWith("V") ? counterSettings.protocolVersion : `V${counterSettings.protocolVersion || "1.0"}`,
+        }, null, 2),
+      };
+    }
+    if (preset === "close") {
+      return {
+        topic: controlTopic,
+        encrypt: false,
+        payload: JSON.stringify({ cmd: "strike.close", version: counterSettings.protocolVersion || "1.0", taskId: "debug-close-001", timestamp: Date.now(), deviceTypeAbbr: type, deviceId: id, params: {} }, null, 2),
+      };
+    }
+    return {
+      topic: controlTopic,
+      encrypt: false,
+      payload: JSON.stringify({ cmd: "strike.open", version: counterSettings.protocolVersion || "1.0", taskId: "debug-open-001", timestamp: Date.now(), deviceTypeAbbr: type, deviceId: id, duration: 60, operator: { userId: "debug", userName: "debug" }, params: { freqList: ["2400M", "5800M"] } }, null, 2),
+    };
+  }
+
+  const deviceId = lingyunDevice.deviceId || lingyunDeviceIdentity(lingyunSettings) || "debug-device";
+  const registerTopic = topicFor(0, `bridge/${lingyunSettings.providerCode || "AB"}/device/${lingyunDeviceAbbr(lingyunDevice.type)}/${deviceId}`);
+  const statusTopic = topicFor(1, `bridge/${lingyunSettings.providerCode || "AB"}/device_state/${lingyunDeviceAbbr(lingyunDevice.type)}/${deviceId}`);
+  const controlTopic = topicFor(lingyunDevice.type !== "ifr" ? 3 : 2, `bridge/${lingyunSettings.providerCode || "AB"}/device_control/${lingyunDeviceAbbr(lingyunDevice.type)}/${deviceId}`);
+  if (direction === "inbound") {
+    return {
+      topic: controlTopic,
+      encrypt: false,
+      payload: JSON.stringify({ head: { msgNo: 1, deviceId, time: Date.now() }, data: { operationType: 1, operationCmd: 10001, operationParams: {} } }, null, 2),
+    };
+  }
+  if (preset === "status") {
+    return { topic: statusTopic, encrypt: false, payload: JSON.stringify({ deviceId, workState: 0, alarmState: 0, alarmInfo: "" }, null, 2) };
+  }
+  return {
+    topic: registerTopic,
+    encrypt: false,
+    payload: JSON.stringify({ providerCode: lingyunSettings.providerCode || "AB", deviceId, deviceName: lingyunDevice.deviceName || "Debug device", deviceType: lingyunDeviceAbbr(lingyunDevice.type), workState: 0, deviceSpec: lingyunDevice.deviceSpec }, null, 2),
+  };
 }
 
 function counterStrikeStatusLabel(status: ScreenRuntimeStatus["counterStrike"] | undefined, t: Record<string, string>, fallbackEnabled: boolean) {

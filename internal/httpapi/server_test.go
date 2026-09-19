@@ -989,6 +989,29 @@ func TestUserSettingsRoutesSaveCounterStrikeAndApplyService(t *testing.T) {
 	}
 }
 
+func TestProtocolDebugPublishValidatesAndForwardsPayload(t *testing.T) {
+	s := newTestServer(t, store.New(10, 10))
+	debug := &memoryProtocolDebugService{}
+	s.counterStrikeDebug = debug
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/counterStrike/debug-publish", strings.NewReader(`{"topic":"platform/test","payload":"{\"cmd\":\"strike.open\"}","encrypt":false}`))
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if debug.topic != "platform/test" || debug.payload != `{"cmd":"strike.open"}` || debug.encrypt {
+		t.Fatalf("debug publish = %#v", debug)
+	}
+
+	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/protocols/counterStrike/debug-publish", strings.NewReader(`{"topic":"platform/test","payload":"not-json"}`))
+	badRec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid payload status = %d, want 400", badRec.Code)
+	}
+}
+
 func TestUserSettingsRouteAppliesLingyunRuntimeIdentityAndLocationWithoutOverridingCustomSettings(t *testing.T) {
 	state := store.New(10, 10)
 	state.SetManualDeviceLocationAt(model.GeoPoint{Latitude: 39.1234, Longitude: 116.5678}, time.Now())
@@ -2466,6 +2489,19 @@ type memoryLingyunService struct {
 type memoryCounterStrikeService struct {
 	applied model.UserSettings
 	status  model.CounterStrikeStatus
+}
+
+type memoryProtocolDebugService struct {
+	topic   string
+	payload string
+	encrypt bool
+}
+
+func (s *memoryProtocolDebugService) PublishDebug(_ context.Context, topic string, payload []byte, encrypt bool) error {
+	s.topic = topic
+	s.payload = string(payload)
+	s.encrypt = encrypt
+	return nil
 }
 
 func (s *memoryCounterStrikeService) ApplySettings(settings model.UserSettings) {

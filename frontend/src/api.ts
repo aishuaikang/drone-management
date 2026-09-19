@@ -443,6 +443,22 @@ export function updateUserSettings(payload: UserSettings) {
   });
 }
 
+export type ProtocolDebugPublishResponse = {
+  protocol: string;
+  topic: string;
+  payload: string;
+  encrypted: boolean;
+  sentAt: string;
+};
+
+export function publishProtocolDebug(protocol: "lingyun" | "counterStrike", topic: string, payload: string, encrypt = false) {
+  return requestJson<ProtocolDebugPublishResponse>(`/protocols/${encodeURIComponent(protocol)}/debug-publish`, {
+    method: "POST",
+    body: JSON.stringify({ topic, payload, encrypt }),
+    timeoutMs: 10000,
+  });
+}
+
 export type IntrusionQuery = {
   type?: IntrusionTargetType;
   model?: string;

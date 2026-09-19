@@ -147,6 +147,35 @@ func (s *Service) Status() model.CounterStrikeStatus {
 	return status
 }
 
+// PublishDebug publishes a manually supplied JSON payload through the active MQTT connection.
+// It is intentionally exposed for the protocol management diagnostics panel.
+func (s *Service) PublishDebug(ctx context.Context, topic string, payload []byte, encrypt bool) error {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return fmt.Errorf("debug topic is required")
+	}
+	settings := s.settingsSnapshot()
+	if !configured(settings) {
+		return fmt.Errorf("counter strike protocol is not configured")
+	}
+	if !s.transport.Connected() {
+		return fmt.Errorf("MQTT is not connected")
+	}
+	data := append([]byte(nil), payload...)
+	if encrypt {
+		var err error
+		data, err = encryptSM4CBC(data, settings.SM4Key, settings.SM4IV)
+		if err != nil {
+			return err
+		}
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, defaultMQTTTimeout)
+	err := s.transport.Publish(publishCtx, topic, data)
+	cancel()
+	s.recordPublish("debug", topic, string(payload), err)
+	return err
+}
+
 // Run processes protocol timers until ctx is cancelled.
 func (s *Service) Run(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
