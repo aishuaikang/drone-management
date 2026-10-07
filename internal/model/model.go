@@ -1163,6 +1163,7 @@ const (
 
 	InterferenceOperationManual     InterferenceOperationType = "manual"
 	InterferenceOperationUnattended InterferenceOperationType = "unattended"
+	InterferenceOperationExternal   InterferenceOperationType = "external"
 )
 
 // InterferenceReportSummary is the list item for interference reports.

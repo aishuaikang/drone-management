@@ -130,7 +130,11 @@ func New(cfg config.Config) (*App, error) {
 	go func() {
 		defer close(done)
 		var wg sync.WaitGroup
-		wg.Add(4)
+		wg.Add(5)
+		go func() {
+			defer wg.Done()
+			interferenceSvc.Run(ctx)
+		}()
 		go func() {
 			defer wg.Done()
 			positionSvc.Run(ctx)
@@ -231,6 +235,7 @@ func newInterferenceService(cfg config.Config, state *store.Store) *interference
 		relay.Output,
 	)
 	service.SetConnectionStatusProvider(relay.Status)
+	service.SetRelayMonitor(relay.Monitor)
 	return service
 }
 

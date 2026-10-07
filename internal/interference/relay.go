@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"drone-management/internal/model"
@@ -40,6 +41,7 @@ type RelayController struct {
 	connected      bool
 	connectError   string
 	updatedAt      *time.Time
+	controlVersion atomic.Uint64
 }
 
 // NewRelayController creates a network relay controller.
@@ -219,6 +221,12 @@ func (o *RelayOutput) setValueWithDelay(value int, delayMilliseconds int64) erro
 func (c *RelayController) sendASCII(command string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if fields := strings.Fields(command); len(fields) > 2 && fields[2] == "set" {
+		// An odd version means a control write is in flight. A monitoring
+		// query spanning this write must be retried instead of applied.
+		c.controlVersion.Add(1)
+		defer c.controlVersion.Add(1)
+	}
 
 	conn, err := net.DialTimeout("tcp", c.networkAddress, c.timeout)
 	if err != nil {
@@ -240,17 +248,23 @@ func (c *RelayController) sendASCII(command string) (string, error) {
 		return "", err
 	}
 
-	response := make([]byte, 0, 128)
+	decoder := relayStreamDecoder{}
 	buf := make([]byte, 128)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
-			response = append(response, buf[:n]...)
-			if relayResponseComplete(response) {
-				c.recordStatus(nil)
-				return strings.TrimSpace(string(response)), nil
+			decoder.buffer = append(decoder.buffer, buf[:n]...)
+			for {
+				message, ok := decoder.next()
+				if !ok {
+					break
+				}
+				if message.ascii != "" {
+					c.recordStatus(nil)
+					return strings.TrimSpace(message.ascii), nil
+				}
 			}
-			if len(response) > relayMaxResponse {
+			if len(decoder.buffer) > relayMaxResponse {
 				err := fmt.Errorf("relay response exceeds %d bytes", relayMaxResponse)
 				c.recordStatus(err)
 				return "", err

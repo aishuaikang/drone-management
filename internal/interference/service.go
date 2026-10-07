@@ -114,6 +114,8 @@ type Service struct {
 	store              *store.Store
 	reports            ReportStore
 	settings           UserSettingsStore
+	relayMonitor       func(context.Context, func(RelayStateUpdate))
+	externalReports    map[string]model.InterferenceReport
 
 	activeReport      *model.InterferenceReport
 	activeReportID    string
@@ -172,14 +174,18 @@ func (s *Service) offlineError(status model.TCPClientStatus) error {
 }
 
 type channelState struct {
-	def          ChannelDefinition
-	output       Output
-	initialized  bool
-	enabled      bool
-	actualLevel  string
-	desiredLevel string
-	status       string
-	lastError    string
+	def                ChannelDefinition
+	output             Output
+	initialized        bool
+	enabled            bool
+	actualLevel        string
+	desiredLevel       string
+	status             string
+	lastError          string
+	commandedAt        time.Time
+	readAt             time.Time
+	relayObservedAt    time.Time
+	softwareControlled bool
 }
 
 type screenStrikeSnapshot struct {
@@ -212,10 +218,11 @@ func NewService(
 		order = append(order, def.ID)
 	}
 	service := &Service{
-		channels:      channels,
-		order:         order,
-		outputFactory: outputFactory,
-		store:         store,
+		channels:        channels,
+		order:           order,
+		outputFactory:   outputFactory,
+		store:           store,
+		externalReports: make(map[string]model.InterferenceReport),
 		unattended: model.ScreenStrikeUnattendedState{
 			Phase: unattendedPhaseDisabled,
 		},
@@ -848,6 +855,8 @@ func (s *Service) setStateLocked(id string, enabled bool) (model.InterferenceCha
 			return s.markError(state, err)
 		}
 		state.enabled = true
+		state.commandedAt = time.Now()
+		state.softwareControlled = true
 		state.actualLevel = "high"
 		state.desiredLevel = "high"
 		state.status = "active"
@@ -865,10 +874,13 @@ func (s *Service) setStateLocked(id string, enabled bool) (model.InterferenceCha
 			state.initialized = false
 		}
 		state.enabled = false
+		state.commandedAt = time.Now()
+		state.softwareControlled = false
 		state.actualLevel = "low"
 		state.desiredLevel = "low"
 		state.status = "idle"
 		state.lastError = ""
+		s.finishExternalReportLocked(id, model.InterferenceReportStatusCompleted, "", state.commandedAt)
 	}
 
 	channel := s.dtoWithActual(state)
@@ -904,6 +916,8 @@ func (s *Service) setTimedStateLocked(id string, duration time.Duration) (model.
 		return s.markError(state, err)
 	}
 	state.enabled = true
+	state.commandedAt = time.Now()
+	state.softwareControlled = true
 	state.actualLevel = "high"
 	state.desiredLevel = "high"
 	state.status = "active"
@@ -937,6 +951,9 @@ func (s *Service) Shutdown() {
 		endedAt,
 		s.screenStrikeStateLocked(endedAt),
 	)
+	for id := range s.externalReports {
+		s.finishExternalReportLocked(id, model.InterferenceReportStatusAbnormal, "service_shutdown", endedAt)
+	}
 }
 
 func (s *Service) validateScreenStrikeChannelsLocked(ids []string) ([]string, error) {
@@ -1046,6 +1063,9 @@ func (s *Service) screenStrikeCachedStateLocked(now time.Time) model.ScreenStrik
 			result.RemainingSeconds = ceilSeconds(remaining)
 		}
 	}
+	if active && result.StartedAt == nil {
+		result.StartedAt = s.externalStartedAtLocked()
+	}
 	return result
 }
 
@@ -1100,6 +1120,9 @@ func (s *Service) screenStrikeSnapshotWithPolicyLocked(now time.Time, allowOffli
 		startedAt := s.activeReport.StartedAt
 		state.StartedAt = &startedAt
 	}
+	if active && state.StartedAt == nil {
+		state.StartedAt = s.externalStartedAtLocked()
+	}
 	return screenStrikeSnapshot{
 		state:         state,
 		fullyObserved: fullyObserved,
@@ -1129,8 +1152,14 @@ func (s *Service) markChannelOfflineLocked(state *channelState) model.Interferen
 }
 
 func (s *Service) finishCompletedReportIfInactiveLocked(snapshot screenStrikeSnapshot, endedAt time.Time) bool {
-	if s.activeReport == nil || s.activeReportID == "" || snapshot.state.Active || !snapshot.fullyObserved {
+	if s.activeReport == nil || s.activeReportID == "" || !snapshot.fullyObserved {
 		return false
+	}
+	for _, id := range s.activeReport.ChannelIDs {
+		channel := s.channels[id]
+		if channel == nil || channel.actualLevel != "low" {
+			return false
+		}
 	}
 	s.finishActiveReportLocked(model.InterferenceReportStatusCompleted, "", nil, endedAt, snapshot.state)
 	return true
@@ -1503,6 +1532,7 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 	}
 	channel := state.dto()
 	outputState, err := s.readOutputStateLocked(state)
+	state.readAt = time.Now()
 	if err != nil {
 		channel.Enabled = false
 		channel.ActualLevel = "unknown"
@@ -1521,6 +1551,10 @@ func (s *Service) dtoWithActualState(state *channelState) (model.InterferenceCha
 	state.actualLevel = channel.ActualLevel
 	state.status = channel.Status
 	state.lastError = ""
+	if outputState.Value == 0 {
+		state.softwareControlled = false
+		s.finishExternalReportLocked(state.def.ID, model.InterferenceReportStatusCompleted, "", state.readAt)
+	}
 	s.syncScreenStrikeActiveLocked()
 	s.cacheChannel(channel)
 	return channel, outputState, true

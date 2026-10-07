@@ -750,6 +750,8 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportType: "类型",
     interferenceReportTypeManual: "手动干扰",
     interferenceReportTypeUnattended: "无人值守",
+    interferenceReportTypeExternal: "现场控制",
+    strikeExternalActive: "现场控制中",
     interferenceReportRequestedDuration: "请求时长",
     interferenceReportError: "错误",
     deleteFailedReport: "删除失败报告",
@@ -1283,6 +1285,8 @@ const labels: Record<Locale, Record<string, string>> = {
     interferenceReportType: "Type",
     interferenceReportTypeManual: "Manual",
     interferenceReportTypeUnattended: "Unattended",
+    interferenceReportTypeExternal: "Device control",
+    strikeExternalActive: "Device control active",
     interferenceReportRequestedDuration: "Requested",
     interferenceReportError: "Error",
     deleteFailedReport: "Delete failed report",
@@ -3152,6 +3156,7 @@ function ScreenStrikePanel({
     durationNumber >= screenStrikeMinDurationSeconds &&
     durationNumber <= screenStrikeMaxDurationSeconds;
   const remainingSeconds = getStrikeRemainingSeconds(state, now, stateSyncedAt);
+  const externalActive = active && !state?.durationSeconds;
   const allStrikeChannelIds = channels.filter((channel) => !channel.reserved).map((channel) => channel.id);
   const selectedCount = active ? state?.channelIds.length ?? 0 : selectedChannelIds.length;
   const startDisabled = busy || active || unattendedEnabled || selectedChannelIds.length === 0 || !durationValid;
@@ -3284,7 +3289,7 @@ function ScreenStrikePanel({
           <div className="screen-strike-panel__indicators">
             <TCPClientStatusDot status={connectionStatus} />
             <strong className={active ? "screen-strike-panel__status screen-strike-panel__status--active" : "screen-strike-panel__status"}>
-              {active ? formatCountdown(remainingSeconds) : selectedCount.toLocaleString(locale)}
+              {active ? (externalActive ? t.interferenceReportTypeExternal : formatCountdown(remainingSeconds)) : selectedCount.toLocaleString(locale)}
             </strong>
           </div>
         </div>
@@ -3392,7 +3397,7 @@ function ScreenStrikePanel({
               )}
             </div>
             <span className="screen-strike-panel__remaining">
-              {t.strikeRemaining}: <strong>{formatCountdown(remainingSeconds)}</strong>
+              {externalActive ? t.strikeExternalActive : <>{t.strikeRemaining}: <strong>{formatCountdown(remainingSeconds)}</strong></>}
             </span>
           </div>
 
@@ -6751,6 +6756,40 @@ function InterferenceReportsManagement({
     void loadReports(0, false);
   }, [loadReports]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let refreshing = false;
+    const refresh = async () => {
+      if (loading || deletingId || refreshing) return;
+      refreshing = true;
+      const requestId = loadRequestRef.current;
+      try {
+        const targetCount = Math.max(pageSize, reports.length);
+        let response = await getInterferenceReports(Math.min(500, targetCount), 0, { status: statusFilter });
+        const items = [...response.items];
+        while (!cancelled && requestId === loadRequestRef.current && response.hasMore && items.length < targetCount) {
+          response = await getInterferenceReports(Math.min(500, targetCount - items.length), response.nextOffset ?? items.length, { status: statusFilter });
+          if (!response.items.length) break;
+          items.push(...response.items);
+        }
+        if (!cancelled && requestId === loadRequestRef.current) {
+          setReports(items);
+          setHasMore(Boolean(response.hasMore));
+          setNextOffset(response.nextOffset ?? 0);
+        }
+      } catch {
+        // Keep the last successful list during a temporary network failure.
+      } finally {
+        refreshing = false;
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [deletingId, loading, reports.length, statusFilter]);
+
   const visibleReports = useMemo(() => reports.filter((report) => {
     const day = formatDateKey(report.startedAt);
     if (dateFrom && day < dateFrom) {
@@ -6946,7 +6985,7 @@ function InterferenceReportsManagement({
                   </strong>
                   <small>{report.channelOutputs?.length ? report.channelOutputs.map((output) => `Y${output}`).join(", ") : report.summary || report.id}</small>
                 </td>
-                <td>{formatDuration(report.requestedDurationSeconds)}</td>
+                <td>{report.operationType === "external" ? "-" : formatDuration(report.requestedDurationSeconds)}</td>
                 <td className={report.lastError || report.abnormalReason ? "screen-table-error-cell" : undefined}>
                   {report.lastError || report.abnormalReason || "-"}
                 </td>
@@ -10277,7 +10316,7 @@ function interferenceReportsToCSV(
       formatFullTime(report.endedAt, locale),
       formatDuration(report.durationSeconds),
       formatInterferenceReportChannels(report, channelLabels),
-      formatDuration(report.requestedDurationSeconds),
+      report.operationType === "external" ? "-" : formatDuration(report.requestedDurationSeconds),
       report.lastError || report.abnormalReason || "",
       formatFullTime(report.createdAt, locale),
     ]),
@@ -10425,6 +10464,7 @@ function unattendedStatusLabel(phase: string | undefined, t: Record<string, stri
 }
 
 function interferenceReportTypeLabel(type: string | undefined, t: Record<string, string>) {
+  if (type === "external") return t.interferenceReportTypeExternal;
   return type === "unattended" ? t.interferenceReportTypeUnattended : t.interferenceReportTypeManual;
 }
 

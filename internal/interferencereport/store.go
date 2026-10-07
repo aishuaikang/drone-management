@@ -546,6 +546,8 @@ func parseOperationType(value string) model.InterferenceOperationType {
 	switch model.InterferenceOperationType(strings.TrimSpace(value)) {
 	case model.InterferenceOperationUnattended:
 		return model.InterferenceOperationUnattended
+	case model.InterferenceOperationExternal:
+		return model.InterferenceOperationExternal
 	default:
 		return model.InterferenceOperationManual
 	}

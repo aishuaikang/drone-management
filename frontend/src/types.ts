@@ -537,7 +537,7 @@ export interface ScreenStrikeResponse {
 }
 
 export type InterferenceReportStatus = "running" | "completed" | "failed" | "abnormal" | string;
-export type InterferenceOperationType = "manual" | "unattended" | string;
+export type InterferenceOperationType = "manual" | "unattended" | "external" | string;
 
 export interface InterferenceReportSummary {
   id: string;
