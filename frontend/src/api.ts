@@ -1,4 +1,5 @@
 import type {
+  AboutInfo,
   EventMessage,
   FPVVideoRecord,
   FPVVideoRecordDeleteRequest,
@@ -210,6 +211,10 @@ export function clearManualDeviceLocation() {
 
 export function getOfflineMapStatus() {
   return requestJson<OfflineMapStatus>("/offline-map/status");
+}
+
+export function getAboutInfo() {
+  return requestJson<AboutInfo>("/about", { timeoutMs: 5000 });
 }
 
 export function getLicenseStatus() {

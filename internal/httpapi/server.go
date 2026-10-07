@@ -380,6 +380,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/screen/device-location", s.requireLicense(s.handleScreenDeviceLocation))
 	mux.HandleFunc("PUT /api/v1/screen/device-location/manual", s.requireLicense(s.handleSetManualDeviceLocation))
 	mux.HandleFunc("DELETE /api/v1/screen/device-location/manual", s.requireLicense(s.handleClearManualDeviceLocation))
+	mux.HandleFunc("GET /api/v1/about", s.handleAboutInfo)
 	mux.HandleFunc("GET /api/v1/user/settings", s.requireLicense(s.handleUserSettings))
 	mux.HandleFunc("PUT /api/v1/user/settings", s.requireLicense(s.handleUpdateUserSettings))
 	mux.HandleFunc("GET /api/v1/intrusions", s.requireLicense(s.handleIntrusions))
@@ -815,6 +816,15 @@ func (s *Server) handleClearManualDeviceLocation(w http.ResponseWriter, _ *http.
 		return
 	}
 	respondJSON(w, http.StatusOK, s.store.ClearManualDeviceLocation())
+}
+
+func (s *Server) handleAboutInfo(w http.ResponseWriter, _ *http.Request) {
+	info, err := settings.LoadAboutInfo(s.cfg.AboutInfoPath)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "load software information failed")
+		return
+	}
+	respondJSON(w, http.StatusOK, info)
 }
 
 func (s *Server) handleUserSettings(w http.ResponseWriter, _ *http.Request) {

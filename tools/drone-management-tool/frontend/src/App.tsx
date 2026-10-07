@@ -21,6 +21,7 @@ import {
 
 import type { NetworkPingLog, NetworkStatus, ProgressEvent, RemoteEntry, RemoteProbe, SavedConfig, SSHStatus } from "./types";
 import { api, onProgress } from "./wails";
+import { AboutInfoPanel, LocalAboutInfoDialog } from "./AboutInfoPanel";
 
 type Notice = { tone: "idle" | "success" | "error" | "loading"; message: string };
 type SSHForm = { host: string; port: number; user: string; password: string; rememberPassword: boolean };
@@ -152,6 +153,7 @@ export default function App() {
   const networkPingLogRequestRef = useRef(0);
   const networkStatusRequestRef = useRef(0);
   const [entered, setEntered] = useState(false);
+  const [localInfoOpen, setLocalInfoOpen] = useState(false);
   const [installDir, setInstallDir] = useState(defaultInstallDir);
   const [releasePackage, setReleasePackage] = useState("");
   const [probe, setProbe] = useState<RemoteProbe | null>(null);
@@ -498,9 +500,11 @@ export default function App() {
               <PlugZap size={16} />
               {busy === "ssh" ? "连接中" : "连接设备"}
             </button>
+            <button type="button" onClick={() => setLocalInfoOpen(true)}><Info size={16} />本机软件信息</button>
           </div>
           <NoticeBar notice={notice} />
         </section>
+        {localInfoOpen ? <LocalAboutInfoDialog onClose={() => setLocalInfoOpen(false)} /> : null}
       </main>
     );
   }
@@ -513,6 +517,7 @@ export default function App() {
           <h1>部署控制台</h1>
         </div>
         <div className="connection">
+          <button type="button" onClick={() => setLocalInfoOpen(true)}><Info size={16} />本机软件信息</button>
           <span className={`connection-pill ${connected ? "ok" : "warn"}`}>
             <span className="dot" />
             <span>{connected ? `${sshStatus.user}@${sshStatus.host}:${sshStatus.port}` : sshStatus.message}</span>
@@ -624,6 +629,8 @@ export default function App() {
           )}
         </section>
 
+        <AboutInfoPanel key={`${sshStatus.host}:${sshStatus.port}:${sshStatus.user}`} installDir={installDir} connected={connected} disabled={Boolean(busy)} />
+
         <section className="panel progress-panel">
           <div className="panel-title">
             <div>
@@ -635,6 +642,7 @@ export default function App() {
           <ProgressList items={deployProgress} />
         </section>
       </section>
+      {localInfoOpen ? <LocalAboutInfoDialog onClose={() => setLocalInfoOpen(false)} /> : null}
       {dirPicker.open ? (
         <RemoteDirPicker
           entries={dirPicker.entries}

@@ -57,6 +57,7 @@ import {
   deleteFailedInterferenceReport,
   deleteFPVVideoRecords,
   exportFPVVideoRecords,
+  getAboutInfo,
   getFPVVideoRecords,
   getFPVVideoNetworkAddresses,
   getInterferenceReports,
@@ -99,6 +100,7 @@ import selectedUavIconUrl from "./assets/images/selectedUavIcon.svg";
 import uavBlackFlyIconUrl from "./assets/images/uavBlackFlyIcon.svg";
 import uavIconUrl from "./assets/images/uavIcon.svg";
 import type {
+  AboutInfo,
   CounterStrikeDeviceSettings,
   CounterStrikeDeviceType,
   GeoPoint,
@@ -644,6 +646,11 @@ const labels: Record<Locale, Record<string, string>> = {
     counterStrikeWorking: "打击中",
     counterStrikeStandby: "待机",
     aboutTitle: "关于软件",
+    aboutSoftwareInfo: "软件信息",
+    aboutManufacturer: "生产厂家",
+    aboutUserCompany: "使用厂家",
+    aboutUserName: "使用人员",
+    aboutInfoLoadFailed: "软件信息读取失败",
     productName: "软件名称",
     softwareIdentityHint: "软件唯一 SN 由本机 MAC 地址生成，后续授权校验使用同一个 SN。",
     currentDeviceLocation: "当前设备位置",
@@ -1179,6 +1186,11 @@ const labels: Record<Locale, Record<string, string>> = {
     counterStrikeWorking: "Striking",
     counterStrikeStandby: "Standby",
     aboutTitle: "About",
+    aboutSoftwareInfo: "Software information",
+    aboutManufacturer: "Manufacturer",
+    aboutUserCompany: "User company",
+    aboutUserName: "User",
+    aboutInfoLoadFailed: "Failed to load software information",
     productName: "Product",
     softwareIdentityHint: "The software SN is generated from this machine's MAC address and will be reused for license checks.",
     currentDeviceLocation: "Current device location",
@@ -3479,6 +3491,7 @@ function ManagementView({
   const panelClassName = [
     "screen-management-panel",
     view === "settings" || view === "offlineMap" || view === "network" || view === "lingyun" || view === "about" ? "screen-management-panel--settings" : "",
+    view === "settings" ? "screen-management-panel--general-settings" : "",
     view === "offlineMap" ? "screen-management-panel--offline-map" : "",
     view === "network" ? "screen-management-panel--network" : "",
     view === "lingyun" ? "screen-management-panel--lingyun" : "",
@@ -5709,6 +5722,9 @@ function AboutManagement({
   deviceLocation: ScreenDeviceLocationResponse | null;
   onLicenseInfoChange: (license: LicenseInfo | null) => void;
 }) {
+  const [aboutInfo, setAboutInfo] = useState<AboutInfo>({ userCompany: "", userName: "" });
+  const [aboutLoading, setAboutLoading] = useState(true);
+  const [aboutError, setAboutError] = useState("");
   const [licenseLoading, setLicenseLoading] = useState(false);
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseFile, setLicenseFile] = useState<File | null>(null);
@@ -5716,6 +5732,34 @@ function AboutManagement({
   const [licenseMessage, setLicenseMessage] = useState("");
   const [licenseMessageTone, setLicenseMessageTone] = useState<"valid" | "warning" | "invalid">("invalid");
   const [copyDone, setCopyDone] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAboutLoading(true);
+    void getAboutInfo()
+      .then((info) => {
+        if (!cancelled) {
+          setAboutInfo(info);
+          setAboutError("");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAboutError(t.aboutInfoLoadFailed);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAboutLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [t.aboutInfoLoadFailed]);
+
+  const aboutFields: Array<{ key: keyof AboutInfo; label: string }> = [
+    { key: "userCompany", label: t.aboutUserCompany },
+    { key: "userName", label: t.aboutUserName },
+  ];
 
   const refreshLicense = useCallback(async (clearMessage = false) => {
     setLicenseLoading(true);
@@ -5825,8 +5869,7 @@ function AboutManagement({
             <Info size={15} aria-hidden="true" />
           </span>
           <span className="screen-settings-section__heading">
-            <strong>{t.productName}</strong>
-            <span>{t.softwareIdentityHint}</span>
+            <strong>{t.aboutSoftwareInfo}</strong>
           </span>
         </header>
         <div className="screen-info-grid screen-about-grid">
@@ -5835,10 +5878,24 @@ function AboutManagement({
             <strong>Drone Management</strong>
           </div>
           <div className="screen-info-block">
+            <span>{t.aboutManufacturer}</span>
+            <strong title="深圳市特信电子有限公司">深圳市特信电子有限公司</strong>
+          </div>
+          {aboutFields.map(({ key, label }) => {
+            const value = aboutLoading ? t.waiting : aboutInfo[key].trim();
+            return (
+              <div className="screen-info-block" key={key}>
+                <span>{label}</span>
+                <strong className={value ? undefined : "screen-about-empty"} title={value}>{value || "—"}</strong>
+              </div>
+            );
+          })}
+          <div className="screen-info-block">
             <span>{t.currentDeviceLocation}</span>
             <strong title={locationText}>{locationText}</strong>
           </div>
         </div>
+        {aboutError ? <div className="screen-about-message" role="alert">{aboutError}</div> : null}
       </section>
 
       <section className="screen-settings-section screen-about-section screen-about-license">

@@ -262,6 +262,11 @@ export interface ScreenPositionTarget {
   lastRecord: ScreenPositionLastRecord;
 }
 
+export interface AboutInfo {
+  userCompany: string;
+  userName: string;
+}
+
 export interface UserSettings {
   intrusionRetentionDays?: number;
   screenTitle?: string;

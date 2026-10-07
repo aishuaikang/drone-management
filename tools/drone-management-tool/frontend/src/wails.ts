@@ -1,4 +1,6 @@
 import type {
+  AboutInfo,
+  AboutInfoRequest,
   DeployRequest,
   NetworkPingLog,
   NetworkStatus,
@@ -22,6 +24,9 @@ type AppBridge = {
   ProbeRemote(installDir: string): Promise<RemoteProbe>;
   BrowseRemoteDir(path: string): Promise<RemoteEntry[]>;
   SelectReleasePackage(): Promise<string>;
+  SelectLocalInstallDir(): Promise<string>;
+  ReadAboutInfo(installDir: string, local: boolean): Promise<AboutInfo>;
+  SaveAboutInfo(request: AboutInfoRequest): Promise<AboutInfo>;
   DeployDroneManagement(request: DeployRequest): Promise<{ installDir: string; message: string }>;
 };
 
@@ -59,6 +64,9 @@ export const api = {
   probeRemote: (installDir: string) => bridge().ProbeRemote(installDir),
   browseRemoteDir: (path: string) => bridge().BrowseRemoteDir(path),
   selectReleasePackage: () => bridge().SelectReleasePackage(),
+  selectLocalInstallDir: () => bridge().SelectLocalInstallDir(),
+  readAboutInfo: (installDir: string, local: boolean) => bridge().ReadAboutInfo(installDir, local),
+  saveAboutInfo: (request: AboutInfoRequest) => bridge().SaveAboutInfo(request),
   deployDroneManagement: (request: DeployRequest) => bridge().DeployDroneManagement(request),
 };
 

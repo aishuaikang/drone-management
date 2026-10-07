@@ -41,9 +41,16 @@ VERSION=2.2.6 TARGETS="linux/arm64" scripts/build-release.sh
 
 ## 配置
 
+“关于”页面的生产厂家固定为“深圳市特信电子有限公司”；使用厂家、使用人员默认留空，由 Drone Management Tool 的“软件信息”维护。Linux 设备连接 SSH 后，在安装目录下读取、编辑并保存；Windows 本机程序可在 Tool 登录界面点击“本机软件信息”，选择程序目录后设置，无需 SSH。
+
+Linux 远程保存通过 SSH 原子替换信息文件，无需 SFTP 的 POSIX rename 扩展。安装目录由 root 管理时，普通 SSH 账号须具备非交互 sudo 权限；权限不足时保存会报错并保留原信息。
+
+这两项信息独立保存在程序运行目录的 `data/about.json`，格式为 `{"userCompany":"","userName":""}`。主程序仅提供 `GET /api/v1/about` 读取，不通过用户设置接口修改。保存后刷新“关于”页面即可生效，无需重启。自定义 `API_ABOUT_INFO_PATH` 时，须确保维护工具写入的文件与后端读取路径一致。
+
 参考 `.env.example`。常用配置：
 
 - `API_ADDR`：HTTP API 地址，默认 `:18080`
+- `API_ABOUT_INFO_PATH`：“关于”页面的使用厂家、使用人员信息文件，默认 `./data/about.json`
 - `API_TCP_BIND_HOST`：TCP 监听地址，默认 `0.0.0.0`
 - `API_POSITION_TCP_PORT`：定位数据端口，默认 `10007`
 - `API_POSITION_UDP_ENABLED`：是否同时接收 ddsT1 UDP 定位报文，默认 `false`

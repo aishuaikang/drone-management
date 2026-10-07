@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+func TestLoadAboutInfoConfig(t *testing.T) {
+	t.Setenv("API_ABOUT_INFO_PATH", "")
+	if got := Load().AboutInfoPath; got != "./data/about.json" {
+		t.Fatalf("default about information path = %q", got)
+	}
+	t.Setenv("API_ABOUT_INFO_PATH", "/var/lib/drone-management/about.json")
+	if got := Load().AboutInfoPath; got != "/var/lib/drone-management/about.json" {
+		t.Fatalf("custom about information path = %q", got)
+	}
+}
+
 func TestLoadFPVVideoConfig(t *testing.T) {
 	t.Setenv("API_FPV_VIDEO_RTSP_URL", "rtsp://192.168.100.200:554/live/1_1")
 	t.Setenv("API_FPV_VIDEO_MEDIAMTX_PATH", "/opt/mediamtx")

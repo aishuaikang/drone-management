@@ -72,3 +72,14 @@ export interface DeployRequest {
   installDir: string;
   releasePackagePath: string;
 }
+
+export interface AboutInfo {
+  userCompany: string;
+  userName: string;
+}
+
+export interface AboutInfoRequest {
+  installDir: string;
+  local: boolean;
+  info: AboutInfo;
+}

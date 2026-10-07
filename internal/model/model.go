@@ -92,6 +92,12 @@ type UserSettings struct {
 	Whitelist                 []WhitelistItem               `json:"whitelist,omitempty"`
 }
 
+// AboutInfo contains the public software information displayed on the About page.
+type AboutInfo struct {
+	UserCompany string `json:"userCompany"`
+	UserName    string `json:"userName"`
+}
+
 // FPVVideoNetworkAddress describes an active local IPv4 address available to MediaMTX.
 type FPVVideoNetworkAddress struct {
 	Interface string `json:"interface"`
